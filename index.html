@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PatchLoop</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">PL</div>
+          <div>
+            <h1>PatchLoop</h1>
+            <p>Demo feedback loop</p>
+          </div>
+        </div>
+
+        <nav class="nav" aria-label="Primary">
+          <button class="nav-item active" data-view="portal" title="Demo portal">
+            <span>⌂</span>
+            <span>Portal</span>
+          </button>
+          <button class="nav-item" data-view="preview" title="Preview and feedback widget">
+            <span>◎</span>
+            <span>Preview</span>
+          </button>
+          <button class="nav-item" data-view="dashboard" title="Feedback dashboard">
+            <span>☷</span>
+            <span>Dashboard</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-panel">
+          <p class="panel-label">MVP loop</p>
+          <ol>
+            <li>Preview を触る</li>
+            <li>画面にコメント</li>
+            <li>Dashboard で triage</li>
+            <li>Issue 化の文脈を確認</li>
+          </ol>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Local prototype</p>
+            <h2 id="viewTitle">Demo Portal</h2>
+          </div>
+          <div class="topbar-actions">
+            <button class="icon-button" id="resetButton" title="Reset local demo data">↺</button>
+            <button class="primary-button" id="openPreviewButton">Preview を開く</button>
+          </div>
+        </header>
+
+        <section class="view active" id="portalView" aria-labelledby="viewTitle">
+          <div class="summary-grid">
+            <article class="metric">
+              <span class="metric-label">Active demos</span>
+              <strong id="demoCount">0</strong>
+            </article>
+            <article class="metric">
+              <span class="metric-label">Feedback</span>
+              <strong id="feedbackCount">0</strong>
+            </article>
+            <article class="metric">
+              <span class="metric-label">AI candidates</span>
+              <strong id="candidateCount">0</strong>
+            </article>
+            <article class="metric">
+              <span class="metric-label">Fixed</span>
+              <strong id="fixedCount">0</strong>
+            </article>
+          </div>
+
+          <div class="section-heading">
+            <h3>Demos</h3>
+            <button class="secondary-button" id="newDemoButton">デモを追加</button>
+          </div>
+          <div class="demo-list" id="demoList"></div>
+        </section>
+
+        <section class="view" id="previewView" aria-labelledby="viewTitle">
+          <div class="preview-toolbar">
+            <label>
+              Demo
+              <select id="demoSelect"></select>
+            </label>
+            <button class="primary-button" id="feedbackModeButton">Feedback mode: OFF</button>
+          </div>
+
+          <div class="preview-shell">
+            <div class="sample-app" id="sampleApp">
+              <div class="sample-nav">
+                <strong id="sampleTitle">Revenue Ops Cockpit</strong>
+                <span>Preview branch: demo/revenue-cockpit</span>
+              </div>
+              <div class="sample-hero">
+                <div>
+                  <p class="eyebrow">Q2 operating view</p>
+                  <h3>Pipeline health and customer risk in one workspace.</h3>
+                </div>
+                <button>Export</button>
+              </div>
+              <div class="sample-grid">
+                <div class="sample-panel wide">
+                  <div class="panel-row">
+                    <span>Expansion pipeline</span>
+                    <strong>$2.4M</strong>
+                  </div>
+                  <div class="bar-chart">
+                    <span style="height: 46%"></span>
+                    <span style="height: 78%"></span>
+                    <span style="height: 58%"></span>
+                    <span style="height: 92%"></span>
+                    <span style="height: 66%"></span>
+                    <span style="height: 84%"></span>
+                  </div>
+                </div>
+                <div class="sample-panel">
+                  <div class="panel-row">
+                    <span>At-risk accounts</span>
+                    <strong>18</strong>
+                  </div>
+                  <ul class="risk-list">
+                    <li><span></span> Usage drop</li>
+                    <li><span></span> Renewal slip</li>
+                    <li><span></span> Missing owner</li>
+                  </ul>
+                </div>
+                <div class="sample-panel">
+                  <div class="panel-row">
+                    <span>Next review</span>
+                    <strong>May 21</strong>
+                  </div>
+                  <p class="muted">Comments in feedback mode are stored with URL, position, selector, viewport, browser, and a local visual snapshot.</p>
+                </div>
+              </div>
+            </div>
+            <div id="pinsLayer" class="pins-layer" aria-hidden="true"></div>
+          </div>
+        </section>
+
+        <section class="view" id="dashboardView" aria-labelledby="viewTitle">
+          <div class="dashboard-layout">
+            <div>
+              <div class="section-heading">
+                <h3>Feedback Inbox</h3>
+                <div class="filter-group" id="statusFilters"></div>
+              </div>
+              <div class="feedback-list" id="feedbackList"></div>
+            </div>
+            <aside class="detail-pane" id="detailPane">
+              <p class="empty-state">フィードバックを選ぶと、Issue 化に必要な文脈が表示されます。</p>
+            </aside>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="feedbackDialog">
+      <form method="dialog" id="feedbackForm">
+        <header>
+          <h3>画面コメントを追加</h3>
+          <button value="cancel" class="icon-button" title="Close">×</button>
+        </header>
+        <label>
+          コメント
+          <textarea id="commentInput" rows="5" placeholder="例: このKPIの定義が分かる補足がほしい"></textarea>
+        </label>
+        <label>
+          投稿者
+          <input id="authorInput" value="Kosako" />
+        </label>
+        <menu>
+          <button value="cancel" class="secondary-button">キャンセル</button>
+          <button id="saveFeedbackButton" value="default" class="primary-button">保存</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="demoDialog">
+      <form method="dialog" id="demoForm">
+        <header>
+          <h3>デモを追加</h3>
+          <button value="cancel" class="icon-button" title="Close">×</button>
+        </header>
+        <label>
+          タイトル
+          <input id="demoTitleInput" placeholder="例: Billing workflow demo" />
+        </label>
+        <label>
+          説明
+          <textarea id="demoDescriptionInput" rows="3" placeholder="レビュー対象の概要"></textarea>
+        </label>
+        <div class="form-grid">
+          <label>
+            Owner
+            <input id="demoOwnerInput" placeholder="PdM" />
+          </label>
+          <label>
+            Data
+            <select id="demoClassificationInput">
+              <option>public_dummy</option>
+              <option>internal_dummy</option>
+              <option>internal_non_sensitive</option>
+              <option>restricted</option>
+              <option>prohibited</option>
+            </select>
+          </label>
+        </div>
+        <menu>
+          <button value="cancel" class="secondary-button">キャンセル</button>
+          <button id="saveDemoButton" value="default" class="primary-button">追加</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
