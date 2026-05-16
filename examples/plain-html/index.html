@@ -80,6 +80,7 @@
         projectId: "patchloop",
         demoId: "plain-html-renewal-review",
         reviewer: "Kosako",
+        endpoint: "http://localhost:4000/feedback",
         onSubmit(payload) {
           document.querySelector("#payloadOutput").textContent = JSON.stringify(payload, null, 2);
         }

@@ -125,19 +125,43 @@ Main payload fields:
 
 `clientX/clientY` represent viewport coordinates, while `pageX/pageY` represent document coordinates including scroll. Pins and area overlays are anchored to document coordinates so they stay attached to the target while scrolling.
 
+## ローカル receiver / Local Receiver
+
+`endpoint` を指定すると、widget は payload をその URL に POST します。検証用のローカル receiver が同梱されています。
+
+When `endpoint` is set, the widget POSTs the payload to that URL. A local receiver is bundled for testing.
+
+```sh
+node server/receive.js
+```
+
+- `POST /feedback` で payload を受け取り、`server/feedback.json` に追記します
+- `GET /` で受信した feedback の一覧（inbox）を表示します
+- `GET /feedback.json` で raw JSON を返します
+- `PORT` / `HOST` env で変更可能（デフォルトは `127.0.0.1:4000`）
+
+- Accepts payload at `POST /feedback`, appends to `server/feedback.json`
+- Renders an inbox of received feedback at `GET /`
+- Returns the raw JSON at `GET /feedback.json`
+- Configurable via `PORT` / `HOST` env (default `127.0.0.1:4000`)
+
+`examples/plain-html/` はデフォルトで `http://localhost:4000/feedback` に送信する設定です。`python3 -m http.server 4173` でページを配信した状態で receiver も起動すると、コメントが inbox に届きます。
+
+`examples/plain-html/` is preconfigured to send to `http://localhost:4000/feedback`. Serve the page with `python3 -m http.server 4173`, start the receiver alongside it, and submitted comments will appear in the inbox.
+
 ## 現在の境界 / Current Boundary
 
-このバージョンは、まだ GitHub / Slack / backend には送信しません。まずは script-tag widget の操作感と payload の形を検証する段階です。
+このバージョンは、まだ GitHub / Slack には直接送信しません。受信したフィードバックはローカル receiver の `server/feedback.json` に保存されます。
 
-This version does not send data to GitHub, Slack, or a backend yet. The current focus is validating the script-tag widget interaction and payload shape.
+This version does not send to GitHub or Slack directly yet. Received feedback is stored in `server/feedback.json` by the local receiver.
 
 未対応:
 
 Not included yet:
 
-- GitHub Issue 作成 / GitHub Issue creation
 - Slack 投稿 / Slack delivery
-- backend persistence
+- GitHub Issue 作成 / GitHub Issue creation
+- 永続 DB / persistent database
 - 本物の screenshot capture / real screenshot capture
 - 認証 / auth
 - AI PR 連携 / AI PR integration
