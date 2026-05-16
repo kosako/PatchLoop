@@ -14,6 +14,8 @@
     options: { ...DEFAULTS },
     active: false,
     pendingTarget: null,
+    drag: null,
+    suppressNextClick: false,
     feedback: []
   };
 
@@ -26,11 +28,17 @@
   }
 
   function destroy() {
-    document.removeEventListener("click", handleDocumentClick, true);
+    document.removeEventListener("mousedown", handleDocumentMouseDown, true);
+    document.removeEventListener("mousemove", handleDocumentMouseMove, true);
+    document.removeEventListener("mouseup", handleDocumentMouseUp, true);
+    document.removeEventListener("click", suppressDocumentClick, true);
     document.querySelector("[data-patchloop-root]")?.remove();
     document.querySelectorAll("[data-patchloop-pin]").forEach((node) => node.remove());
+    document.querySelectorAll("[data-patchloop-area]").forEach((node) => node.remove());
+    removeSelectionBox();
     state.active = false;
     state.pendingTarget = null;
+    state.drag = null;
   }
 
   function renderShell() {
@@ -42,32 +50,32 @@
     root.innerHTML = `
       <button class="pl-launcher" type="button" data-pl-toggle aria-pressed="false" title="Toggle PatchLoop feedback mode">
         <span class="pl-dot"></span>
-        <span>Feedback</span>
+        <span>フィードバック</span>
       </button>
       <section class="pl-panel" data-pl-panel hidden>
         <header>
           <strong>PatchLoop</strong>
-          <button type="button" data-pl-close title="Close">x</button>
+          <button type="button" data-pl-close title="閉じる">x</button>
         </header>
-        <p data-pl-help>Turn feedback mode on, then click the page.</p>
+        <p data-pl-help>コメントモードを開始して、画面上の気になる場所をクリックしてください。</p>
         <div class="pl-actions">
-          <button type="button" data-pl-mode>Start comment mode</button>
-          <button type="button" data-pl-clear>Clear pins</button>
+          <button type="button" data-pl-mode>コメントモード開始</button>
+          <button type="button" data-pl-clear>ピンを消す</button>
         </div>
-        <div class="pl-payload" data-pl-payload>No feedback yet.</div>
+        <div class="pl-payload" data-pl-payload>まだフィードバックはありません。</div>
       </section>
       <form class="pl-comment" data-pl-comment hidden>
         <label>
-          Comment
-          <textarea data-pl-comment-text rows="4" placeholder="What should change here?"></textarea>
+          コメント
+          <textarea data-pl-comment-text rows="4" placeholder="ここで何を直したいですか？"></textarea>
         </label>
         <label>
-          Reviewer
-          <input data-pl-reviewer value="${escapeHtml(state.options.reviewer)}" placeholder="Your name" />
+          投稿者
+          <input data-pl-reviewer value="${escapeHtml(state.options.reviewer)}" placeholder="名前" />
         </label>
         <div class="pl-form-actions">
-          <button type="button" data-pl-cancel>Cancel</button>
-          <button type="submit">Submit</button>
+          <button type="button" data-pl-cancel>キャンセル</button>
+          <button type="submit">送信</button>
         </div>
       </form>
     `;
@@ -83,27 +91,101 @@
   }
 
   function bindGlobalCapture() {
-    document.removeEventListener("click", handleDocumentClick, true);
-    document.addEventListener("click", handleDocumentClick, true);
+    document.removeEventListener("mousedown", handleDocumentMouseDown, true);
+    document.removeEventListener("mousemove", handleDocumentMouseMove, true);
+    document.removeEventListener("mouseup", handleDocumentMouseUp, true);
+    document.removeEventListener("click", suppressDocumentClick, true);
+    document.addEventListener("mousedown", handleDocumentMouseDown, true);
+    document.addEventListener("mousemove", handleDocumentMouseMove, true);
+    document.addEventListener("mouseup", handleDocumentMouseUp, true);
+    document.addEventListener("click", suppressDocumentClick, true);
   }
 
-  function handleDocumentClick(event) {
+  function handleDocumentMouseDown(event) {
     if (!state.active) return;
     if (event.target.closest("[data-patchloop-root]")) return;
 
     event.preventDefault();
     event.stopPropagation();
 
-    const target = event.target;
-    const point = pointFromEvent(event);
-    state.pendingTarget = {
-      ...point,
-      selector: selectorFor(target),
-      elementText: textFor(target)
+    state.drag = {
+      startedAt: pointFromEvent(event),
+      latest: pointFromEvent(event),
+      target: event.target,
+      isDragging: false
     };
+    state.suppressNextClick = true;
+  }
 
-    addPin(point);
-    openCommentForm(point);
+  function handleDocumentMouseMove(event) {
+    if (!state.active || !state.drag) return;
+    if (event.target.closest("[data-patchloop-root]")) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    state.drag.latest = pointFromEvent(event);
+    const rect = rectFromPoints(state.drag.startedAt, state.drag.latest);
+    state.drag.isDragging = rect.widthPx > 8 || rect.heightPx > 8;
+
+    if (state.drag.isDragging) {
+      renderSelectionBox(rect);
+    }
+  }
+
+  function handleDocumentMouseUp(event) {
+    if (!state.active || !state.drag) return;
+    if (event.target.closest("[data-patchloop-root]")) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const start = state.drag.startedAt;
+    const end = pointFromEvent(event);
+    const rect = rectFromPoints(start, end);
+    const target = document.elementFromPoint(start.clientX, start.clientY) || state.drag.target;
+
+    if (state.drag.isDragging) {
+      state.pendingTarget = {
+        kind: "area",
+        ...pointFromClient(rect.leftPx, rect.topPx),
+        area: {
+          x: round(rect.x),
+          y: round(rect.y),
+          width: round(rect.width),
+          height: round(rect.height),
+          clientX: Math.round(rect.leftPx),
+          clientY: Math.round(rect.topPx),
+          clientWidth: Math.round(rect.widthPx),
+          clientHeight: Math.round(rect.heightPx)
+        },
+        selector: selectorFor(target),
+        elementText: textFor(target)
+      };
+      addArea(rect);
+      openCommentForm({ clientX: rect.rightPx, clientY: rect.bottomPx });
+    } else {
+      const point = pointFromEvent(event);
+      state.pendingTarget = {
+        kind: "point",
+        ...point,
+        selector: selectorFor(target),
+        elementText: textFor(target)
+      };
+      addPin(point);
+      openCommentForm(point);
+    }
+
+    removeSelectionBox();
+    state.drag = null;
+  }
+
+  function suppressDocumentClick(event) {
+    if (!state.suppressNextClick) return;
+    state.suppressNextClick = false;
+    if (event.target.closest("[data-patchloop-root]")) return;
+    event.preventDefault();
+    event.stopPropagation();
   }
 
   function togglePanel() {
@@ -124,8 +206,12 @@
     document.documentElement.classList.toggle("pl-feedback-active", state.active);
     const root = getRoot();
     root.querySelector("[data-pl-toggle]").setAttribute("aria-pressed", String(state.active));
-    root.querySelector("[data-pl-mode]").textContent = state.active ? "Stop comment mode" : "Start comment mode";
-    root.querySelector("[data-pl-help]").textContent = state.active ? "Click the exact place that needs feedback." : "Turn feedback mode on, then click the page.";
+    root.querySelector("[data-pl-mode]").textContent = state.active ? "コメントモード終了" : "コメントモード開始";
+    root.querySelector("[data-pl-help]").textContent = state.active ? "点をクリック、または範囲をドラッグしてコメントできます。" : "コメントモードを開始して、画面上の気になる場所をクリックしてください。";
+    if (!state.active) {
+      removeSelectionBox();
+      state.drag = null;
+    }
   }
 
   function openCommentForm(point) {
@@ -180,10 +266,12 @@
         title: document.title
       },
       target: {
+        kind: target.kind || "point",
         x: round(target.x),
         y: round(target.y),
         clientX: Math.round(target.clientX),
         clientY: Math.round(target.clientY),
+        area: target.area || null,
         selector: target.selector,
         text: target.elementText
       },
@@ -233,17 +321,79 @@
 
   function clearPins() {
     document.querySelectorAll("[data-patchloop-pin]").forEach((node) => node.remove());
+    document.querySelectorAll("[data-patchloop-area]").forEach((node) => node.remove());
+    removeSelectionBox();
     state.feedback = [];
-    getRoot().querySelector("[data-pl-payload]").textContent = "No feedback yet.";
+    getRoot().querySelector("[data-pl-payload]").textContent = "まだフィードバックはありません。";
   }
 
   function pointFromEvent(event) {
+    return pointFromClient(event.clientX, event.clientY);
+  }
+
+  function pointFromClient(clientX, clientY) {
     return {
-      x: (event.clientX / Math.max(document.documentElement.clientWidth, 1)) * 100,
-      y: (event.clientY / Math.max(document.documentElement.clientHeight, 1)) * 100,
-      clientX: event.clientX,
-      clientY: event.clientY
+      x: (clientX / Math.max(document.documentElement.clientWidth, 1)) * 100,
+      y: (clientY / Math.max(document.documentElement.clientHeight, 1)) * 100,
+      clientX,
+      clientY
     };
+  }
+
+  function rectFromPoints(start, end) {
+    const leftPx = Math.min(start.clientX, end.clientX);
+    const topPx = Math.min(start.clientY, end.clientY);
+    const rightPx = Math.max(start.clientX, end.clientX);
+    const bottomPx = Math.max(start.clientY, end.clientY);
+    const viewportWidth = Math.max(document.documentElement.clientWidth, 1);
+    const viewportHeight = Math.max(document.documentElement.clientHeight, 1);
+
+    return {
+      leftPx,
+      topPx,
+      rightPx,
+      bottomPx,
+      widthPx: rightPx - leftPx,
+      heightPx: bottomPx - topPx,
+      x: (leftPx / viewportWidth) * 100,
+      y: (topPx / viewportHeight) * 100,
+      width: ((rightPx - leftPx) / viewportWidth) * 100,
+      height: ((bottomPx - topPx) / viewportHeight) * 100
+    };
+  }
+
+  function renderSelectionBox(rect) {
+    let box = document.querySelector("[data-patchloop-selection]");
+    if (!box) {
+      box = document.createElement("div");
+      box.dataset.patchloopSelection = "true";
+      box.className = "pl-selection";
+      document.body.append(box);
+    }
+    Object.assign(box.style, {
+      left: `${rect.leftPx}px`,
+      top: `${rect.topPx}px`,
+      width: `${rect.widthPx}px`,
+      height: `${rect.heightPx}px`
+    });
+  }
+
+  function removeSelectionBox() {
+    document.querySelector("[data-patchloop-selection]")?.remove();
+  }
+
+  function addArea(rect) {
+    const area = document.createElement("div");
+    area.dataset.patchloopArea = "true";
+    area.className = "pl-area";
+    Object.assign(area.style, {
+      left: `${rect.leftPx}px`,
+      top: `${rect.topPx}px`,
+      width: `${rect.widthPx}px`,
+      height: `${rect.heightPx}px`
+    });
+    area.innerHTML = `<span>${state.feedback.length + 1}</span>`;
+    document.body.append(area);
   }
 
   function selectorFor(element) {
@@ -298,6 +448,7 @@
     style.dataset.patchloopStyle = "true";
     style.textContent = `
       .pl-root, .pl-root * { box-sizing: border-box; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .pl-root [hidden], .pl-comment[hidden], .pl-panel[hidden] { display: none !important; }
       .pl-root { position: fixed; z-index: 2147483000; color: #14211d; }
       .pl-bottom-right { right: 20px; bottom: 20px; }
       .pl-launcher { min-height: 42px; border: 1px solid #0f7b63; border-radius: 999px; padding: 0 16px; display: inline-flex; align-items: center; gap: 8px; background: #0f7b63; color: #fff; font-weight: 800; box-shadow: 0 16px 40px rgba(20, 33, 29, 0.18); cursor: pointer; }
@@ -316,6 +467,9 @@
       .pl-comment textarea, .pl-comment input { width: 100%; border: 1px solid #d9e1dd; border-radius: 8px; padding: 9px 10px; color: #14211d; font: inherit; resize: vertical; }
       .pl-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
       .pl-pin { position: fixed; z-index: 2147482999; transform: translate(-50%, -50%); width: 30px; height: 30px; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font-weight: 900; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); pointer-events: none; }
+      .pl-selection, .pl-area { position: fixed; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; }
+      .pl-area { box-shadow: 0 12px 30px rgba(20, 33, 29, 0.16); }
+      .pl-area span { position: absolute; top: -15px; left: -15px; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font-weight: 900; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); }
       .pl-feedback-active, .pl-feedback-active * { cursor: crosshair !important; }
     `;
     document.head.append(style);
