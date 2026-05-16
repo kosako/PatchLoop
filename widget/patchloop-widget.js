@@ -157,7 +157,13 @@
           clientX: Math.round(rect.leftPx),
           clientY: Math.round(rect.topPx),
           clientWidth: Math.round(rect.widthPx),
-          clientHeight: Math.round(rect.heightPx)
+          clientHeight: Math.round(rect.heightPx),
+          pageX: Math.round(rect.pageLeftPx),
+          pageY: Math.round(rect.pageTopPx),
+          documentX: round(rect.documentX),
+          documentY: round(rect.documentY),
+          documentWidth: round(rect.documentWidth),
+          documentHeight: round(rect.documentHeight)
         },
         selector: selectorFor(target),
         elementText: textFor(target)
@@ -271,6 +277,10 @@
         y: round(target.y),
         clientX: Math.round(target.clientX),
         clientY: Math.round(target.clientY),
+        pageX: Math.round(target.pageX),
+        pageY: Math.round(target.pageY),
+        documentX: round(target.documentX),
+        documentY: round(target.documentY),
         area: target.area || null,
         selector: target.selector,
         text: target.elementText
@@ -313,8 +323,8 @@
     pin.type = "button";
     pin.dataset.patchloopPin = "true";
     pin.className = "pl-pin";
-    pin.style.left = `${point.clientX}px`;
-    pin.style.top = `${point.clientY}px`;
+    pin.style.left = `${point.pageX}px`;
+    pin.style.top = `${point.pageY}px`;
     pin.textContent = String(state.feedback.length + 1);
     document.body.append(pin);
   }
@@ -332,11 +342,17 @@
   }
 
   function pointFromClient(clientX, clientY) {
+    const pageX = clientX + window.scrollX;
+    const pageY = clientY + window.scrollY;
     return {
       x: (clientX / Math.max(document.documentElement.clientWidth, 1)) * 100,
       y: (clientY / Math.max(document.documentElement.clientHeight, 1)) * 100,
+      documentX: (pageX / Math.max(document.documentElement.scrollWidth, 1)) * 100,
+      documentY: (pageY / Math.max(document.documentElement.scrollHeight, 1)) * 100,
       clientX,
-      clientY
+      clientY,
+      pageX,
+      pageY
     };
   }
 
@@ -347,18 +363,28 @@
     const bottomPx = Math.max(start.clientY, end.clientY);
     const viewportWidth = Math.max(document.documentElement.clientWidth, 1);
     const viewportHeight = Math.max(document.documentElement.clientHeight, 1);
+    const pageLeftPx = leftPx + window.scrollX;
+    const pageTopPx = topPx + window.scrollY;
+    const documentWidth = Math.max(document.documentElement.scrollWidth, 1);
+    const documentHeight = Math.max(document.documentElement.scrollHeight, 1);
 
     return {
       leftPx,
       topPx,
       rightPx,
       bottomPx,
+      pageLeftPx,
+      pageTopPx,
       widthPx: rightPx - leftPx,
       heightPx: bottomPx - topPx,
       x: (leftPx / viewportWidth) * 100,
       y: (topPx / viewportHeight) * 100,
       width: ((rightPx - leftPx) / viewportWidth) * 100,
-      height: ((bottomPx - topPx) / viewportHeight) * 100
+      height: ((bottomPx - topPx) / viewportHeight) * 100,
+      documentX: (pageLeftPx / documentWidth) * 100,
+      documentY: (pageTopPx / documentHeight) * 100,
+      documentWidth: ((rightPx - leftPx) / documentWidth) * 100,
+      documentHeight: ((bottomPx - topPx) / documentHeight) * 100
     };
   }
 
@@ -387,8 +413,8 @@
     area.dataset.patchloopArea = "true";
     area.className = "pl-area";
     Object.assign(area.style, {
-      left: `${rect.leftPx}px`,
-      top: `${rect.topPx}px`,
+      left: `${rect.pageLeftPx}px`,
+      top: `${rect.pageTopPx}px`,
       width: `${rect.widthPx}px`,
       height: `${rect.heightPx}px`
     });
@@ -466,8 +492,9 @@
       .pl-comment label { display: grid; gap: 6px; color: #65716d; font-size: 12px; font-weight: 800; }
       .pl-comment textarea, .pl-comment input { width: 100%; border: 1px solid #d9e1dd; border-radius: 8px; padding: 9px 10px; color: #14211d; font: inherit; resize: vertical; }
       .pl-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
-      .pl-pin { position: fixed; z-index: 2147482999; transform: translate(-50%, -50%); width: 30px; height: 30px; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font-weight: 900; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); pointer-events: none; }
-      .pl-selection, .pl-area { position: fixed; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; }
+      .pl-pin { position: absolute; z-index: 2147482999; transform: translate(-50%, -50%); width: 30px; height: 30px; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font-weight: 900; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); pointer-events: none; }
+      .pl-selection { position: fixed; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; }
+      .pl-area { position: absolute; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; }
       .pl-area { box-shadow: 0 12px 30px rgba(20, 33, 29, 0.16); }
       .pl-area span { position: absolute; top: -15px; left: -15px; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font-weight: 900; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); }
       .pl-feedback-active, .pl-feedback-active * { cursor: crosshair !important; }

@@ -104,6 +104,12 @@ Main payload fields:
 - `target.kind`
 - `target.x`
 - `target.y`
+- `target.clientX`
+- `target.clientY`
+- `target.pageX`
+- `target.pageY`
+- `target.documentX`
+- `target.documentY`
 - `target.area`
 - `target.selector`
 - `target.text`
@@ -114,6 +120,10 @@ Main payload fields:
 `target.kind` は `point` または `area` です。範囲選択の場合は `target.area` に `x`, `y`, `width`, `height` が percentage で入ります。
 
 `target.kind` is either `point` or `area`. For area selections, `target.area` includes `x`, `y`, `width`, and `height` as percentages.
+
+`clientX/clientY` は現在の viewport 上の位置、`pageX/pageY` はスクロールを含む document 上の位置です。pin / area overlay は document 上に固定されるため、スクロールしても対象箇所に追従します。
+
+`clientX/clientY` represent viewport coordinates, while `pageX/pageY` represent document coordinates including scroll. Pins and area overlays are anchored to document coordinates so they stay attached to the target while scrolling.
 
 ## 現在の境界 / Current Boundary
 
