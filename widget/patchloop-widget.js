@@ -16,7 +16,10 @@
     pendingTarget: null,
     drag: null,
     suppressNextClick: false,
-    feedback: []
+    feedback: [],
+    feedbackMarkers: new Map(),
+    editingId: null,
+    collapsed: true
   };
 
   function init(options = {}) {
@@ -24,6 +27,8 @@
     injectStyles();
     renderShell();
     bindGlobalCapture();
+    applyCollapseState();
+    renderFeedbackList();
     return api;
   }
 
@@ -40,6 +45,8 @@
     state.active = false;
     state.pendingTarget = null;
     state.drag = null;
+    state.feedbackMarkers.clear();
+    state.editingId = null;
   }
 
   function renderShell() {
@@ -49,22 +56,23 @@
     root.dataset.patchloopRoot = "true";
     root.className = `pl-root pl-${state.options.position}`;
     root.innerHTML = `
-      <button class="pl-launcher" type="button" data-pl-toggle aria-pressed="false" title="Toggle PatchLoop feedback mode">
-        <span class="pl-dot"></span>
-        <span>フィードバック</span>
-      </button>
-      <section class="pl-panel" data-pl-panel hidden>
+      <section class="pl-panel pl-collapsed" data-pl-panel>
         <header>
-          <strong>PatchLoop</strong>
-          <button type="button" data-pl-close title="閉じる">x</button>
+          <button type="button" class="pl-handle" data-pl-collapse aria-expanded="false" title="展開">‹</button>
+          <strong class="pl-title">PatchLoop</strong>
+          <button type="button" class="pl-mode" data-pl-mode>コメントモード開始</button>
         </header>
-        <p data-pl-help>コメントモードを開始して、画面上の気になる場所をクリックしてください。</p>
-        <div class="pl-actions">
-          <button type="button" data-pl-mode>コメントモード開始</button>
-          <button type="button" data-pl-clear>ピンを消す</button>
+        <div class="pl-panel-body" data-pl-body>
+          <p data-pl-help>コメントモードを開始して、画面上の気になる場所をクリックしてください。</p>
+          <div class="pl-actions">
+            <button type="button" data-pl-clear>ピンを消す</button>
+          </div>
+          <div class="pl-feedback-list" data-pl-list>
+            <p class="pl-feedback-list-empty">まだフィードバックはありません。</p>
+          </div>
         </div>
-        <div class="pl-payload" data-pl-payload>まだフィードバックはありません。</div>
       </section>
+      <div class="pl-tooltip" data-pl-tooltip hidden></div>
       <form class="pl-comment" data-pl-comment hidden>
         <label>
           コメント
@@ -83,12 +91,12 @@
 
     document.body.append(root);
 
-    root.querySelector("[data-pl-toggle]").addEventListener("click", togglePanel);
-    root.querySelector("[data-pl-close]").addEventListener("click", closePanel);
+    root.querySelector("[data-pl-collapse]").addEventListener("click", toggleCollapse);
     root.querySelector("[data-pl-mode]").addEventListener("click", toggleFeedbackMode);
     root.querySelector("[data-pl-clear]").addEventListener("click", clearPins);
     root.querySelector("[data-pl-cancel]").addEventListener("click", cancelPendingComment);
     root.querySelector("[data-pl-comment]").addEventListener("submit", submitComment);
+    root.querySelector("[data-pl-list]").addEventListener("click", handleListClick);
   }
 
   function bindGlobalCapture() {
@@ -206,15 +214,6 @@
     event.stopPropagation();
   }
 
-  function togglePanel() {
-    const panel = getRoot().querySelector("[data-pl-panel]");
-    panel.hidden = !panel.hidden;
-  }
-
-  function closePanel() {
-    getRoot().querySelector("[data-pl-panel]").hidden = true;
-  }
-
   function toggleFeedbackMode() {
     setFeedbackMode(!state.active);
   }
@@ -223,8 +222,11 @@
     state.active = nextValue;
     document.documentElement.classList.toggle("pl-feedback-active", state.active);
     const root = getRoot();
-    root.querySelector("[data-pl-toggle]").setAttribute("aria-pressed", String(state.active));
-    root.querySelector("[data-pl-mode]").textContent = state.active ? "コメントモード終了" : "コメントモード開始";
+    const handleBtn = root.querySelector("[data-pl-collapse]");
+    if (handleBtn) handleBtn.classList.toggle("pl-mode-on", state.active);
+    const modeBtn = root.querySelector("[data-pl-mode]");
+    modeBtn.textContent = state.active ? "コメントモード終了" : "コメントモード開始";
+    modeBtn.setAttribute("aria-pressed", String(state.active));
     root.querySelector("[data-pl-help]").textContent = state.active ? "点をクリック、または範囲をドラッグしてコメントできます。" : "コメントモードを開始して、画面上の気になる場所をクリックしてください。";
     if (!state.active) {
       removeSelectionBox();
@@ -232,13 +234,18 @@
     }
   }
 
-  function openCommentForm(point) {
+  function openCommentForm(point, options = {}) {
     const form = getRoot().querySelector("[data-pl-comment]");
     form.hidden = false;
     form.style.left = `${Math.min(point.clientX + 14, window.innerWidth - 340)}px`;
     form.style.top = `${Math.min(point.clientY + 14, window.innerHeight - 250)}px`;
-    form.querySelector("[data-pl-comment-text]").value = "";
-    form.querySelector("[data-pl-comment-text]").focus();
+    const commentEl = form.querySelector("[data-pl-comment-text]");
+    const reviewerEl = form.querySelector("[data-pl-reviewer]");
+    commentEl.value = options.comment != null ? options.comment : "";
+    if (options.reviewer != null) {
+      reviewerEl.value = options.reviewer;
+    }
+    commentEl.focus();
   }
 
   function closeCommentForm() {
@@ -248,17 +255,31 @@
 
   async function submitComment(event) {
     event.preventDefault();
-    if (!state.pendingTarget) return;
 
     const root = getRoot();
     const comment = root.querySelector("[data-pl-comment-text]").value.trim();
     const reviewer = root.querySelector("[data-pl-reviewer]").value.trim();
     if (!comment) return;
 
+    if (state.editingId) {
+      const target = state.feedback.find((item) => item.id === state.editingId);
+      if (target) {
+        target.comment = comment;
+        target.reviewer = reviewer;
+        renderFeedbackList();
+      }
+      state.editingId = null;
+      closeCommentForm();
+      return;
+    }
+
+    if (!state.pendingTarget) return;
+
     const payload = buildPayload(comment, reviewer, state.pendingTarget);
     state.feedback.unshift(payload);
-    finalizePendingMarker();
-    showPayload(payload);
+    finalizePendingMarker(payload.id);
+    renderFeedbackList();
+    expandPanel();
     closeCommentForm();
     setFeedbackMode(false);
 
@@ -270,6 +291,7 @@
 
     if (state.options.endpoint) {
       await postFeedback(payload);
+      renderFeedbackList();
     }
   }
 
@@ -321,14 +343,7 @@
     } catch (error) {
       payload.delivery = { ok: false, error: error.message };
     }
-    showPayload(payload);
-  }
-
-  function showPayload(payload) {
-    const output = getRoot().querySelector("[data-pl-payload]");
-    output.textContent = JSON.stringify(payload, null, 2);
-    getRoot().querySelector("[data-pl-panel]").hidden = false;
-    console.info("[PatchLoop] feedback payload", payload);
+    console.info("[PatchLoop] delivery", payload.id, payload.delivery);
   }
 
   function addPin(point) {
@@ -345,22 +360,34 @@
 
   function clearPins() {
     discardPendingMarker();
+    state.editingId = null;
     closeCommentForm();
     document.querySelectorAll("[data-patchloop-pin]").forEach((node) => node.remove());
     document.querySelectorAll("[data-patchloop-area]").forEach((node) => node.remove());
     document.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
+    state.feedbackMarkers.clear();
     removeSelectionBox();
     state.feedback = [];
-    getRoot().querySelector("[data-pl-payload]").textContent = "まだフィードバックはありません。";
+    hideTooltip();
+    renderFeedbackList();
   }
 
-  function finalizePendingMarker() {
+  function finalizePendingMarker(feedbackId) {
     if (!state.pendingTarget) return;
     if (state.pendingTarget.markerLabelNode) {
       state.pendingTarget.markerLabelNode.textContent = String(state.feedback.length);
     }
     if (state.pendingTarget.targetElement) {
       unhighlightTarget(state.pendingTarget.targetElement);
+    }
+    if (feedbackId && state.pendingTarget.markerNode) {
+      state.pendingTarget.markerNode.dataset.patchloopFeedbackId = feedbackId;
+      const marker = {
+        node: state.pendingTarget.markerNode,
+        label: state.pendingTarget.markerLabelNode
+      };
+      state.feedbackMarkers.set(feedbackId, marker);
+      bindMarkerHover(marker, feedbackId);
     }
   }
 
@@ -372,9 +399,15 @@
     if (state.pendingTarget.targetElement) {
       unhighlightTarget(state.pendingTarget.targetElement);
     }
+    state.pendingTarget = null;
   }
 
   function cancelPendingComment() {
+    if (state.editingId) {
+      state.editingId = null;
+      closeCommentForm();
+      return;
+    }
     discardPendingMarker();
     closeCommentForm();
   }
@@ -389,6 +422,172 @@
   function unhighlightTarget(element) {
     if (!element || !element.classList) return;
     element.classList.remove("pl-target-highlight");
+  }
+
+  function toggleCollapse() {
+    state.collapsed = !state.collapsed;
+    applyCollapseState();
+  }
+
+  function applyCollapseState() {
+    const root = getRoot();
+    if (!root) return;
+    const panel = root.querySelector("[data-pl-panel]");
+    if (panel) panel.classList.toggle("pl-collapsed", state.collapsed);
+    const button = root.querySelector("[data-pl-collapse]");
+    if (button) {
+      button.setAttribute("aria-expanded", String(!state.collapsed));
+      button.textContent = state.collapsed ? "‹" : "›";
+      button.setAttribute("title", state.collapsed ? "展開" : "折りたたみ");
+    }
+  }
+
+  function expandPanel() {
+    const root = getRoot();
+    if (root) root.querySelector("[data-pl-panel]").hidden = false;
+    state.collapsed = false;
+    applyCollapseState();
+  }
+
+  function renderFeedbackList() {
+    const root = getRoot();
+    if (!root) return;
+    const list = root.querySelector("[data-pl-list]");
+    if (!list) return;
+    if (state.feedback.length === 0) {
+      list.innerHTML = '<p class="pl-feedback-list-empty">まだフィードバックはありません。</p>';
+      return;
+    }
+    list.innerHTML = state.feedback
+      .map((item, i) => {
+        const num = state.feedback.length - i;
+        const kind = (item.target && item.target.kind) || "point";
+        const delivery = item.delivery
+          ? item.delivery.ok
+            ? '<span class="pl-feedback-status pl-feedback-status-ok" title="delivered">✓</span>'
+            : '<span class="pl-feedback-status pl-feedback-status-fail" title="delivery failed">✗</span>'
+          : "";
+        return `
+          <article class="pl-feedback-item" data-feedback-id="${escapeHtml(item.id)}">
+            <span class="pl-feedback-num kind-${escapeHtml(kind)}">${num}</span>
+            <div class="pl-feedback-body">
+              <div class="pl-feedback-meta">${escapeHtml(item.reviewer || "(no name)")} ${delivery}</div>
+              <div class="pl-feedback-text">${escapeHtml(item.comment || "")}</div>
+            </div>
+            <div class="pl-feedback-actions">
+              <button type="button" data-pl-edit title="編集">編集</button>
+              <button type="button" data-pl-delete title="削除">削除</button>
+            </div>
+          </article>
+        `;
+      })
+      .join("");
+  }
+
+  function renumberMarkers() {
+    const ordered = state.feedback.slice().reverse();
+    ordered.forEach((item, i) => {
+      const marker = state.feedbackMarkers.get(item.id);
+      if (marker && marker.label) {
+        marker.label.textContent = String(i + 1);
+      }
+    });
+  }
+
+  function handleListClick(event) {
+    const itemEl = event.target.closest("[data-feedback-id]");
+    if (!itemEl) return;
+    const id = itemEl.dataset.feedbackId;
+    if (event.target.closest("[data-pl-edit]")) {
+      startEditFeedback(id);
+      return;
+    }
+    if (event.target.closest("[data-pl-delete]")) {
+      deleteFeedback(id);
+    }
+  }
+
+  function startEditFeedback(id) {
+    const item = state.feedback.find((f) => f.id === id);
+    if (!item) return;
+    if (state.active) setFeedbackMode(false);
+    discardPendingMarker();
+    hideTooltip();
+    state.editingId = id;
+    const marker = state.feedbackMarkers.get(id);
+    const rect = marker && marker.node ? marker.node.getBoundingClientRect() : null;
+    const point = rect
+      ? { clientX: rect.left + rect.width / 2, clientY: rect.bottom }
+      : { clientX: Math.max(window.innerWidth - 360, 16), clientY: 80 };
+    openCommentForm(point, { comment: item.comment, reviewer: item.reviewer });
+  }
+
+  function deleteFeedback(id) {
+    const marker = state.feedbackMarkers.get(id);
+    if (marker) {
+      if (marker.node) marker.node.remove();
+      state.feedbackMarkers.delete(id);
+    }
+    state.feedback = state.feedback.filter((f) => f.id !== id);
+    if (state.editingId === id) {
+      state.editingId = null;
+      closeCommentForm();
+    }
+    renumberMarkers();
+    renderFeedbackList();
+    hideTooltip();
+  }
+
+  function bindMarkerHover(marker, feedbackId) {
+    const targets = marker.node === marker.label
+      ? [marker.node]
+      : [marker.node, marker.label].filter(Boolean);
+    targets.forEach((el) => {
+      el.addEventListener("mouseenter", (event) => {
+        if (state.active) return;
+        const item = state.feedback.find((f) => f.id === feedbackId);
+        if (!item) return;
+        showTooltip(event, item);
+      });
+      el.addEventListener("mousemove", (event) => {
+        if (state.active) return;
+        positionTooltip(event);
+      });
+      el.addEventListener("mouseleave", () => {
+        hideTooltip();
+      });
+    });
+  }
+
+  function showTooltip(event, item) {
+    const tooltip = getTooltip();
+    if (!tooltip) return;
+    const reviewer = item.reviewer || "(no name)";
+    tooltip.textContent = `${reviewer}\n${item.comment || ""}`;
+    tooltip.hidden = false;
+    positionTooltip(event);
+  }
+
+  function positionTooltip(event) {
+    const tooltip = getTooltip();
+    if (!tooltip || tooltip.hidden) return;
+    const padding = 14;
+    const tipWidth = tooltip.offsetWidth || 240;
+    const tipHeight = tooltip.offsetHeight || 60;
+    const x = Math.min(event.clientX + padding, window.innerWidth - tipWidth - 8);
+    const y = Math.min(event.clientY + padding, window.innerHeight - tipHeight - 8);
+    tooltip.style.left = `${Math.max(8, x)}px`;
+    tooltip.style.top = `${Math.max(8, y)}px`;
+  }
+
+  function hideTooltip() {
+    const tooltip = getTooltip();
+    if (!tooltip) return;
+    tooltip.hidden = true;
+  }
+
+  function getTooltip() {
+    return document.querySelector("[data-pl-tooltip]");
   }
 
   function pointFromEvent(event) {
@@ -531,28 +730,51 @@
     style.dataset.patchloopStyle = "true";
     style.textContent = `
       .pl-root, .pl-root * { box-sizing: border-box; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-      .pl-root [hidden], .pl-comment[hidden], .pl-panel[hidden] { display: none !important; }
-      .pl-root { position: fixed; z-index: 2147483000; color: #14211d; }
-      .pl-bottom-right { right: 20px; bottom: 20px; }
-      .pl-launcher { min-height: 42px; border: 1px solid #0f7b63; border-radius: 999px; padding: 0 16px; display: inline-flex; align-items: center; gap: 8px; background: #0f7b63; color: #fff; font-weight: 800; box-shadow: 0 16px 40px rgba(20, 33, 29, 0.18); cursor: pointer; }
-      .pl-launcher[aria-pressed="true"] { background: #d1495b; border-color: #d1495b; }
-      .pl-dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; opacity: 0.85; }
-      .pl-panel { position: absolute; right: 0; bottom: 54px; width: min(390px, calc(100vw - 32px)); background: #fff; border: 1px solid #d9e1dd; border-radius: 8px; box-shadow: 0 22px 70px rgba(20, 33, 29, 0.22); overflow: hidden; }
-      .pl-panel header { min-height: 48px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #d9e1dd; }
-      .pl-panel header button { width: 32px; height: 32px; border: 0; background: transparent; cursor: pointer; font-size: 18px; }
+      .pl-root [hidden], .pl-comment[hidden], .pl-tooltip[hidden] { display: none !important; }
+      .pl-root { position: fixed; z-index: 2147483000; color: #14211d; right: 0; bottom: 20px; }
+      .pl-panel { position: absolute; right: 0; bottom: 0; width: min(390px, calc(100vw - 32px)); background: #fff; border: 1px solid #d9e1dd; border-radius: 8px 0 0 8px; box-shadow: 0 22px 70px rgba(20, 33, 29, 0.22); overflow: hidden; transition: transform 250ms ease; }
+      .pl-panel header { min-height: 44px; padding: 0 8px 0 6px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #d9e1dd; }
+      .pl-title { flex: 1; min-width: 0; }
+      .pl-handle { min-width: 32px; height: 32px; padding: 0; border: 0; background: transparent; cursor: pointer; font-size: 20px; color: #14211d; border-radius: 6px; font-weight: 700; transition: background 150ms ease, color 150ms ease; }
+      .pl-handle:hover { background: #f0f3ef; }
+      .pl-handle.pl-mode-on { background: #d1495b; color: #fff; }
+      .pl-handle.pl-mode-on:hover { background: #b83d4d; }
+      .pl-mode { min-height: 30px; padding: 0 12px; border-radius: 999px; border: 1px solid #0f7b63; background: #0f7b63; color: #fff; font-weight: 800; font-size: 12px; cursor: pointer; }
+      .pl-mode[aria-pressed="true"] { background: #d1495b; border-color: #d1495b; }
+      .pl-panel.pl-collapsed { transform: translateX(calc(100% - 44px)); }
+      .pl-panel.pl-collapsed header { border-bottom: 0; }
+      .pl-panel.pl-collapsed .pl-title,
+      .pl-panel.pl-collapsed .pl-mode { display: none; }
+      .pl-panel.pl-collapsed .pl-panel-body { display: none; }
       .pl-panel p { margin: 0; padding: 14px; color: #65716d; font-size: 13px; }
       .pl-actions { display: flex; gap: 8px; padding: 0 14px 14px; }
       .pl-actions button, .pl-form-actions button { min-height: 36px; border-radius: 8px; border: 1px solid #d9e1dd; background: #fff; color: #14211d; padding: 0 12px; cursor: pointer; }
-      .pl-actions button:first-child, .pl-form-actions button[type="submit"] { background: #0f7b63; border-color: #0f7b63; color: #fff; font-weight: 800; }
-      .pl-payload { max-height: 260px; overflow: auto; margin: 0 14px 14px; padding: 12px; border: 1px solid #d9e1dd; border-radius: 8px; background: #f7f8f5; color: #24312d; white-space: pre-wrap; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .pl-form-actions button[type="submit"] { background: #0f7b63; border-color: #0f7b63; color: #fff; font-weight: 800; }
+      .pl-feedback-list { max-height: 280px; overflow-y: auto; padding: 0 14px 14px; display: grid; gap: 8px; }
+      .pl-feedback-list-empty { margin: 0; color: #65716d; font-size: 13px; padding: 0; }
+      .pl-feedback-item { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; padding: 10px; border: 1px solid #d9e1dd; border-radius: 8px; background: #fff; align-items: start; }
+      .pl-feedback-num { width: 24px; height: 24px; min-width: 24px; min-height: 24px; box-sizing: border-box; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 900; font-size: 11px; line-height: 1; }
+      .pl-feedback-num.kind-point { background: #0f7b63; }
+      .pl-feedback-num.kind-area { background: #d1495b; }
+      .pl-feedback-body { display: grid; gap: 4px; min-width: 0; }
+      .pl-feedback-meta { color: #65716d; font-weight: 700; font-size: 11px; }
+      .pl-feedback-text { color: #14211d; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+      .pl-feedback-actions { display: flex; gap: 4px; }
+      .pl-feedback-actions button { min-height: 24px; padding: 0 8px; font-size: 11px; border-radius: 6px; border: 1px solid #d9e1dd; background: #fff; color: #14211d; cursor: pointer; font-weight: 700; }
+      .pl-feedback-actions [data-pl-delete] { border-color: #d1495b; color: #d1495b; }
+      .pl-feedback-status { font-weight: 900; }
+      .pl-feedback-status-ok { color: #0f7b63; }
+      .pl-feedback-status-fail { color: #d1495b; }
+      .pl-tooltip { position: fixed; max-width: 280px; background: #14211d; color: #fff; padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.4; pointer-events: none; z-index: 2147483002; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.32); white-space: pre-wrap; word-break: break-word; }
       .pl-comment { position: fixed; z-index: 2147483001; width: min(320px, calc(100vw - 24px)); display: grid; gap: 10px; padding: 14px; background: #fff; border: 1px solid #d9e1dd; border-radius: 8px; box-shadow: 0 22px 70px rgba(20, 33, 29, 0.24); }
       .pl-comment label { display: grid; gap: 6px; color: #65716d; font-size: 12px; font-weight: 800; }
       .pl-comment textarea, .pl-comment input { width: 100%; border: 1px solid #d9e1dd; border-radius: 8px; padding: 9px 10px; color: #14211d; font: inherit; resize: vertical; }
       .pl-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
-      .pl-pin { position: absolute; z-index: 2147482999; transform: translate(-50%, -50%); width: 30px; height: 30px; min-width: 30px; min-height: 30px; max-width: 30px; max-height: 30px; box-sizing: border-box; display: grid; place-items: center; padding: 0; line-height: 1; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font: 900 13px/1 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); pointer-events: none; }
+      .pl-pin { position: absolute; z-index: 2147482999; transform: translate(-50%, -50%); width: 30px; height: 30px; min-width: 30px; min-height: 30px; max-width: 30px; max-height: 30px; box-sizing: border-box; display: grid; place-items: center; padding: 0; line-height: 1; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font: 900 13px/1 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); cursor: pointer; }
       .pl-selection { position: fixed; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; }
       .pl-area { position: absolute; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.16); }
-      .pl-area span { position: absolute; top: 6px; left: 6px; width: 30px; height: 30px; box-sizing: border-box; display: grid; place-items: center; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font-weight: 900; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); }
+      .pl-area span { position: absolute; top: 6px; left: 6px; width: 30px; height: 30px; box-sizing: border-box; display: grid; place-items: center; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font-weight: 900; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); pointer-events: auto; cursor: pointer; }
+      .pl-feedback-active [data-patchloop-pin], .pl-feedback-active .pl-area span { pointer-events: none; }
       .pl-target-highlight { outline: 2px dashed #d1495b; outline-offset: 2px; }
       .pl-feedback-active, .pl-feedback-active * { cursor: crosshair !important; }
     `;
