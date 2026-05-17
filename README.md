@@ -6,26 +6,13 @@ PatchLoop is an experimental prototype for collecting browser-based visual feedb
 
 ## ローカルで起動する / Run Locally
 
-`index.html` を直接ブラウザで開くか、任意の静的ファイルサーバーで配信します。
+任意の静的ファイルサーバーで配信して `examples/plain-html/` を開きます。
 
-Open `index.html` directly in a browser, or serve the folder with any static file server.
+Serve the folder with any static file server and open `examples/plain-html/`.
 
 ```sh
 python3 -m http.server 4173
 ```
-
-その後、以下を開きます。
-
-Then visit:
-
-```text
-http://localhost:4173
-```
-
-script-tag widget の例はこちらです。
-
-The script-tag widget example is available at:
-
 
 ```text
 http://localhost:4173/examples/plain-html/
@@ -33,25 +20,19 @@ http://localhost:4173/examples/plain-html/
 
 ## 現在できること / What Works Now
 
-ローカル prototype:
-
-- Demo portal with owner, expiry, data classification, and feedback counts
-- Preview screen with feedback mode
-- Click-to-comment pins on the preview
-- Local feedback storage via `localStorage`
-- Dashboard with status triage
-- Generated GitHub Issue-style payload containing URL, position, selector, viewport, browser, branch, git SHA, logs, and AI instructions
-
 script-tag widget:
 
-- Floating feedback launcher
-- Comment mode toggle
-- Click-to-pin location capture
-- Drag-to-select area capture
-- Comment form
-- Payload generation with URL, point/area position, selector, viewport, browser, reviewer, and timestamp
+- Right-edge drawer with collapse handle that stays out of the way
+- Comment mode toggle in the drawer header (active state colours the handle)
+- Click-to-pin location capture and drag-to-select area capture
+- Draft markers that take their final sequential number on submit
+- Target element outline while a draft is pending
+- Per-feedback comment list with reviewer, kind, comment, and delivery status
+- Hover tooltip on markers showing the comment (disabled in feedback mode)
+- Per-item edit and delete inside the drawer with marker renumbering
+- Payload with URL, point/area position, selector, viewport, browser, reviewer, and timestamp
 - Optional `onSubmit(payload)` callback
-- Optional `endpoint` setting for a future POST receiver
+- Optional `endpoint` setting that POSTs payloads to the bundled local receiver
 
 ## 埋め込み Widget / Embeddable Widget
 
@@ -75,19 +56,19 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 
 基本操作:
 
-1. 右下の「フィードバック」を押す
+1. 右端のハンドルを押して drawer を開く
 2. 「コメントモード開始」を押す
 3. 画面上の場所をクリック、または範囲をドラッグする
 4. コメントを書いて送信する
-5. `onSubmit(payload)` で payload を受け取る
+5. drawer の一覧に追加され、`onSubmit(payload)` でも payload を受け取る
 
 Basic flow:
 
-1. Click the feedback launcher
+1. Click the right-edge handle to open the drawer
 2. Start comment mode
 3. Click a point or drag an area on the page
 4. Write and submit a comment
-5. Receive the payload through `onSubmit(payload)`
+5. The comment appears in the drawer list and is passed to `onSubmit(payload)`
 
 ## Payload
 
