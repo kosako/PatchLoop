@@ -62,12 +62,10 @@
       </button>
       <section class="pl-panel pl-collapsed" data-pl-panel hidden>
         <header>
+          <button type="button" class="pl-handle" data-pl-collapse aria-expanded="false" title="展開">‹</button>
           <strong class="pl-title">PatchLoop</strong>
           <button type="button" class="pl-mode" data-pl-mode>コメントモード開始</button>
-          <div class="pl-header-actions">
-            <button type="button" data-pl-collapse aria-expanded="false" title="展開">▴</button>
-            <button type="button" data-pl-close title="閉じる">×</button>
-          </div>
+          <button type="button" class="pl-close" data-pl-close title="閉じる">×</button>
         </header>
         <div class="pl-panel-body" data-pl-body>
           <p data-pl-help>コメントモードを開始して、画面上の気になる場所をクリックしてください。</p>
@@ -226,6 +224,10 @@
   function togglePanel() {
     const panel = getRoot().querySelector("[data-pl-panel]");
     panel.hidden = !panel.hidden;
+    if (!panel.hidden) {
+      state.collapsed = false;
+      applyCollapseState();
+    }
   }
 
   function closePanel() {
@@ -454,7 +456,7 @@
     const button = root.querySelector("[data-pl-collapse]");
     if (button) {
       button.setAttribute("aria-expanded", String(!state.collapsed));
-      button.textContent = state.collapsed ? "▴" : "▾";
+      button.textContent = state.collapsed ? "‹" : "›";
       button.setAttribute("title", state.collapsed ? "展開" : "折りたたみ");
     }
   }
@@ -753,17 +755,20 @@
       .pl-launcher { min-height: 42px; border: 1px solid #0f7b63; border-radius: 999px; padding: 0 16px; display: inline-flex; align-items: center; gap: 8px; background: #0f7b63; color: #fff; font-weight: 800; box-shadow: 0 16px 40px rgba(20, 33, 29, 0.18); cursor: pointer; }
       .pl-launcher[aria-pressed="true"] { background: #d1495b; border-color: #d1495b; }
       .pl-dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; opacity: 0.85; }
-      .pl-panel { position: absolute; right: 0; bottom: 54px; width: min(390px, calc(100vw - 32px)); background: #fff; border: 1px solid #d9e1dd; border-radius: 8px; box-shadow: 0 22px 70px rgba(20, 33, 29, 0.22); overflow: hidden; }
-      .pl-panel header { min-height: 44px; padding: 0 8px 0 14px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #d9e1dd; }
+      .pl-panel { position: absolute; right: 0; bottom: 54px; width: min(390px, calc(100vw - 32px)); background: #fff; border: 1px solid #d9e1dd; border-radius: 8px 0 0 8px; box-shadow: 0 22px 70px rgba(20, 33, 29, 0.22); overflow: hidden; transition: transform 250ms ease; }
+      .pl-panel header { min-height: 44px; padding: 0 8px 0 6px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #d9e1dd; }
       .pl-title { flex: 1; min-width: 0; }
-      .pl-header-actions { display: flex; gap: 2px; align-items: center; }
-      .pl-panel header [data-pl-collapse], .pl-panel header [data-pl-close] { min-width: 28px; height: 28px; padding: 0; border: 0; background: transparent; cursor: pointer; font-size: 16px; color: #14211d; border-radius: 6px; }
-      .pl-panel header [data-pl-collapse]:hover, .pl-panel header [data-pl-close]:hover { background: #f0f3ef; }
+      .pl-handle { min-width: 32px; height: 32px; padding: 0; border: 0; background: transparent; cursor: pointer; font-size: 20px; color: #14211d; border-radius: 6px; font-weight: 700; }
+      .pl-handle:hover { background: #f0f3ef; }
+      .pl-close { min-width: 28px; height: 28px; padding: 0; border: 0; background: transparent; cursor: pointer; font-size: 16px; color: #14211d; border-radius: 6px; }
+      .pl-close:hover { background: #f0f3ef; }
       .pl-mode { min-height: 30px; padding: 0 12px; border-radius: 999px; border: 1px solid #0f7b63; background: #0f7b63; color: #fff; font-weight: 800; font-size: 12px; cursor: pointer; }
       .pl-mode[aria-pressed="true"] { background: #d1495b; border-color: #d1495b; }
-      .pl-panel.pl-collapsed { width: auto; max-width: min(360px, calc(100vw - 32px)); border-radius: 999px; }
-      .pl-panel.pl-collapsed header { border-bottom: 0; min-height: 40px; padding: 0 6px 0 12px; }
-      .pl-panel.pl-collapsed .pl-title { display: none; }
+      .pl-panel.pl-collapsed { transform: translateX(calc(100% - 44px)); }
+      .pl-panel.pl-collapsed header { border-bottom: 0; }
+      .pl-panel.pl-collapsed .pl-title,
+      .pl-panel.pl-collapsed .pl-mode,
+      .pl-panel.pl-collapsed .pl-close { display: none; }
       .pl-panel.pl-collapsed .pl-panel-body { display: none; }
       .pl-panel p { margin: 0; padding: 14px; color: #65716d; font-size: 13px; }
       .pl-actions { display: flex; gap: 8px; padding: 0 14px 14px; }
