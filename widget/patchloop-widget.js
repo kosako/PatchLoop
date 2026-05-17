@@ -62,16 +62,16 @@
       </button>
       <section class="pl-panel pl-collapsed" data-pl-panel hidden>
         <header>
-          <strong>PatchLoop</strong>
+          <strong class="pl-title">PatchLoop</strong>
+          <button type="button" class="pl-mode" data-pl-mode>コメントモード開始</button>
           <div class="pl-header-actions">
-            <button type="button" data-pl-collapse aria-expanded="false" title="折りたたみ">▾</button>
+            <button type="button" data-pl-collapse aria-expanded="false" title="展開">▴</button>
             <button type="button" data-pl-close title="閉じる">×</button>
           </div>
         </header>
         <div class="pl-panel-body" data-pl-body>
           <p data-pl-help>コメントモードを開始して、画面上の気になる場所をクリックしてください。</p>
           <div class="pl-actions">
-            <button type="button" data-pl-mode>コメントモード開始</button>
             <button type="button" data-pl-clear>ピンを消す</button>
           </div>
           <div class="pl-feedback-list" data-pl-list>
@@ -241,7 +241,9 @@
     document.documentElement.classList.toggle("pl-feedback-active", state.active);
     const root = getRoot();
     root.querySelector("[data-pl-toggle]").setAttribute("aria-pressed", String(state.active));
-    root.querySelector("[data-pl-mode]").textContent = state.active ? "コメントモード終了" : "コメントモード開始";
+    const modeBtn = root.querySelector("[data-pl-mode]");
+    modeBtn.textContent = state.active ? "コメントモード終了" : "コメントモード開始";
+    modeBtn.setAttribute("aria-pressed", String(state.active));
     root.querySelector("[data-pl-help]").textContent = state.active ? "点をクリック、または範囲をドラッグしてコメントできます。" : "コメントモードを開始して、画面上の気になる場所をクリックしてください。";
     if (!state.active) {
       removeSelectionBox();
@@ -452,7 +454,8 @@
     const button = root.querySelector("[data-pl-collapse]");
     if (button) {
       button.setAttribute("aria-expanded", String(!state.collapsed));
-      button.textContent = state.collapsed ? "▾" : "▴";
+      button.textContent = state.collapsed ? "▴" : "▾";
+      button.setAttribute("title", state.collapsed ? "展開" : "折りたたみ");
     }
   }
 
@@ -751,17 +754,21 @@
       .pl-launcher[aria-pressed="true"] { background: #d1495b; border-color: #d1495b; }
       .pl-dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; opacity: 0.85; }
       .pl-panel { position: absolute; right: 0; bottom: 54px; width: min(390px, calc(100vw - 32px)); background: #fff; border: 1px solid #d9e1dd; border-radius: 8px; box-shadow: 0 22px 70px rgba(20, 33, 29, 0.22); overflow: hidden; }
-      .pl-panel header { min-height: 44px; padding: 0 10px 0 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid #d9e1dd; }
+      .pl-panel header { min-height: 44px; padding: 0 8px 0 14px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #d9e1dd; }
+      .pl-title { flex: 1; min-width: 0; }
       .pl-header-actions { display: flex; gap: 2px; align-items: center; }
-      .pl-panel header button { min-width: 32px; height: 32px; padding: 0; border: 0; background: transparent; cursor: pointer; font-size: 18px; color: #14211d; }
-      .pl-panel header button:hover { background: #f0f3ef; border-radius: 6px; }
-      .pl-panel.pl-collapsed { border-radius: 999px; }
-      .pl-panel.pl-collapsed header { border-bottom: 0; }
+      .pl-panel header [data-pl-collapse], .pl-panel header [data-pl-close] { min-width: 28px; height: 28px; padding: 0; border: 0; background: transparent; cursor: pointer; font-size: 16px; color: #14211d; border-radius: 6px; }
+      .pl-panel header [data-pl-collapse]:hover, .pl-panel header [data-pl-close]:hover { background: #f0f3ef; }
+      .pl-mode { min-height: 30px; padding: 0 12px; border-radius: 999px; border: 1px solid #0f7b63; background: #0f7b63; color: #fff; font-weight: 800; font-size: 12px; cursor: pointer; }
+      .pl-mode[aria-pressed="true"] { background: #d1495b; border-color: #d1495b; }
+      .pl-panel.pl-collapsed { width: auto; max-width: min(360px, calc(100vw - 32px)); border-radius: 999px; }
+      .pl-panel.pl-collapsed header { border-bottom: 0; min-height: 40px; padding: 0 6px 0 12px; }
+      .pl-panel.pl-collapsed .pl-title { display: none; }
       .pl-panel.pl-collapsed .pl-panel-body { display: none; }
       .pl-panel p { margin: 0; padding: 14px; color: #65716d; font-size: 13px; }
       .pl-actions { display: flex; gap: 8px; padding: 0 14px 14px; }
       .pl-actions button, .pl-form-actions button { min-height: 36px; border-radius: 8px; border: 1px solid #d9e1dd; background: #fff; color: #14211d; padding: 0 12px; cursor: pointer; }
-      .pl-actions button:first-child, .pl-form-actions button[type="submit"] { background: #0f7b63; border-color: #0f7b63; color: #fff; font-weight: 800; }
+      .pl-form-actions button[type="submit"] { background: #0f7b63; border-color: #0f7b63; color: #fff; font-weight: 800; }
       .pl-feedback-list { max-height: 280px; overflow-y: auto; padding: 0 14px 14px; display: grid; gap: 8px; }
       .pl-feedback-list-empty { margin: 0; color: #65716d; font-size: 13px; padding: 0; }
       .pl-feedback-item { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; padding: 10px; border: 1px solid #d9e1dd; border-radius: 8px; background: #fff; align-items: start; }
