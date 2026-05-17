@@ -35,6 +35,7 @@
     document.querySelector("[data-patchloop-root]")?.remove();
     document.querySelectorAll("[data-patchloop-pin]").forEach((node) => node.remove());
     document.querySelectorAll("[data-patchloop-area]").forEach((node) => node.remove());
+    document.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
     removeSelectionBox();
     state.active = false;
     state.pendingTarget = null;
@@ -86,7 +87,7 @@
     root.querySelector("[data-pl-close]").addEventListener("click", closePanel);
     root.querySelector("[data-pl-mode]").addEventListener("click", toggleFeedbackMode);
     root.querySelector("[data-pl-clear]").addEventListener("click", clearPins);
-    root.querySelector("[data-pl-cancel]").addEventListener("click", closeCommentForm);
+    root.querySelector("[data-pl-cancel]").addEventListener("click", cancelPendingComment);
     root.querySelector("[data-pl-comment]").addEventListener("submit", submitComment);
   }
 
@@ -145,7 +146,11 @@
     const rect = rectFromPoints(start, end);
     const target = document.elementFromPoint(start.clientX, start.clientY) || state.drag.target;
 
+    discardPendingMarker();
+
+    let marker;
     if (state.drag.isDragging) {
+      marker = addArea(rect);
       state.pendingTarget = {
         kind: "area",
         ...pointFromClient(rect.leftPx, rect.topPx),
@@ -166,21 +171,28 @@
           documentHeight: round(rect.documentHeight)
         },
         selector: selectorFor(target),
-        elementText: textFor(target)
+        elementText: textFor(target),
+        markerNode: marker.node,
+        markerLabelNode: marker.label,
+        targetElement: target
       };
-      addArea(rect);
       openCommentForm({ clientX: rect.rightPx, clientY: rect.bottomPx });
     } else {
       const point = pointFromEvent(event);
+      marker = addPin(point);
       state.pendingTarget = {
         kind: "point",
         ...point,
         selector: selectorFor(target),
-        elementText: textFor(target)
+        elementText: textFor(target),
+        markerNode: marker.node,
+        markerLabelNode: marker.label,
+        targetElement: target
       };
-      addPin(point);
       openCommentForm(point);
     }
+
+    highlightTarget(target);
 
     removeSelectionBox();
     state.drag = null;
@@ -245,6 +257,7 @@
 
     const payload = buildPayload(comment, reviewer, state.pendingTarget);
     state.feedback.unshift(payload);
+    finalizePendingMarker();
     showPayload(payload);
     closeCommentForm();
     setFeedbackMode(false);
@@ -325,16 +338,57 @@
     pin.className = "pl-pin";
     pin.style.left = `${point.pageX}px`;
     pin.style.top = `${point.pageY}px`;
-    pin.textContent = String(state.feedback.length + 1);
+    pin.textContent = "…";
     document.body.append(pin);
+    return { node: pin, label: pin };
   }
 
   function clearPins() {
+    discardPendingMarker();
+    closeCommentForm();
     document.querySelectorAll("[data-patchloop-pin]").forEach((node) => node.remove());
     document.querySelectorAll("[data-patchloop-area]").forEach((node) => node.remove());
+    document.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
     removeSelectionBox();
     state.feedback = [];
     getRoot().querySelector("[data-pl-payload]").textContent = "まだフィードバックはありません。";
+  }
+
+  function finalizePendingMarker() {
+    if (!state.pendingTarget) return;
+    if (state.pendingTarget.markerLabelNode) {
+      state.pendingTarget.markerLabelNode.textContent = String(state.feedback.length);
+    }
+    if (state.pendingTarget.targetElement) {
+      unhighlightTarget(state.pendingTarget.targetElement);
+    }
+  }
+
+  function discardPendingMarker() {
+    if (!state.pendingTarget) return;
+    if (state.pendingTarget.markerNode) {
+      state.pendingTarget.markerNode.remove();
+    }
+    if (state.pendingTarget.targetElement) {
+      unhighlightTarget(state.pendingTarget.targetElement);
+    }
+  }
+
+  function cancelPendingComment() {
+    discardPendingMarker();
+    closeCommentForm();
+  }
+
+  function highlightTarget(element) {
+    if (!element || !element.classList) return;
+    if (element === document.body || element === document.documentElement) return;
+    if (element.closest && element.closest("[data-patchloop-root]")) return;
+    element.classList.add("pl-target-highlight");
+  }
+
+  function unhighlightTarget(element) {
+    if (!element || !element.classList) return;
+    element.classList.remove("pl-target-highlight");
   }
 
   function pointFromEvent(event) {
@@ -418,8 +472,11 @@
       width: `${rect.widthPx}px`,
       height: `${rect.heightPx}px`
     });
-    area.innerHTML = `<span>${state.feedback.length + 1}</span>`;
+    const label = document.createElement("span");
+    label.textContent = "…";
+    area.append(label);
     document.body.append(area);
+    return { node: area, label };
   }
 
   function selectorFor(element) {
@@ -492,11 +549,11 @@
       .pl-comment label { display: grid; gap: 6px; color: #65716d; font-size: 12px; font-weight: 800; }
       .pl-comment textarea, .pl-comment input { width: 100%; border: 1px solid #d9e1dd; border-radius: 8px; padding: 9px 10px; color: #14211d; font: inherit; resize: vertical; }
       .pl-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
-      .pl-pin { position: absolute; z-index: 2147482999; transform: translate(-50%, -50%); width: 30px; height: 30px; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font-weight: 900; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); pointer-events: none; }
+      .pl-pin { position: absolute; z-index: 2147482999; transform: translate(-50%, -50%); width: 30px; height: 30px; box-sizing: border-box; display: grid; place-items: center; padding: 0; line-height: 1; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font-weight: 900; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); pointer-events: none; }
       .pl-selection { position: fixed; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; }
-      .pl-area { position: absolute; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; }
-      .pl-area { box-shadow: 0 12px 30px rgba(20, 33, 29, 0.16); }
-      .pl-area span { position: absolute; top: -15px; left: -15px; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font-weight: 900; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); }
+      .pl-area { position: absolute; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.16); }
+      .pl-area span { position: absolute; top: 6px; left: 6px; width: 30px; height: 30px; box-sizing: border-box; display: grid; place-items: center; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font-weight: 900; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); }
+      .pl-target-highlight { outline: 2px dashed #d1495b; outline-offset: 2px; }
       .pl-feedback-active, .pl-feedback-active * { cursor: crosshair !important; }
     `;
     document.head.append(style);
