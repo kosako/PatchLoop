@@ -56,16 +56,11 @@
     root.dataset.patchloopRoot = "true";
     root.className = `pl-root pl-${state.options.position}`;
     root.innerHTML = `
-      <button class="pl-launcher" type="button" data-pl-toggle aria-pressed="false" title="Toggle PatchLoop feedback mode">
-        <span class="pl-dot"></span>
-        <span>フィードバック</span>
-      </button>
-      <section class="pl-panel pl-collapsed" data-pl-panel hidden>
+      <section class="pl-panel pl-collapsed" data-pl-panel>
         <header>
           <button type="button" class="pl-handle" data-pl-collapse aria-expanded="false" title="展開">‹</button>
           <strong class="pl-title">PatchLoop</strong>
           <button type="button" class="pl-mode" data-pl-mode>コメントモード開始</button>
-          <button type="button" class="pl-close" data-pl-close title="閉じる">×</button>
         </header>
         <div class="pl-panel-body" data-pl-body>
           <p data-pl-help>コメントモードを開始して、画面上の気になる場所をクリックしてください。</p>
@@ -96,8 +91,6 @@
 
     document.body.append(root);
 
-    root.querySelector("[data-pl-toggle]").addEventListener("click", togglePanel);
-    root.querySelector("[data-pl-close]").addEventListener("click", closePanel);
     root.querySelector("[data-pl-collapse]").addEventListener("click", toggleCollapse);
     root.querySelector("[data-pl-mode]").addEventListener("click", toggleFeedbackMode);
     root.querySelector("[data-pl-clear]").addEventListener("click", clearPins);
@@ -221,19 +214,6 @@
     event.stopPropagation();
   }
 
-  function togglePanel() {
-    const panel = getRoot().querySelector("[data-pl-panel]");
-    panel.hidden = !panel.hidden;
-    if (!panel.hidden) {
-      state.collapsed = false;
-      applyCollapseState();
-    }
-  }
-
-  function closePanel() {
-    getRoot().querySelector("[data-pl-panel]").hidden = true;
-  }
-
   function toggleFeedbackMode() {
     setFeedbackMode(!state.active);
   }
@@ -242,7 +222,8 @@
     state.active = nextValue;
     document.documentElement.classList.toggle("pl-feedback-active", state.active);
     const root = getRoot();
-    root.querySelector("[data-pl-toggle]").setAttribute("aria-pressed", String(state.active));
+    const handleBtn = root.querySelector("[data-pl-collapse]");
+    if (handleBtn) handleBtn.classList.toggle("pl-mode-on", state.active);
     const modeBtn = root.querySelector("[data-pl-mode]");
     modeBtn.textContent = state.active ? "コメントモード終了" : "コメントモード開始";
     modeBtn.setAttribute("aria-pressed", String(state.active));
@@ -749,26 +730,21 @@
     style.dataset.patchloopStyle = "true";
     style.textContent = `
       .pl-root, .pl-root * { box-sizing: border-box; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-      .pl-root [hidden], .pl-comment[hidden], .pl-panel[hidden], .pl-tooltip[hidden] { display: none !important; }
-      .pl-root { position: fixed; z-index: 2147483000; color: #14211d; }
-      .pl-bottom-right { right: 20px; bottom: 20px; }
-      .pl-launcher { min-height: 42px; border: 1px solid #0f7b63; border-radius: 999px; padding: 0 16px; display: inline-flex; align-items: center; gap: 8px; background: #0f7b63; color: #fff; font-weight: 800; box-shadow: 0 16px 40px rgba(20, 33, 29, 0.18); cursor: pointer; }
-      .pl-launcher[aria-pressed="true"] { background: #d1495b; border-color: #d1495b; }
-      .pl-dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; opacity: 0.85; }
-      .pl-panel { position: absolute; right: 0; bottom: 54px; width: min(390px, calc(100vw - 32px)); background: #fff; border: 1px solid #d9e1dd; border-radius: 8px 0 0 8px; box-shadow: 0 22px 70px rgba(20, 33, 29, 0.22); overflow: hidden; transition: transform 250ms ease; }
+      .pl-root [hidden], .pl-comment[hidden], .pl-tooltip[hidden] { display: none !important; }
+      .pl-root { position: fixed; z-index: 2147483000; color: #14211d; right: 0; bottom: 20px; }
+      .pl-panel { position: absolute; right: 0; bottom: 0; width: min(390px, calc(100vw - 32px)); background: #fff; border: 1px solid #d9e1dd; border-radius: 8px 0 0 8px; box-shadow: 0 22px 70px rgba(20, 33, 29, 0.22); overflow: hidden; transition: transform 250ms ease; }
       .pl-panel header { min-height: 44px; padding: 0 8px 0 6px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #d9e1dd; }
       .pl-title { flex: 1; min-width: 0; }
-      .pl-handle { min-width: 32px; height: 32px; padding: 0; border: 0; background: transparent; cursor: pointer; font-size: 20px; color: #14211d; border-radius: 6px; font-weight: 700; }
+      .pl-handle { min-width: 32px; height: 32px; padding: 0; border: 0; background: transparent; cursor: pointer; font-size: 20px; color: #14211d; border-radius: 6px; font-weight: 700; transition: background 150ms ease, color 150ms ease; }
       .pl-handle:hover { background: #f0f3ef; }
-      .pl-close { min-width: 28px; height: 28px; padding: 0; border: 0; background: transparent; cursor: pointer; font-size: 16px; color: #14211d; border-radius: 6px; }
-      .pl-close:hover { background: #f0f3ef; }
+      .pl-handle.pl-mode-on { background: #d1495b; color: #fff; }
+      .pl-handle.pl-mode-on:hover { background: #b83d4d; }
       .pl-mode { min-height: 30px; padding: 0 12px; border-radius: 999px; border: 1px solid #0f7b63; background: #0f7b63; color: #fff; font-weight: 800; font-size: 12px; cursor: pointer; }
       .pl-mode[aria-pressed="true"] { background: #d1495b; border-color: #d1495b; }
       .pl-panel.pl-collapsed { transform: translateX(calc(100% - 44px)); }
       .pl-panel.pl-collapsed header { border-bottom: 0; }
       .pl-panel.pl-collapsed .pl-title,
-      .pl-panel.pl-collapsed .pl-mode,
-      .pl-panel.pl-collapsed .pl-close { display: none; }
+      .pl-panel.pl-collapsed .pl-mode { display: none; }
       .pl-panel.pl-collapsed .pl-panel-body { display: none; }
       .pl-panel p { margin: 0; padding: 14px; color: #65716d; font-size: 13px; }
       .pl-actions { display: flex; gap: 8px; padding: 0 14px 14px; }
