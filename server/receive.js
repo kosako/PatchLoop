@@ -5,12 +5,16 @@ const https = require("https");
 const fs = require("fs");
 const path = require("path");
 
-const PORT = Number(process.env.PORT || 4000);
-const HOST = process.env.HOST || "127.0.0.1";
-const STORE_PATH = process.env.FEEDBACK_STORE_PATH || path.join(__dirname, "feedback.json");
+const CONFIG_PATH = process.env.PATCHLOOP_RECEIVER_CONFIG || path.join(__dirname, "receiver.config.json");
+const config = loadConfig(CONFIG_PATH);
+const configDir = path.dirname(CONFIG_PATH);
+
+const PORT = Number(process.env.PORT || config.port || 4000);
+const HOST = process.env.HOST || config.host || "127.0.0.1";
+const STORE_PATH = process.env.FEEDBACK_STORE_PATH || pathFromConfig(config.feedbackStorePath, path.join(__dirname, "feedback.json"));
 const MAX_BODY_BYTES = 1_000_000;
-const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || "";
-const SLACK_TIMEOUT_MS = Number(process.env.SLACK_TIMEOUT_MS || 5000);
+const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || config.slackWebhookUrl || "";
+const SLACK_TIMEOUT_MS = Number(process.env.SLACK_TIMEOUT_MS || config.slackTimeoutMs || 5000);
 
 let feedback = loadFeedback();
 
@@ -44,6 +48,7 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[PatchLoop receiver] listening on http://${HOST}:${PORT}`);
+  console.log(`[PatchLoop receiver] config file: ${config.__loaded ? CONFIG_PATH : "not loaded"}`);
   console.log(`[PatchLoop receiver] feedback file: ${STORE_PATH}`);
   console.log(`[PatchLoop receiver] Slack webhook: ${SLACK_WEBHOOK_URL ? "enabled" : "disabled"}`);
 });
@@ -52,6 +57,26 @@ function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function loadConfig(configPath) {
+  try {
+    const raw = fs.readFileSync(configPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object"
+      ? { ...parsed, __loaded: true }
+      : {};
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.warn(`[PatchLoop receiver] config file ignored: ${error.message}`);
+    }
+    return {};
+  }
+}
+
+function pathFromConfig(value, fallback) {
+  if (!value) return fallback;
+  return path.isAbsolute(value) ? value : path.resolve(configDir, value);
 }
 
 function handlePostFeedback(req, res) {
