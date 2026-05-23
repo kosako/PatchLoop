@@ -31,6 +31,7 @@ script-tag widget:
 - URL / 点・範囲位置 / selector / viewport / browser / reviewer / timestamp を含む payload
 - 任意の `onSubmit(payload)` callback
 - 任意の `endpoint` 設定で payload を receiver に POST
+- ローカル receiver から任意の Slack Incoming Webhook へ転送
 
 ## 埋め込み Widget
 
@@ -119,20 +120,51 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 node server/receive.js
 ```
 
-- `POST /feedback` で payload を受け取り、`server/feedback.json` に追記します
+- `POST /feedback` で payload を受け取り、デフォルトでは `server/feedback.json` に追記します
 - `GET /` で受信した feedback の一覧（inbox）を表示します
 - `GET /feedback.json` で raw JSON を返します
 - `PORT` / `HOST` env で変更可能（デフォルトは `127.0.0.1:4000`）
+- `FEEDBACK_STORE_PATH` env で保存先を変更できます
+- `SLACK_WEBHOOK_URL` env を設定すると、受信した feedback を Slack Incoming Webhook にも転送します
+- `SLACK_TIMEOUT_MS` env で Slack 転送の timeout を変更できます（デフォルトは `5000`）
 
 `examples/plain-html/` はデフォルトで `http://localhost:4000/feedback` に送信する設定です。`python3 -m http.server 4173` でページを配信した状態で receiver も起動すると、コメントが inbox に届きます。
 
+### Receiver 設定ファイル
+
+Slack webhook URL などのローカル設定は `server/receiver.config.json` に置けます。このファイルは git 管理外です。共有用テンプレートとして `server/receiver.config.example.json` を用意しています。
+
+```sh
+cp server/receiver.config.example.json server/receiver.config.json
+```
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 4000,
+  "feedbackStorePath": "feedback.json",
+  "slackWebhookUrl": "https://hooks.slack.com/services/...",
+  "slackTimeoutMs": 5000
+}
+```
+
+`feedbackStorePath` に相対パスを書く場合は、設定ファイルからの相対パスとして扱われます。別の場所の設定ファイルを使う場合は `PATCHLOOP_RECEIVER_CONFIG=/path/to/receiver.config.json node server/receive.js` で指定できます。
+
+環境変数を指定した場合は設定ファイルより優先されます。たとえば一時的に Slack 転送を試す場合:
+
+```sh
+SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..." node server/receive.js
+```
+
+Slack 転送に失敗しても、receiver は payload を保存します。Slack の結果は保存済み payload の `integrations.slack` と inbox の `Slack` 行で確認できます。
+
 ## 現在の境界
 
-このバージョンは、まだ GitHub / Slack には直接送信しません。受信したフィードバックはローカル receiver の `server/feedback.json` に保存されます。widget 内の一覧はメモリ保持のみで、ページをリロードすると消えます。永続化したい場合は `endpoint` 経由で receiver に送ってください。
+このバージョンは、まだ GitHub には直接送信しません。Slack は local receiver 経由の Incoming Webhook prototype として扱います。受信したフィードバックはローカル receiver に保存されます。widget 内の一覧はメモリ保持のみで、ページをリロードすると消えます。永続化したい場合は `endpoint` 経由で receiver に送ってください。
 
 未対応:
 
-- Slack 投稿
+- Slack App / OAuth 連携
 - GitHub Issue 作成
 - 永続 DB
 - 本物の screenshot capture

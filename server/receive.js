@@ -1,13 +1,20 @@
 "use strict";
 
 const http = require("http");
+const https = require("https");
 const fs = require("fs");
 const path = require("path");
 
-const PORT = Number(process.env.PORT || 4000);
-const HOST = process.env.HOST || "127.0.0.1";
-const STORE_PATH = path.join(__dirname, "feedback.json");
+const CONFIG_PATH = process.env.PATCHLOOP_RECEIVER_CONFIG || path.join(__dirname, "receiver.config.json");
+const config = loadConfig(CONFIG_PATH);
+const configDir = path.dirname(CONFIG_PATH);
+
+const PORT = Number(process.env.PORT || config.port || 4000);
+const HOST = process.env.HOST || config.host || "127.0.0.1";
+const STORE_PATH = process.env.FEEDBACK_STORE_PATH || pathFromConfig(config.feedbackStorePath, path.join(__dirname, "feedback.json"));
 const MAX_BODY_BYTES = 1_000_000;
+const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || config.slackWebhookUrl || "";
+const SLACK_TIMEOUT_MS = Number(process.env.SLACK_TIMEOUT_MS || config.slackTimeoutMs || 5000);
 
 let feedback = loadFeedback();
 
@@ -41,13 +48,35 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[PatchLoop receiver] listening on http://${HOST}:${PORT}`);
+  console.log(`[PatchLoop receiver] config file: ${config.__loaded ? CONFIG_PATH : "not loaded"}`);
   console.log(`[PatchLoop receiver] feedback file: ${STORE_PATH}`);
+  console.log(`[PatchLoop receiver] Slack webhook: ${SLACK_WEBHOOK_URL ? "enabled" : "disabled"}`);
 });
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function loadConfig(configPath) {
+  try {
+    const raw = fs.readFileSync(configPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object"
+      ? { ...parsed, __loaded: true }
+      : {};
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.warn(`[PatchLoop receiver] config file ignored: ${error.message}`);
+    }
+    return {};
+  }
+}
+
+function pathFromConfig(value, fallback) {
+  if (!value) return fallback;
+  return path.isAbsolute(value) ? value : path.resolve(configDir, value);
 }
 
 function handlePostFeedback(req, res) {
@@ -67,7 +96,7 @@ function handlePostFeedback(req, res) {
     chunks.push(chunk);
   });
 
-  req.on("end", () => {
+  req.on("end", async () => {
     if (aborted) return;
     let payload;
     try {
@@ -77,10 +106,22 @@ function handlePostFeedback(req, res) {
       return;
     }
     const stored = { receivedAt: new Date().toISOString(), ...payload };
+    stored.integrations = {
+      ...(stored.integrations || {}),
+      slack: await deliverToSlack(stored)
+    };
     feedback.unshift(stored);
     persist();
-    console.log(`[PatchLoop receiver] received feedback id=${payload?.id || "?"} comment="${truncate(payload?.comment || "", 60)}"`);
-    respondJson(res, 201, { ok: true, id: payload?.id, count: feedback.length });
+    const slackLog = stored.integrations.slack.status === "disabled"
+      ? ""
+      : ` slack=${stored.integrations.slack.status}`;
+    console.log(`[PatchLoop receiver] received feedback id=${payload?.id || "?"} comment="${truncate(payload?.comment || "", 60)}"${slackLog}`);
+    respondJson(res, 201, {
+      ok: true,
+      id: payload?.id,
+      count: feedback.length,
+      slack: stored.integrations.slack
+    });
   });
 
   req.on("error", (error) => {
@@ -125,11 +166,154 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+async function deliverToSlack(item) {
+  if (!SLACK_WEBHOOK_URL) {
+    return { status: "disabled" };
+  }
+
+  try {
+    const response = await postJson(SLACK_WEBHOOK_URL, buildSlackMessage(item));
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return { status: "sent", statusCode: response.statusCode };
+    }
+    return {
+      status: "failed",
+      statusCode: response.statusCode,
+      error: truncate(response.body || "Slack webhook returned a non-2xx response", 240)
+    };
+  } catch (error) {
+    return { status: "failed", error: error.message };
+  }
+}
+
+function postJson(targetUrl, body) {
+  return new Promise((resolve, reject) => {
+    let url;
+    try {
+      url = new URL(targetUrl);
+    } catch (error) {
+      reject(new Error(`Invalid SLACK_WEBHOOK_URL: ${error.message}`));
+      return;
+    }
+
+    const client = url.protocol === "https:" ? https : url.protocol === "http:" ? http : null;
+    if (!client) {
+      reject(new Error(`Unsupported webhook protocol: ${url.protocol}`));
+      return;
+    }
+
+    const json = JSON.stringify(body);
+    const request = client.request(url, {
+      method: "POST",
+      timeout: SLACK_TIMEOUT_MS,
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(json),
+        "User-Agent": "PatchLoop receiver"
+      }
+    }, (response) => {
+      let raw = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        raw += chunk;
+      });
+      response.on("end", () => {
+        resolve({ statusCode: response.statusCode || 0, body: raw });
+      });
+    });
+
+    request.on("timeout", () => {
+      request.destroy(new Error(`Slack webhook timed out after ${SLACK_TIMEOUT_MS}ms`));
+    });
+    request.on("error", reject);
+    request.write(json);
+    request.end();
+  });
+}
+
+function buildSlackMessage(item) {
+  const target = item.target || {};
+  const env = item.environment || {};
+  const page = item.page || {};
+  const comment = slackEscape(truncate(item.comment || "(empty comment)", 1400));
+  const pageText = page.url
+    ? formatSlackLink(page.url, page.title || page.url)
+    : slackEscape(page.title || "(unknown page)");
+
+  return {
+    text: `PatchLoop feedback: ${truncate(item.comment || "", 120)}`,
+    blocks: [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*PatchLoop feedback*\n${comment}`
+        }
+      },
+      {
+        type: "section",
+        fields: [
+          { type: "mrkdwn", text: `*Reviewer*\n${slackEscape(item.reviewer || "(no name)")}` },
+          { type: "mrkdwn", text: `*Page*\n${pageText}` },
+          { type: "mrkdwn", text: `*Target*\n${slackEscape(formatTarget(target))}` },
+          { type: "mrkdwn", text: `*Viewport*\n${slackEscape(formatViewport(env.viewport))}` },
+          { type: "mrkdwn", text: `*Selector*\n${formatSlackCode(target.selector || "(none)")}` },
+          { type: "mrkdwn", text: `*Created*\n${slackEscape(item.createdAt || item.receivedAt || "(unknown)")}` }
+        ]
+      },
+      {
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: `project: ${formatSlackCode(item.projectId || "-")} · demo: ${formatSlackCode(item.demoId || "-")}`
+          }
+        ]
+      }
+    ]
+  };
+}
+
+function slackEscape(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function formatSlackCode(value) {
+  return `\`${slackEscape(truncate(String(value ?? "").replaceAll("`", "'"), 180))}\``;
+}
+
+function formatSlackLink(url, label) {
+  if (!/^https?:\/\//.test(url)) {
+    return slackEscape(url);
+  }
+  return `<${slackEscape(url)}|${slackEscape(truncate(String(label).replaceAll("|", "/"), 120))}>`;
+}
+
+function formatViewport(viewport) {
+  if (!viewport) return "(unknown)";
+  return `${present(viewport.width)}x${present(viewport.height)}`;
+}
+
+function formatTarget(target) {
+  if (target.kind === "area" && target.area) {
+    return `area ${present(target.area.clientWidth)}x${present(target.area.clientHeight)} at ${present(target.area.clientX)},${present(target.area.clientY)}`;
+  }
+  return `${target.kind || "point"} at ${present(target.clientX)},${present(target.clientY)}`;
+}
+
+function present(value) {
+  return value === undefined || value === null || value === "" ? "?" : value;
+}
+
 function renderInbox(items) {
   const cards = items.map((item) => {
     const target = item.target || {};
     const env = item.environment || {};
     const page = item.page || {};
+    const slack = item.integrations && item.integrations.slack;
     const kind = escapeHtml(target.kind || "?");
     const selector = escapeHtml(target.selector || "");
     const pageUrl = escapeHtml(page.url || "");
@@ -154,6 +338,7 @@ function renderInbox(items) {
           <div><dt>Title</dt><dd>${pageTitle}</dd></div>
           <div><dt>Selector</dt><dd><code>${selector}</code></dd></div>
           <div><dt>Viewport</dt><dd>${escapeHtml(viewport)}</dd></div>
+          <div><dt>Slack</dt><dd>${escapeHtml(formatSlackStatus(slack))}</dd></div>
           <div><dt>Created</dt><dd>${createdAt}</dd></div>
         </dl>
         <details>
@@ -202,4 +387,11 @@ function renderInbox(items) {
   ${items.length === 0 ? '<p class="empty">まだフィードバックはありません。widget からコメントを送ると、ここに表示されます。</p>' : cards.join("")}
 </body>
 </html>`;
+}
+
+function formatSlackStatus(slack) {
+  if (!slack) return "unknown";
+  if (slack.status === "sent") return `sent (${slack.statusCode})`;
+  if (slack.status === "failed") return `failed${slack.statusCode ? ` (${slack.statusCode})` : ""}: ${slack.error || "unknown error"}`;
+  return slack.status || "unknown";
 }
