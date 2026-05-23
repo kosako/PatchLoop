@@ -130,17 +130,37 @@ node server/receive.js
 
 `examples/plain-html/` is preconfigured to send to `http://localhost:4000/feedback`. Serve the page with `python3 -m http.server 4173`, start the receiver alongside it, and submitted comments will appear in the inbox.
 
-To try Slack forwarding:
+### Receiver Config File
+
+Local settings such as the Slack webhook URL can live in `server/receiver.config.json`. This file is ignored by git. A shareable template is available at `server/receiver.config.example.json`.
+
+```sh
+cp server/receiver.config.example.json server/receiver.config.json
+```
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 4000,
+  "feedbackStorePath": "feedback.json",
+  "slackWebhookUrl": "https://hooks.slack.com/services/...",
+  "slackTimeoutMs": 5000
+}
+```
+
+Relative `feedbackStorePath` values are resolved from the config file location. To use a config file from another path, run `PATCHLOOP_RECEIVER_CONFIG=/path/to/receiver.config.json node server/receive.js`.
+
+Environment variables override the config file. For example, to try Slack forwarding temporarily:
 
 ```sh
 SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..." node server/receive.js
 ```
 
-If Slack forwarding fails, the receiver still stores the payload in `server/feedback.json`. The Slack result is visible in the saved payload under `integrations.slack` and in the inbox `Slack` row.
+If Slack forwarding fails, the receiver still stores the payload. The Slack result is visible in the saved payload under `integrations.slack` and in the inbox `Slack` row.
 
 ## Current Boundary
 
-This version does not send to GitHub directly yet. Slack support is currently a local-receiver Incoming Webhook prototype. Received feedback is stored in `server/feedback.json` by the local receiver. The drawer list inside the widget is kept in memory only and is cleared on reload — wire up `endpoint` if you need persistence.
+This version does not send to GitHub directly yet. Slack support is currently a local-receiver Incoming Webhook prototype. Received feedback is stored by the local receiver. The drawer list inside the widget is kept in memory only and is cleared on reload — wire up `endpoint` if you need persistence.
 
 Not included yet:
 
