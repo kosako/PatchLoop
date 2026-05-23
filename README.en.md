@@ -31,6 +31,7 @@ script-tag widget:
 - Payload with URL, point/area position, selector, viewport, browser, reviewer, and timestamp
 - Optional `onSubmit(payload)` callback
 - Optional `endpoint` setting that POSTs payloads to the bundled local receiver
+- Optional Slack Incoming Webhook forwarding from the local receiver
 
 ## Embeddable Widget
 
@@ -119,20 +120,31 @@ When `endpoint` is set, the widget POSTs the payload to that URL. A local receiv
 node server/receive.js
 ```
 
-- Accepts payload at `POST /feedback`, appends to `server/feedback.json`
+- Accepts payload at `POST /feedback`, appending to `server/feedback.json` by default
 - Renders an inbox of received feedback at `GET /`
 - Returns the raw JSON at `GET /feedback.json`
 - Configurable via `PORT` / `HOST` env (default `127.0.0.1:4000`)
+- Configurable storage path via `FEEDBACK_STORE_PATH`
+- Forwards received feedback to a Slack Incoming Webhook when `SLACK_WEBHOOK_URL` is set
+- Configurable Slack forwarding timeout via `SLACK_TIMEOUT_MS` (default `5000`)
 
 `examples/plain-html/` is preconfigured to send to `http://localhost:4000/feedback`. Serve the page with `python3 -m http.server 4173`, start the receiver alongside it, and submitted comments will appear in the inbox.
 
+To try Slack forwarding:
+
+```sh
+SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..." node server/receive.js
+```
+
+If Slack forwarding fails, the receiver still stores the payload in `server/feedback.json`. The Slack result is visible in the saved payload under `integrations.slack` and in the inbox `Slack` row.
+
 ## Current Boundary
 
-This version does not send to GitHub or Slack directly yet. Received feedback is stored in `server/feedback.json` by the local receiver. The drawer list inside the widget is kept in memory only and is cleared on reload — wire up `endpoint` if you need persistence.
+This version does not send to GitHub directly yet. Slack support is currently a local-receiver Incoming Webhook prototype. Received feedback is stored in `server/feedback.json` by the local receiver. The drawer list inside the widget is kept in memory only and is cleared on reload — wire up `endpoint` if you need persistence.
 
 Not included yet:
 
-- Slack delivery
+- Slack App / OAuth integration
 - GitHub Issue creation
 - Persistent database
 - Real screenshot capture
