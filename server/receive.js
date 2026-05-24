@@ -12,9 +12,15 @@ const configDir = path.dirname(CONFIG_PATH);
 const PORT = Number(process.env.PORT || config.port || 4000);
 const HOST = process.env.HOST || config.host || "127.0.0.1";
 const STORE_PATH = process.env.FEEDBACK_STORE_PATH || pathFromConfig(config.feedbackStorePath, path.join(__dirname, "feedback.json"));
-const MAX_BODY_BYTES = 1_000_000;
+const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || config.maxBodyBytes || 3_000_000);
+const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || pathFromConfig(config.screenshotDir, path.join(__dirname, "screenshots"));
+const SCREENSHOT_MAX_BYTES = Number(process.env.SCREENSHOT_MAX_BYTES || config.screenshotMaxBytes || 1_500_000);
+const PUBLIC_BASE_URL = trimTrailingSlash(process.env.PUBLIC_BASE_URL || config.publicBaseUrl || `http://${HOST}:${PORT}`);
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || config.slackWebhookUrl || "";
 const SLACK_TIMEOUT_MS = Number(process.env.SLACK_TIMEOUT_MS || config.slackTimeoutMs || 5000);
+const SLACK_IMAGE_MODE = normalizeSlackImageMode(process.env.SLACK_IMAGE_MODE || config.slackImageMode || "auto");
+const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || config.slackBotToken || "";
+const SLACK_UPLOAD_CHANNEL_ID = process.env.SLACK_UPLOAD_CHANNEL_ID || config.slackUploadChannelId || "";
 
 let feedback = loadFeedback();
 
@@ -42,6 +48,11 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.method === "GET" && req.url.startsWith("/screenshots/")) {
+    handleGetScreenshot(req, res);
+    return;
+  }
+
   res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
   res.end("Not Found");
 });
@@ -50,7 +61,10 @@ server.listen(PORT, HOST, () => {
   console.log(`[PatchLoop receiver] listening on http://${HOST}:${PORT}`);
   console.log(`[PatchLoop receiver] config file: ${config.__loaded ? CONFIG_PATH : "not loaded"}`);
   console.log(`[PatchLoop receiver] feedback file: ${STORE_PATH}`);
+  console.log(`[PatchLoop receiver] screenshot dir: ${SCREENSHOT_DIR}`);
   console.log(`[PatchLoop receiver] Slack webhook: ${SLACK_WEBHOOK_URL ? "enabled" : "disabled"}`);
+  console.log(`[PatchLoop receiver] Slack image mode: ${SLACK_IMAGE_MODE}`);
+  console.log(`[PatchLoop receiver] Slack file upload: ${SLACK_BOT_TOKEN && SLACK_UPLOAD_CHANNEL_ID ? "enabled" : "disabled"}`);
 });
 
 function setCors(res) {
@@ -79,6 +93,16 @@ function pathFromConfig(value, fallback) {
   return path.isAbsolute(value) ? value : path.resolve(configDir, value);
 }
 
+function trimTrailingSlash(value) {
+  return String(value || "").replace(/\/+$/, "");
+}
+
+function normalizeSlackImageMode(value) {
+  const mode = String(value || "").trim().toLowerCase();
+  if (["auto", "link", "block", "upload", "off"].includes(mode)) return mode;
+  return "auto";
+}
+
 function handlePostFeedback(req, res) {
   let received = 0;
   const chunks = [];
@@ -105,7 +129,15 @@ function handlePostFeedback(req, res) {
       respondJson(res, 400, { ok: false, error: "Invalid JSON" });
       return;
     }
-    const stored = { receivedAt: new Date().toISOString(), ...payload };
+    let screenshot;
+    try {
+      screenshot = saveScreenshot(payload.screenshot, payload.id);
+    } catch (error) {
+      respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
+      return;
+    }
+
+    const stored = { receivedAt: new Date().toISOString(), ...payload, screenshot };
     stored.integrations = {
       ...(stored.integrations || {}),
       slack: await deliverToSlack(stored)
@@ -135,6 +167,39 @@ function handleGetInbox(req, res) {
   res.end(renderInbox(feedback));
 }
 
+function handleGetScreenshot(req, res) {
+  let filename;
+  try {
+    const url = new URL(req.url, "http://localhost");
+    filename = path.basename(decodeURIComponent(url.pathname));
+  } catch (_) {
+    res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Invalid screenshot path");
+    return;
+  }
+
+  const screenshotPath = path.resolve(SCREENSHOT_DIR, filename);
+  const screenshotRoot = path.resolve(SCREENSHOT_DIR);
+  if (!screenshotPath.startsWith(`${screenshotRoot}${path.sep}`)) {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Not Found");
+    return;
+  }
+
+  fs.readFile(screenshotPath, (error, buffer) => {
+    if (error) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not Found");
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": contentTypeForPath(screenshotPath),
+      "Cache-Control": "no-store"
+    });
+    res.end(buffer);
+  });
+}
+
 function loadFeedback() {
   try {
     const raw = fs.readFileSync(STORE_PATH, "utf8");
@@ -146,7 +211,88 @@ function loadFeedback() {
 }
 
 function persist() {
+  fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
   fs.writeFileSync(STORE_PATH, JSON.stringify(feedback, null, 2));
+}
+
+function saveScreenshot(screenshot, id) {
+  if (!screenshot) return null;
+
+  const metadata = { ...screenshot };
+  delete metadata.dataUrl;
+
+  if (screenshot.status && screenshot.status !== "captured") {
+    return metadata;
+  }
+
+  if (!screenshot.dataUrl) {
+    return { ...metadata, status: "missing" };
+  }
+
+  const parsed = parseDataUrl(screenshot.dataUrl);
+  const extension = extensionForMimeType(parsed.mimeType);
+  if (!extension) {
+    throw httpError(`Unsupported screenshot mime type: ${parsed.mimeType}`, 400);
+  }
+
+  if (parsed.buffer.length > SCREENSHOT_MAX_BYTES) {
+    throw httpError(`Screenshot too large: ${parsed.buffer.length} bytes exceeds ${SCREENSHOT_MAX_BYTES}`, 413);
+  }
+
+  fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
+  const fileName = `${safeFilePart(id || "feedback")}-${Date.now()}.${extension}`;
+  const filePath = path.join(SCREENSHOT_DIR, fileName);
+  fs.writeFileSync(filePath, parsed.buffer);
+
+  return {
+    ...metadata,
+    status: "saved",
+    mimeType: parsed.mimeType,
+    fileName,
+    path: filePath,
+    url: `${PUBLIC_BASE_URL}/screenshots/${encodeURIComponent(fileName)}`,
+    bytes: parsed.buffer.length
+  };
+}
+
+function parseDataUrl(dataUrl) {
+  const match = /^data:([^;,]+);base64,(.+)$/s.exec(String(dataUrl || ""));
+  if (!match) {
+    throw httpError("Invalid screenshot data URL", 400);
+  }
+
+  return {
+    mimeType: match[1],
+    buffer: Buffer.from(match[2], "base64")
+  };
+}
+
+function extensionForMimeType(mimeType) {
+  if (mimeType === "image/svg+xml") return "svg";
+  if (mimeType === "image/png") return "png";
+  if (mimeType === "image/jpeg") return "jpg";
+  return "";
+}
+
+function contentTypeForPath(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".svg") return "image/svg+xml; charset=utf-8";
+  if (ext === ".png") return "image/png";
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  return "application/octet-stream";
+}
+
+function safeFilePart(value) {
+  return String(value || "feedback")
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "feedback";
+}
+
+function httpError(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
 }
 
 function respondJson(res, status, body) {
@@ -168,19 +314,33 @@ function escapeHtml(value) {
 
 async function deliverToSlack(item) {
   if (!SLACK_WEBHOOK_URL) {
-    return { status: "disabled" };
+    const image = await maybeUploadScreenshotToSlack(item);
+    if (image.status === "uploaded") {
+      return { status: "sent", image };
+    }
+    if (image.status === "disabled") {
+      return { status: "disabled" };
+    }
+    return { status: "failed", image, error: image.error || image.reason || "Slack webhook is disabled" };
   }
 
   try {
     const response = await postJson(SLACK_WEBHOOK_URL, buildSlackMessage(item));
+    const result = response.statusCode >= 200 && response.statusCode < 300
+      ? { status: "sent", statusCode: response.statusCode }
+      : {
+          status: "failed",
+          statusCode: response.statusCode,
+          error: truncate(response.body || "Slack webhook returned a non-2xx response", 240)
+        };
+
     if (response.statusCode >= 200 && response.statusCode < 300) {
-      return { status: "sent", statusCode: response.statusCode };
+      const image = await maybeUploadScreenshotToSlack(item);
+      if (image.status !== "disabled" && image.status !== "skipped") {
+        result.image = image;
+      }
     }
-    return {
-      status: "failed",
-      statusCode: response.statusCode,
-      error: truncate(response.body || "Slack webhook returned a non-2xx response", 240)
-    };
+    return result;
   } catch (error) {
     return { status: "failed", error: error.message };
   }
@@ -231,46 +391,251 @@ function postJson(targetUrl, body) {
   });
 }
 
+async function maybeUploadScreenshotToSlack(item) {
+  if (SLACK_IMAGE_MODE !== "auto" && SLACK_IMAGE_MODE !== "upload") {
+    return { status: "disabled" };
+  }
+
+  if (!SLACK_BOT_TOKEN || !SLACK_UPLOAD_CHANNEL_ID) {
+    return { status: "disabled" };
+  }
+
+  const screenshot = item.screenshot;
+  if (!screenshot || screenshot.status !== "saved" || !screenshot.path) {
+    return { status: "skipped", reason: "no saved screenshot" };
+  }
+
+  let buffer;
+  try {
+    buffer = await fs.promises.readFile(screenshot.path);
+  } catch (error) {
+    return { status: "failed", error: `Unable to read screenshot: ${error.message}` };
+  }
+
+  const filename = screenshot.fileName || path.basename(screenshot.path);
+  const title = `PatchLoop screenshot ${item.id || ""}`.trim();
+
+  try {
+    const uploadInit = await postSlackApi("files.getUploadURLExternal", {
+      filename,
+      length: buffer.length,
+      alt_txt: "PatchLoop viewport snapshot"
+    });
+
+    if (!uploadInit.ok || !uploadInit.upload_url || !uploadInit.file_id) {
+      return {
+        status: "failed",
+        error: uploadInit.error || "files.getUploadURLExternal failed"
+      };
+    }
+
+    const uploadResponse = await uploadBinary(uploadInit.upload_url, buffer, screenshot.mimeType || contentTypeForPath(filename));
+    if (uploadResponse.statusCode < 200 || uploadResponse.statusCode >= 300) {
+      return {
+        status: "failed",
+        statusCode: uploadResponse.statusCode,
+        error: truncate(uploadResponse.body || "upload_url returned a non-2xx response", 240)
+      };
+    }
+
+    const completed = await postSlackApi("files.completeUploadExternal", {
+      channel_id: SLACK_UPLOAD_CHANNEL_ID,
+      files: [
+        {
+          id: uploadInit.file_id,
+          title
+        }
+      ]
+    });
+
+    if (!completed.ok) {
+      return {
+        status: "failed",
+        fileId: uploadInit.file_id,
+        error: completed.error || "files.completeUploadExternal failed"
+      };
+    }
+
+    return {
+      status: "uploaded",
+      fileId: uploadInit.file_id,
+      channelId: SLACK_UPLOAD_CHANNEL_ID
+    };
+  } catch (error) {
+    return { status: "failed", error: error.message };
+  }
+}
+
+function postSlackApi(method, body) {
+  return new Promise((resolve, reject) => {
+    const json = JSON.stringify(body);
+    const request = https.request(`https://slack.com/api/${method}`, {
+      method: "POST",
+      timeout: SLACK_TIMEOUT_MS,
+      headers: {
+        "Authorization": `Bearer ${SLACK_BOT_TOKEN}`,
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Length": Buffer.byteLength(json),
+        "User-Agent": "PatchLoop receiver"
+      }
+    }, (response) => {
+      let raw = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        raw += chunk;
+      });
+      response.on("end", () => {
+        try {
+          resolve(JSON.parse(raw));
+        } catch (error) {
+          reject(new Error(`Slack API returned invalid JSON: ${error.message}`));
+        }
+      });
+    });
+
+    request.on("timeout", () => {
+      request.destroy(new Error(`Slack API timed out after ${SLACK_TIMEOUT_MS}ms`));
+    });
+    request.on("error", reject);
+    request.write(json);
+    request.end();
+  });
+}
+
+function uploadBinary(targetUrl, buffer, mimeType) {
+  return new Promise((resolve, reject) => {
+    let url;
+    try {
+      url = new URL(targetUrl);
+    } catch (error) {
+      reject(new Error(`Invalid Slack upload URL: ${error.message}`));
+      return;
+    }
+
+    const client = url.protocol === "https:" ? https : url.protocol === "http:" ? http : null;
+    if (!client) {
+      reject(new Error(`Unsupported upload protocol: ${url.protocol}`));
+      return;
+    }
+
+    const request = client.request(url, {
+      method: "POST",
+      timeout: SLACK_TIMEOUT_MS,
+      headers: {
+        "Content-Type": mimeType || "application/octet-stream",
+        "Content-Length": buffer.length,
+        "User-Agent": "PatchLoop receiver"
+      }
+    }, (response) => {
+      let raw = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        raw += chunk;
+      });
+      response.on("end", () => {
+        resolve({ statusCode: response.statusCode || 0, body: raw });
+      });
+    });
+
+    request.on("timeout", () => {
+      request.destroy(new Error(`Slack upload timed out after ${SLACK_TIMEOUT_MS}ms`));
+    });
+    request.on("error", reject);
+    request.write(buffer);
+    request.end();
+  });
+}
+
 function buildSlackMessage(item) {
   const target = item.target || {};
   const env = item.environment || {};
   const page = item.page || {};
   const comment = slackEscape(truncate(item.comment || "(empty comment)", 1400));
+  const screenshotUrl = screenshotUrlFor(item.screenshot);
   const pageText = page.url
     ? formatSlackLink(page.url, page.title || page.url)
     : slackEscape(page.title || "(unknown page)");
+  const blocks = [
+    {
+      type: "header",
+      text: {
+        type: "plain_text",
+        text: "PatchLoop feedback",
+        emoji: false
+      }
+    },
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: comment
+      }
+    },
+    {
+      type: "section",
+      fields: [
+        { type: "mrkdwn", text: `*Reviewer*\n${slackEscape(item.reviewer || "(no name)")}` },
+        { type: "mrkdwn", text: `*Page*\n${pageText}` },
+        { type: "mrkdwn", text: `*Target*\n${slackEscape(formatTarget(target))}` },
+        { type: "mrkdwn", text: `*Viewport*\n${slackEscape(formatViewport(env.viewport))}` },
+        { type: "mrkdwn", text: `*Selector*\n${formatSlackCode(target.selector || "(none)")}` },
+        { type: "mrkdwn", text: `*Created*\n${slackEscape(item.createdAt || item.receivedAt || "(unknown)")}` }
+      ]
+    }
+  ];
 
-  return {
-    text: `PatchLoop feedback: ${truncate(item.comment || "", 120)}`,
-    blocks: [
-      {
+  if (target.text) {
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*Element text*\n>${slackEscape(truncate(target.text, 500)).replaceAll("\n", "\n>")}`
+      }
+    });
+  }
+
+  if (screenshotUrl) {
+    if (SLACK_IMAGE_MODE !== "off") {
+      blocks.push({
         type: "section",
         text: {
           type: "mrkdwn",
-          text: `*PatchLoop feedback*\n${comment}`
+          text: `*Screenshot*\n${formatSlackLink(screenshotUrl, "Open viewport snapshot")}`
         }
-      },
+      });
+    }
+    if (shouldSendSlackImageBlock(screenshotUrl)) {
+      blocks.push({
+        type: "image",
+        image_url: screenshotUrl,
+        alt_text: "PatchLoop viewport snapshot"
+      });
+    }
+  } else if (item.screenshot && item.screenshot.status) {
+    blocks.push({
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `screenshot: ${formatSlackCode(formatScreenshotStatus(item.screenshot))}`
+        }
+      ]
+    });
+  }
+
+  blocks.push({
+    type: "context",
+    elements: [
       {
-        type: "section",
-        fields: [
-          { type: "mrkdwn", text: `*Reviewer*\n${slackEscape(item.reviewer || "(no name)")}` },
-          { type: "mrkdwn", text: `*Page*\n${pageText}` },
-          { type: "mrkdwn", text: `*Target*\n${slackEscape(formatTarget(target))}` },
-          { type: "mrkdwn", text: `*Viewport*\n${slackEscape(formatViewport(env.viewport))}` },
-          { type: "mrkdwn", text: `*Selector*\n${formatSlackCode(target.selector || "(none)")}` },
-          { type: "mrkdwn", text: `*Created*\n${slackEscape(item.createdAt || item.receivedAt || "(unknown)")}` }
-        ]
-      },
-      {
-        type: "context",
-        elements: [
-          {
-            type: "mrkdwn",
-            text: `project: ${formatSlackCode(item.projectId || "-")} · demo: ${formatSlackCode(item.demoId || "-")}`
-          }
-        ]
+        type: "mrkdwn",
+        text: `project: ${formatSlackCode(item.projectId || "-")} · demo: ${formatSlackCode(item.demoId || "-")} · id: ${formatSlackCode(item.id || "-")}`
       }
     ]
+  });
+
+  return {
+    text: `PatchLoop feedback: ${truncate(item.comment || "", 120)}`,
+    blocks
   };
 }
 
@@ -290,6 +655,46 @@ function formatSlackLink(url, label) {
     return slackEscape(url);
   }
   return `<${slackEscape(url)}|${slackEscape(truncate(String(label).replaceAll("|", "/"), 120))}>`;
+}
+
+function screenshotUrlFor(screenshot) {
+  if (!screenshot || screenshot.status !== "saved" || !screenshot.url) return "";
+  return screenshot.url;
+}
+
+function formatScreenshotStatus(screenshot) {
+  if (!screenshot) return "none";
+  if (screenshot.status === "omitted" && screenshot.reason === "too-large") {
+    return `omitted: ${present(screenshot.bytes)} bytes exceeds ${present(screenshot.maxBytes)}`;
+  }
+  if (screenshot.status === "saved") {
+    return `saved (${present(screenshot.bytes)} bytes)`;
+  }
+  return screenshot.status || "unknown";
+}
+
+function isLikelyPublicHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    const host = url.hostname.toLowerCase();
+    if (host === "localhost" || host === "0.0.0.0" || host === "::1") return false;
+    if (host.startsWith("127.")) return false;
+    if (host.startsWith("10.")) return false;
+    if (host.startsWith("192.168.")) return false;
+    const private172 = /^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
+    return !private172;
+  } catch (_) {
+    return false;
+  }
+}
+
+function shouldSendSlackImageBlock(screenshotUrl) {
+  if (!screenshotUrl || SLACK_IMAGE_MODE === "off" || SLACK_IMAGE_MODE === "link" || SLACK_IMAGE_MODE === "upload") {
+    return false;
+  }
+  if (SLACK_IMAGE_MODE === "block") return /^https?:\/\//.test(screenshotUrl);
+  return isLikelyPublicHttpUrl(screenshotUrl);
 }
 
 function formatViewport(viewport) {
@@ -314,6 +719,7 @@ function renderInbox(items) {
     const env = item.environment || {};
     const page = item.page || {};
     const slack = item.integrations && item.integrations.slack;
+    const screenshot = item.screenshot;
     const kind = escapeHtml(target.kind || "?");
     const selector = escapeHtml(target.selector || "");
     const pageUrl = escapeHtml(page.url || "");
@@ -333,6 +739,7 @@ function renderInbox(items) {
           <time>${receivedAt}</time>
         </header>
         <p class="comment">${comment}</p>
+        ${renderScreenshotPreview(screenshot)}
         <dl>
           <div><dt>URL</dt><dd><a href="${pageUrl}" target="_blank" rel="noopener">${pageUrl}</a></dd></div>
           <div><dt>Title</dt><dd>${pageTitle}</dd></div>
@@ -370,6 +777,11 @@ function renderInbox(items) {
     .reviewer { font-weight: 700; color: #14211d; }
     time { margin-left: auto; }
     .comment { font-size: 15px; margin: 0 0 12px; white-space: pre-wrap; }
+    .screenshot { margin: 0 0 12px; border: 1px solid #d9e1dd; border-radius: 8px; overflow: hidden; background: #f7f8f5; }
+    .screenshot a { display: block; }
+    .screenshot img { display: block; width: 100%; max-height: 360px; object-fit: contain; background: #fff; }
+    .screenshot figcaption, .screenshot-note { margin: 0 0 12px; color: #65716d; font-size: 12px; }
+    .screenshot figcaption { padding: 8px 10px; border-top: 1px solid #d9e1dd; margin: 0; }
     dl { display: grid; grid-template-columns: 100px 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
     dl > div { display: contents; }
     dt { color: #65716d; }
@@ -389,9 +801,34 @@ function renderInbox(items) {
 </html>`;
 }
 
+function renderScreenshotPreview(screenshot) {
+  if (!screenshot) return "";
+  if (screenshot.status === "saved" && screenshot.url) {
+    const url = escapeHtml(screenshot.url);
+    const size = screenshot.width && screenshot.height
+      ? `${screenshot.width}×${screenshot.height}`
+      : "";
+    const bytes = screenshot.bytes ? `${screenshot.bytes} bytes` : "";
+    const caption = [size, bytes].filter(Boolean).join(" · ");
+    return `
+        <figure class="screenshot">
+          <a href="${url}" target="_blank" rel="noopener">
+            <img src="${url}" alt="PatchLoop screenshot preview" />
+          </a>
+          <figcaption>${escapeHtml(caption || "screenshot saved")}</figcaption>
+        </figure>
+    `;
+  }
+
+  return `<p class="screenshot-note">Screenshot: ${escapeHtml(formatScreenshotStatus(screenshot))}</p>`;
+}
+
 function formatSlackStatus(slack) {
   if (!slack) return "unknown";
-  if (slack.status === "sent") return `sent (${slack.statusCode})`;
+  const image = slack.image && slack.image.status
+    ? `, image ${slack.image.status}`
+    : "";
+  if (slack.status === "sent") return `sent${slack.statusCode ? ` (${slack.statusCode})` : ""}${image}`;
   if (slack.status === "failed") return `failed${slack.statusCode ? ` (${slack.statusCode})` : ""}: ${slack.error || "unknown error"}`;
   return slack.status || "unknown";
 }
