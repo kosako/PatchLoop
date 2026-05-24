@@ -29,9 +29,11 @@ script-tag widget:
 - Hover tooltip on markers showing the comment (disabled in feedback mode)
 - Per-item edit and delete inside the drawer with marker renumbering
 - Payload with URL, point/area position, selector, viewport, browser, reviewer, and timestamp
+- Lightweight viewport screenshot snapshot (SVG) attached to each payload
 - Optional `onSubmit(payload)` callback
 - Optional `endpoint` setting that POSTs payloads to the bundled local receiver
-- Optional Slack Incoming Webhook forwarding from the local receiver
+- Optional Slack Incoming Webhook forwarding from the local receiver with screenshot links, image blocks, and optional file upload
+- Configurable delivery mode for receiver forwarding, direct Slack webhook delivery, or no delivery
 
 ## Embeddable Widget
 
@@ -45,6 +47,7 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
     demoId: "plain-html-renewal-review",
     reviewer: "Kosako",
     endpoint: "http://localhost:4000/feedback",
+    showDeliverySettings: true,
     onSubmit(payload) {
       console.log(payload);
     }
@@ -57,7 +60,12 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 - `projectId` (string) — identifier carried in the payload
 - `demoId` (string) — identifier carried in the payload
 - `reviewer` (string, optional) — pre-fills the reviewer field in the comment form
+- `deliveryMode` (`"receiver"` | `"slack-webhook"` | `"none"`, optional) — delivery target; defaults to `"receiver"`
 - `endpoint` (string, optional) — URL the widget POSTs each payload to; nothing is sent when omitted
+- `slackWebhookUrl` (string, optional) — Slack Incoming Webhook URL used when `deliveryMode: "slack-webhook"`
+- `showDeliverySettings` (boolean, optional) — show the delivery target controls in the drawer; defaults to `false`
+- `captureScreenshot` (boolean, optional) — include a viewport snapshot in the payload; defaults to `true`
+- `screenshotMaxBytes` (number, optional) — widget-side byte limit before omitting the snapshot; defaults to `1200000`
 - `onSubmit(payload)` (function, optional) — called on every submit
 
 ### window.PatchLoop API
@@ -105,6 +113,7 @@ Main payload fields:
 - `environment.viewport`
 - `environment.browser`
 - `environment.language`
+- `screenshot` — viewport snapshot. On success it includes `status: "captured"`, `mimeType: "image/svg+xml"`, `dataUrl`, `targetOverlay`, and related metadata
 - `createdAt`
 - `delivery` — added after the POST resolves when `endpoint` is set (`{ ok, status }` or `{ ok: false, error }`)
 
@@ -123,9 +132,15 @@ node server/receive.js
 - Accepts payload at `POST /feedback`, appending to `server/feedback.json` by default
 - Renders an inbox of received feedback at `GET /`
 - Returns the raw JSON at `GET /feedback.json`
+- Serves saved screenshots from `GET /screenshots/:file`
 - Configurable via `PORT` / `HOST` env (default `127.0.0.1:4000`)
 - Configurable storage path via `FEEDBACK_STORE_PATH`
+- Configurable screenshot directory via `SCREENSHOT_DIR`
+- Configurable receiver URL for Slack links via `PUBLIC_BASE_URL`
+- Configurable payload and screenshot limits via `MAX_BODY_BYTES` / `SCREENSHOT_MAX_BYTES`
 - Forwards received feedback to a Slack Incoming Webhook when `SLACK_WEBHOOK_URL` is set
+- Configurable Slack screenshot presentation via `SLACK_IMAGE_MODE` (`auto` / `link` / `block` / `upload` / `off`)
+- Optional Slack file upload via `SLACK_BOT_TOKEN` and `SLACK_UPLOAD_CHANNEL_ID`
 - Configurable Slack forwarding timeout via `SLACK_TIMEOUT_MS` (default `5000`)
 
 `examples/plain-html/` is preconfigured to send to `http://localhost:4000/feedback`. Serve the page with `python3 -m http.server 4173`, start the receiver alongside it, and submitted comments will appear in the inbox.
@@ -143,12 +158,23 @@ cp server/receiver.config.example.json server/receiver.config.json
   "host": "127.0.0.1",
   "port": 4000,
   "feedbackStorePath": "feedback.json",
+  "screenshotDir": "screenshots",
+  "publicBaseUrl": "http://127.0.0.1:4000",
+  "maxBodyBytes": 3000000,
+  "screenshotMaxBytes": 1500000,
   "slackWebhookUrl": "https://hooks.slack.com/services/...",
+  "slackImageMode": "auto",
+  "slackBotToken": "",
+  "slackUploadChannelId": "",
   "slackTimeoutMs": 5000
 }
 ```
 
-Relative `feedbackStorePath` values are resolved from the config file location. To use a config file from another path, run `PATCHLOOP_RECEIVER_CONFIG=/path/to/receiver.config.json node server/receive.js`.
+Relative `feedbackStorePath` and `screenshotDir` values are resolved from the config file location. `publicBaseUrl` is used for screenshot links and image blocks in Slack messages. For local testing, `http://127.0.0.1:4000` is enough. If you want Slack image previews to render outside your machine, point it at a public tunnel such as ngrok.
+
+`slackImageMode` defaults to `auto`. When `publicBaseUrl` is public, the receiver adds a Slack image block. When `slackBotToken` and `slackUploadChannelId` are also set, the receiver uploads the saved screenshot as a Slack file through the Slack Web API. The token needs the Slack App `files:write` scope. Use `link` for links only, `block` to force an image block, `upload` for file upload only, or `off` to omit screenshot presentation.
+
+To use a config file from another path, run `PATCHLOOP_RECEIVER_CONFIG=/path/to/receiver.config.json node server/receive.js`.
 
 Environment variables override the config file. For example, to try Slack forwarding temporarily:
 
@@ -156,7 +182,20 @@ Environment variables override the config file. For example, to try Slack forwar
 SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..." node server/receive.js
 ```
 
-If Slack forwarding fails, the receiver still stores the payload. The Slack result is visible in the saved payload under `integrations.slack` and in the inbox `Slack` row.
+If Slack forwarding fails, the receiver still stores the payload. The Slack result is visible in the saved payload under `integrations.slack` and in the inbox `Slack` row. Screenshot `dataUrl` values are saved as files by the receiver and replaced with `screenshot.url` in stored payloads.
+
+## Slack Direct Mode
+
+Use `deliveryMode: "slack-webhook"` to send directly from the browser to a Slack Incoming Webhook without running the receiver. When the drawer delivery settings are enabled, you can switch the target to `Slack direct` and enter the webhook URL in the UI.
+
+```js
+window.PatchLoop.init({
+  deliveryMode: "slack-webhook",
+  slackWebhookUrl: "https://hooks.slack.com/services/..."
+});
+```
+
+This exposes the webhook URL in the browser, so keep it to disposable testing webhooks in public environments. Incoming Webhooks cannot send a browser-generated `dataUrl` screenshot as a Slack image or file, so Slack direct mode sends the comment, page, target position, selector, viewport, and screenshot capture status. The screenshot data still remains available in the widget payload and `onSubmit`. To show or upload the generated screenshot in Slack, use receiver mode with `publicBaseUrl` or Slack file upload settings. Direct browser delivery uses `no-cors`, so the response body is not available to the widget.
 
 ## Current Boundary
 
@@ -167,6 +206,6 @@ Not included yet:
 - Slack App / OAuth integration
 - GitHub Issue creation
 - Persistent database
-- Real screenshot capture
+- Pixel-perfect browser screenshot capture
 - Auth
 - AI PR integration

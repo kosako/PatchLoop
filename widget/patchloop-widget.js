@@ -5,8 +5,13 @@
     projectId: "local-demo",
     demoId: "plain-html",
     endpoint: "",
+    deliveryMode: "receiver",
+    slackWebhookUrl: "",
+    showDeliverySettings: false,
     reviewer: "",
     position: "bottom-right",
+    captureScreenshot: true,
+    screenshotMaxBytes: 1_200_000,
     onSubmit: null
   };
 
@@ -67,6 +72,7 @@
           <div class="pl-actions">
             <button type="button" data-pl-clear>ピンを消す</button>
           </div>
+          ${renderDeliverySettings()}
           <div class="pl-feedback-list" data-pl-list>
             <p class="pl-feedback-list-empty">まだフィードバックはありません。</p>
           </div>
@@ -97,6 +103,35 @@
     root.querySelector("[data-pl-cancel]").addEventListener("click", cancelPendingComment);
     root.querySelector("[data-pl-comment]").addEventListener("submit", submitComment);
     root.querySelector("[data-pl-list]").addEventListener("click", handleListClick);
+    root.querySelector("[data-pl-delivery-settings]")?.addEventListener("input", handleDeliverySettingsInput);
+    root.querySelector("[data-pl-delivery-settings]")?.addEventListener("change", handleDeliverySettingsInput);
+    syncDeliverySettingsVisibility();
+  }
+
+  function renderDeliverySettings() {
+    if (!state.options.showDeliverySettings) return "";
+
+    return `
+          <details class="pl-delivery-settings" data-pl-delivery-settings>
+            <summary>送信設定</summary>
+            <label>
+              送信先
+              <select data-pl-delivery-mode>
+                <option value="receiver"${state.options.deliveryMode === "receiver" ? " selected" : ""}>Receiver</option>
+                <option value="slack-webhook"${state.options.deliveryMode === "slack-webhook" ? " selected" : ""}>Slack direct</option>
+                <option value="none"${state.options.deliveryMode === "none" ? " selected" : ""}>送信なし</option>
+              </select>
+            </label>
+            <label data-pl-endpoint-field>
+              Receiver endpoint
+              <input data-pl-endpoint value="${escapeHtml(state.options.endpoint)}" placeholder="http://localhost:4000/feedback" />
+            </label>
+            <label data-pl-slack-field>
+              Slack webhook URL
+              <input type="password" data-pl-slack-webhook value="${escapeHtml(state.options.slackWebhookUrl)}" placeholder="https://hooks.slack.com/services/..." />
+            </label>
+          </details>
+    `;
   }
 
   function bindGlobalCapture() {
@@ -253,6 +288,29 @@
     state.pendingTarget = null;
   }
 
+  function handleDeliverySettingsInput() {
+    const root = getRoot();
+    if (!root) return;
+    const mode = root.querySelector("[data-pl-delivery-mode]")?.value;
+    const endpoint = root.querySelector("[data-pl-endpoint]")?.value;
+    const slackWebhookUrl = root.querySelector("[data-pl-slack-webhook]")?.value;
+
+    if (mode) state.options.deliveryMode = mode;
+    if (endpoint != null) state.options.endpoint = endpoint.trim();
+    if (slackWebhookUrl != null) state.options.slackWebhookUrl = slackWebhookUrl.trim();
+    syncDeliverySettingsVisibility();
+  }
+
+  function syncDeliverySettingsVisibility() {
+    const root = getRoot();
+    if (!root) return;
+    const mode = state.options.deliveryMode || "receiver";
+    const endpointField = root.querySelector("[data-pl-endpoint-field]");
+    const slackField = root.querySelector("[data-pl-slack-field]");
+    if (endpointField) endpointField.hidden = mode !== "receiver";
+    if (slackField) slackField.hidden = mode !== "slack-webhook";
+  }
+
   async function submitComment(event) {
     event.preventDefault();
 
@@ -289,8 +347,8 @@
       state.options.onSubmit(payload);
     }
 
-    if (state.options.endpoint) {
-      await postFeedback(payload);
+    if (shouldDeliverFeedback()) {
+      await deliverFeedback(payload);
       renderFeedbackList();
     }
   }
@@ -328,8 +386,158 @@
         browser: navigator.userAgent,
         language: navigator.language
       },
+      screenshot: captureScreenshot(target),
       createdAt: new Date().toISOString()
     };
+  }
+
+  function captureScreenshot(target) {
+    if (!state.options.captureScreenshot) return null;
+
+    try {
+      const width = Math.max(document.documentElement.clientWidth, window.innerWidth, 1);
+      const height = Math.max(document.documentElement.clientHeight, window.innerHeight, 1);
+      const documentWidth = Math.max(document.documentElement.scrollWidth, width);
+      const documentHeight = Math.max(document.documentElement.scrollHeight, height);
+      const overlay = screenshotOverlayFor(target);
+      const svg = buildScreenshotSvg({
+        width,
+        height,
+        documentWidth,
+        documentHeight,
+        scrollX: window.scrollX,
+        scrollY: window.scrollY,
+        overlay
+      });
+      const bytes = byteLength(svg);
+      const maxBytes = Number(state.options.screenshotMaxBytes || 0);
+
+      if (maxBytes > 0 && bytes > maxBytes) {
+        return {
+          status: "omitted",
+          reason: "too-large",
+          kind: "viewport-svg",
+          mimeType: "image/svg+xml",
+          width,
+          height,
+          bytes,
+          maxBytes,
+          targetOverlay: overlay
+        };
+      }
+
+      return {
+        status: "captured",
+        kind: "viewport-svg",
+        mimeType: "image/svg+xml",
+        width,
+        height,
+        scrollX: Math.round(window.scrollX),
+        scrollY: Math.round(window.scrollY),
+        devicePixelRatio: window.devicePixelRatio || 1,
+        bytes,
+        targetOverlay: overlay,
+        dataUrl: `data:image/svg+xml;base64,${base64Encode(svg)}`
+      };
+    } catch (error) {
+      return {
+        status: "failed",
+        error: error.message
+      };
+    }
+  }
+
+  function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scrollX, scrollY, overlay }) {
+    const bodyClone = document.body.cloneNode(true);
+    bodyClone.querySelectorAll("[data-patchloop-root], [data-patchloop-pin], [data-patchloop-area], [data-patchloop-selection], script").forEach((node) => node.remove());
+    bodyClone.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
+
+    const bodyStyle = window.getComputedStyle(document.body);
+    const background = bodyStyle.backgroundColor || "#ffffff";
+    const color = bodyStyle.color || "#14211d";
+    const font = bodyStyle.font || bodyStyle.fontFamily || "system-ui, sans-serif";
+    const styles = `${collectReadableStyles()}\n* { box-sizing: border-box; }\n`;
+    const overlayMarkup = renderScreenshotOverlay(overlay);
+
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <rect width="100%" height="100%" fill="${escapeXml(background)}"/>
+  <foreignObject x="0" y="0" width="${width}" height="${height}">
+    <html xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px;overflow:hidden;background:${escapeHtml(background)};">
+      <head>
+        <style><![CDATA[${styles.replaceAll("]]>", "]]]]><![CDATA[>")}]]></style>
+      </head>
+      <body style="margin:0;width:${documentWidth}px;min-height:${documentHeight}px;background:${escapeHtml(background)};color:${escapeHtml(color)};font:${escapeHtml(font)};transform:translate(${-Math.round(scrollX)}px, ${-Math.round(scrollY)}px);transform-origin:top left;">
+        ${bodyClone.innerHTML}
+      </body>
+    </html>
+  </foreignObject>
+  <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" fill="none" stroke="#d9e1dd"/>
+  ${overlayMarkup}
+</svg>`;
+  }
+
+  function collectReadableStyles() {
+    const chunks = [];
+    Array.from(document.styleSheets).forEach((sheet) => {
+      try {
+        if (sheet.ownerNode?.dataset?.patchloopStyle) return;
+        chunks.push(Array.from(sheet.cssRules || []).map((rule) => rule.cssText).join("\n"));
+      } catch (_) {
+        // Cross-origin stylesheets cannot be read. The snapshot still includes DOM and overlay context.
+      }
+    });
+    return chunks.join("\n");
+  }
+
+  function screenshotOverlayFor(target) {
+    if (target.kind === "area" && target.area) {
+      return {
+        kind: "area",
+        x: Math.round(target.area.clientX),
+        y: Math.round(target.area.clientY),
+        width: Math.round(target.area.clientWidth),
+        height: Math.round(target.area.clientHeight)
+      };
+    }
+
+    return {
+      kind: "point",
+      x: Math.round(target.clientX),
+      y: Math.round(target.clientY)
+    };
+  }
+
+  function renderScreenshotOverlay(overlay) {
+    if (!overlay) return "";
+    if (overlay.kind === "area") {
+      const x = Math.max(0, overlay.x);
+      const y = Math.max(0, overlay.y);
+      const width = Math.max(1, overlay.width);
+      const height = Math.max(1, overlay.height);
+      return `
+  <rect x="${x}" y="${y}" width="${width}" height="${height}" rx="6" fill="rgba(209, 73, 91, 0.16)" stroke="#d1495b" stroke-width="3"/>
+  <circle cx="${x + 18}" cy="${y + 18}" r="14" fill="#d1495b" stroke="#ffffff" stroke-width="3"/>
+  <text x="${x + 18}" y="${y + 23}" text-anchor="middle" fill="#ffffff" font-family="system-ui, sans-serif" font-size="13" font-weight="900">!</text>`;
+    }
+
+    return `
+  <circle cx="${overlay.x}" cy="${overlay.y}" r="18" fill="#d1495b" stroke="#ffffff" stroke-width="4"/>
+  <circle cx="${overlay.x}" cy="${overlay.y}" r="30" fill="none" stroke="#d1495b" stroke-width="3" opacity="0.35"/>`;
+  }
+
+  function byteLength(value) {
+    if (window.Blob) return new Blob([value]).size;
+    return base64Encode(value).length;
+  }
+
+  function base64Encode(value) {
+    const bytes = new TextEncoder().encode(value);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 8192) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    }
+    return btoa(binary);
   }
 
   async function postFeedback(payload) {
@@ -344,6 +552,156 @@
       payload.delivery = { ok: false, error: error.message };
     }
     console.info("[PatchLoop] delivery", payload.id, payload.delivery);
+  }
+
+  function shouldDeliverFeedback() {
+    if (state.options.deliveryMode === "none") return false;
+    if (state.options.deliveryMode === "slack-webhook") return Boolean(state.options.slackWebhookUrl);
+    return Boolean(state.options.endpoint);
+  }
+
+  async function deliverFeedback(payload) {
+    if (state.options.deliveryMode === "slack-webhook") {
+      await postSlackWebhook(payload);
+      return;
+    }
+
+    await postFeedback(payload);
+  }
+
+  async function postSlackWebhook(payload) {
+    try {
+      await fetch(state.options.slackWebhookUrl, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "text/plain;charset=UTF-8" },
+        body: JSON.stringify(buildSlackWebhookPayload(payload))
+      });
+      payload.delivery = { ok: true, status: "opaque", target: "slack-webhook" };
+    } catch (error) {
+      payload.delivery = { ok: false, target: "slack-webhook", error: error.message };
+    }
+    console.info("[PatchLoop] delivery", payload.id, payload.delivery);
+  }
+
+  function buildSlackWebhookPayload(payload) {
+    const target = payload.target || {};
+    const env = payload.environment || {};
+    const page = payload.page || {};
+    const blocks = [
+      {
+        type: "header",
+        text: {
+          type: "plain_text",
+          text: "PatchLoop feedback",
+          emoji: false
+        }
+      },
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: slackEscape(truncateText(payload.comment || "(empty comment)", 1400))
+        }
+      },
+      {
+        type: "section",
+        fields: [
+          { type: "mrkdwn", text: `*Reviewer*\n${slackEscape(payload.reviewer || "(no name)")}` },
+          { type: "mrkdwn", text: `*Page*\n${formatSlackLink(page.url, page.title || page.url || "(unknown page)")}` },
+          { type: "mrkdwn", text: `*Target*\n${slackEscape(formatTargetForSlack(target))}` },
+          { type: "mrkdwn", text: `*Viewport*\n${slackEscape(formatViewportForSlack(env.viewport))}` },
+          { type: "mrkdwn", text: `*Selector*\n${formatSlackCode(target.selector || "(none)")}` },
+          { type: "mrkdwn", text: `*Created*\n${slackEscape(payload.createdAt || "(unknown)")}` }
+        ]
+      }
+    ];
+
+    if (target.text) {
+      blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Element text*\n>${slackEscape(truncateText(target.text, 500)).replaceAll("\n", "\n>")}`
+        }
+      });
+    }
+
+    if (payload.screenshot && payload.screenshot.status) {
+      blocks.push({
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: `screenshot: ${formatSlackCode(formatDirectScreenshotStatus(payload.screenshot))}`
+          }
+        ]
+      });
+    }
+
+    blocks.push({
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `project: ${formatSlackCode(payload.projectId || "-")} · demo: ${formatSlackCode(payload.demoId || "-")} · id: ${formatSlackCode(payload.id || "-")}`
+        }
+      ]
+    });
+
+    return {
+      text: `PatchLoop feedback: ${truncateText(payload.comment || "", 120)}`,
+      blocks
+    };
+  }
+
+  function slackEscape(value) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;");
+  }
+
+  function formatSlackCode(value) {
+    return `\`${slackEscape(truncateText(String(value ?? "").replaceAll("`", "'"), 180))}\``;
+  }
+
+  function formatSlackLink(url, label) {
+    if (!/^https?:\/\//.test(url || "")) {
+      return slackEscape(label || url || "(unknown)");
+    }
+    return `<${slackEscape(url)}|${slackEscape(truncateText(String(label || url).replaceAll("|", "/"), 120))}>`;
+  }
+
+  function formatViewportForSlack(viewport) {
+    if (!viewport) return "(unknown)";
+    return `${present(viewport.width)}x${present(viewport.height)}`;
+  }
+
+  function formatTargetForSlack(target) {
+    if (target.kind === "area" && target.area) {
+      return `area ${present(target.area.clientWidth)}x${present(target.area.clientHeight)} at ${present(target.area.clientX)},${present(target.area.clientY)}`;
+    }
+    return `${target.kind || "point"} at ${present(target.clientX)},${present(target.clientY)}`;
+  }
+
+  function formatDirectScreenshotStatus(screenshot) {
+    if (screenshot.status === "captured") {
+      return "captured locally; direct Slack mode needs a public image URL";
+    }
+    if (screenshot.status === "omitted" && screenshot.reason === "too-large") {
+      return `omitted: ${present(screenshot.bytes)} bytes exceeds ${present(screenshot.maxBytes)}`;
+    }
+    return screenshot.status || "unknown";
+  }
+
+  function truncateText(value, max) {
+    const text = String(value ?? "");
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+  }
+
+  function present(value) {
+    return value === undefined || value === null || value === "" ? "?" : value;
   }
 
   function addPin(point) {
@@ -724,6 +1082,10 @@
       .replaceAll('"', "&quot;");
   }
 
+  function escapeXml(value) {
+    return escapeHtml(value).replaceAll("'", "&apos;");
+  }
+
   function injectStyles() {
     if (document.querySelector("[data-patchloop-style]")) return;
     const style = document.createElement("style");
@@ -750,6 +1112,10 @@
       .pl-actions { display: flex; gap: 8px; padding: 0 14px 14px; }
       .pl-actions button, .pl-form-actions button { min-height: 36px; border-radius: 8px; border: 1px solid #d9e1dd; background: #fff; color: #14211d; padding: 0 12px; cursor: pointer; }
       .pl-form-actions button[type="submit"] { background: #0f7b63; border-color: #0f7b63; color: #fff; font-weight: 800; }
+      .pl-delivery-settings { margin: 0 14px 14px; border: 1px solid #d9e1dd; border-radius: 8px; padding: 8px 10px 10px; background: #f7f8f5; }
+      .pl-delivery-settings summary { cursor: pointer; color: #14211d; font-weight: 800; font-size: 12px; }
+      .pl-delivery-settings label { display: grid; gap: 5px; margin-top: 8px; color: #65716d; font-size: 11px; font-weight: 800; }
+      .pl-delivery-settings input, .pl-delivery-settings select { width: 100%; min-height: 32px; border: 1px solid #d9e1dd; border-radius: 6px; background: #fff; color: #14211d; padding: 6px 8px; font: inherit; }
       .pl-feedback-list { max-height: 280px; overflow-y: auto; padding: 0 14px 14px; display: grid; gap: 8px; }
       .pl-feedback-list-empty { margin: 0; color: #65716d; font-size: 13px; padding: 0; }
       .pl-feedback-item { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; padding: 10px; border: 1px solid #d9e1dd; border-radius: 8px; background: #fff; align-items: start; }

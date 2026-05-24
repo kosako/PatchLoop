@@ -29,9 +29,11 @@ script-tag widget:
 - マーカーホバーでコメントのツールチップ表示（feedback モード中は無効）
 - 個別の編集・削除と残りマーカーの自動再番号付け
 - URL / 点・範囲位置 / selector / viewport / browser / reviewer / timestamp を含む payload
+- viewport の lightweight screenshot snapshot（SVG）を payload に添付
 - 任意の `onSubmit(payload)` callback
 - 任意の `endpoint` 設定で payload を receiver に POST
-- ローカル receiver から任意の Slack Incoming Webhook へ転送
+- ローカル receiver から任意の Slack Incoming Webhook へ、スクショリンク / image block / 任意の file upload 付きで転送
+- 設定または drawer UI から、receiver 経由送信 / Slack webhook 直送 / 送信なしを切り替え
 
 ## 埋め込み Widget
 
@@ -45,6 +47,7 @@ PatchLoop は、普通の HTML に `script` tag で埋め込める standalone wi
     demoId: "plain-html-renewal-review",
     reviewer: "Kosako",
     endpoint: "http://localhost:4000/feedback",
+    showDeliverySettings: true,
     onSubmit(payload) {
       console.log(payload);
     }
@@ -57,7 +60,12 @@ PatchLoop は、普通の HTML に `script` tag で埋め込める standalone wi
 - `projectId` (string) — payload に乗せるプロジェクト識別子
 - `demoId` (string) — payload に乗せるデモ識別子
 - `reviewer` (string, optional) — コメントフォームに初期表示する投稿者名
+- `deliveryMode` (`"receiver"` | `"slack-webhook"` | `"none"`, optional) — 送信方式。デフォルトは `"receiver"`
 - `endpoint` (string, optional) — payload を `POST` する URL。未設定なら送信しない
+- `slackWebhookUrl` (string, optional) — `deliveryMode: "slack-webhook"` 時にブラウザから直接送る Slack Incoming Webhook URL
+- `showDeliverySettings` (boolean, optional) — drawer 内に送信先切替 UI を表示するか。デフォルトは `false`
+- `captureScreenshot` (boolean, optional) — viewport snapshot を payload に含めるか。デフォルトは `true`
+- `screenshotMaxBytes` (number, optional) — widget 側で snapshot を省略する最大バイト数。デフォルトは `1200000`
 - `onSubmit(payload)` (function, optional) — submit のたびに呼ばれる callback
 
 ### window.PatchLoop API
@@ -105,6 +113,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 - `environment.viewport`
 - `environment.browser`
 - `environment.language`
+- `screenshot` — viewport snapshot。成功時は `status: "captured"`、`mimeType: "image/svg+xml"`、`dataUrl`、`targetOverlay` などを含む
 - `createdAt`
 - `delivery` — `endpoint` 設定時、POST 完了後に `{ ok, status }` または `{ ok: false, error }` が追加される
 
@@ -123,9 +132,15 @@ node server/receive.js
 - `POST /feedback` で payload を受け取り、デフォルトでは `server/feedback.json` に追記します
 - `GET /` で受信した feedback の一覧（inbox）を表示します
 - `GET /feedback.json` で raw JSON を返します
+- `GET /screenshots/:file` で保存済み screenshot を返します
 - `PORT` / `HOST` env で変更可能（デフォルトは `127.0.0.1:4000`）
 - `FEEDBACK_STORE_PATH` env で保存先を変更できます
+- `SCREENSHOT_DIR` env で screenshot 保存先を変更できます
+- `PUBLIC_BASE_URL` env で Slack に載せる receiver の URL を指定できます
+- `MAX_BODY_BYTES` / `SCREENSHOT_MAX_BYTES` env で payload / screenshot の上限を変更できます
 - `SLACK_WEBHOOK_URL` env を設定すると、受信した feedback を Slack Incoming Webhook にも転送します
+- `SLACK_IMAGE_MODE` env で Slack 上の screenshot 表示方式を変更できます（`auto` / `link` / `block` / `upload` / `off`）
+- `SLACK_BOT_TOKEN` と `SLACK_UPLOAD_CHANNEL_ID` env を設定すると、保存済み screenshot を Slack file としてアップロードできます
 - `SLACK_TIMEOUT_MS` env で Slack 転送の timeout を変更できます（デフォルトは `5000`）
 
 `examples/plain-html/` はデフォルトで `http://localhost:4000/feedback` に送信する設定です。`python3 -m http.server 4173` でページを配信した状態で receiver も起動すると、コメントが inbox に届きます。
@@ -143,12 +158,23 @@ cp server/receiver.config.example.json server/receiver.config.json
   "host": "127.0.0.1",
   "port": 4000,
   "feedbackStorePath": "feedback.json",
+  "screenshotDir": "screenshots",
+  "publicBaseUrl": "http://127.0.0.1:4000",
+  "maxBodyBytes": 3000000,
+  "screenshotMaxBytes": 1500000,
   "slackWebhookUrl": "https://hooks.slack.com/services/...",
+  "slackImageMode": "auto",
+  "slackBotToken": "",
+  "slackUploadChannelId": "",
   "slackTimeoutMs": 5000
 }
 ```
 
-`feedbackStorePath` に相対パスを書く場合は、設定ファイルからの相対パスとして扱われます。別の場所の設定ファイルを使う場合は `PATCHLOOP_RECEIVER_CONFIG=/path/to/receiver.config.json node server/receive.js` で指定できます。
+`feedbackStorePath` / `screenshotDir` に相対パスを書く場合は、設定ファイルからの相対パスとして扱われます。`publicBaseUrl` は Slack 通知内の screenshot link と image block に使われます。ローカル検証なら `http://127.0.0.1:4000` のままで十分です。外部の Slack 上で画像 preview まで表示したい場合は、ngrok などで公開した URL を指定してください。
+
+`slackImageMode` はデフォルト `auto` です。`publicBaseUrl` が公開 URL の場合は Slack message に image block を追加します。`slackBotToken` と `slackUploadChannelId` も設定されている場合は、Slack Web API で保存済み screenshot を file upload します。この token には Slack App の `files:write` scope が必要です。`link` はリンクのみ、`block` は image block を強制、`upload` は file upload のみ、`off` は screenshot 表示を送らない設定です。
+
+別の場所の設定ファイルを使う場合は `PATCHLOOP_RECEIVER_CONFIG=/path/to/receiver.config.json node server/receive.js` で指定できます。
 
 環境変数を指定した場合は設定ファイルより優先されます。たとえば一時的に Slack 転送を試す場合:
 
@@ -156,7 +182,20 @@ cp server/receiver.config.example.json server/receiver.config.json
 SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..." node server/receive.js
 ```
 
-Slack 転送に失敗しても、receiver は payload を保存します。Slack の結果は保存済み payload の `integrations.slack` と inbox の `Slack` 行で確認できます。
+Slack 転送に失敗しても、receiver は payload を保存します。Slack の結果は保存済み payload の `integrations.slack` と inbox の `Slack` 行で確認できます。screenshot の `dataUrl` は receiver でファイル保存されたあと payload から取り除かれ、`screenshot.url` として参照されます。
+
+## Slack direct mode
+
+`deliveryMode: "slack-webhook"` を使うと、receiver を立てずにブラウザから Slack Incoming Webhook に直接送信できます。drawer UI を有効にしている場合は、画面上で送信先を `Slack direct` に切り替えて webhook URL を入力できます。
+
+```js
+window.PatchLoop.init({
+  deliveryMode: "slack-webhook",
+  slackWebhookUrl: "https://hooks.slack.com/services/..."
+});
+```
+
+このモードでは webhook URL がブラウザに見えるため、公開環境では使い捨ての検証用 webhook に限定してください。Incoming Webhook はブラウザ内で生成した `dataUrl` screenshot を Slack image/file として送れないため、Slack direct mode が Slack に送るのはコメント本文・ページ・対象位置・selector・viewport・screenshot 取得ステータスです。widget 内の payload と `onSubmit` には screenshot 情報が残ります。画像そのものを Slack に表示または file upload したい場合は、receiver mode で `publicBaseUrl` / `slackBotToken` / `slackUploadChannelId` を使ってください。ブラウザ直送は `no-cors` で投げるため、成功レスポンスの本文は取得できません。
 
 ## 現在の境界
 
@@ -167,6 +206,6 @@ Slack 転送に失敗しても、receiver は payload を保存します。Slack
 - Slack App / OAuth 連携
 - GitHub Issue 作成
 - 永続 DB
-- 本物の screenshot capture
+- pixel-perfect なブラウザ screenshot capture
 - 認証
 - AI PR 連携
