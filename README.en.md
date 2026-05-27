@@ -209,3 +209,7 @@ Not included yet:
 - Pixel-perfect browser screenshot capture
 - Auth
 - AI PR integration
+
+## License
+
+[MIT](./LICENSE)

@@ -209,3 +209,7 @@ window.PatchLoop.init({
 - pixel-perfect なブラウザ screenshot capture
 - 認証
 - AI PR 連携
+
+## License
+
+[MIT](./LICENSE)
