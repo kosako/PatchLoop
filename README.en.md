@@ -45,7 +45,6 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
   window.PatchLoop.init({
     projectId: "patchloop",
     demoId: "plain-html-renewal-review",
-    reviewer: "Kosako",
     endpoint: "http://localhost:4000/feedback",
     showDeliverySettings: true,
     onSubmit(payload) {
@@ -59,7 +58,8 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 
 - `projectId` (string) — identifier carried in the payload
 - `demoId` (string) — identifier carried in the payload
-- `reviewer` (string, optional) — pre-fills the reviewer field in the comment form
+- `reviewer` (string, optional) — pre-fills the reviewer field in the comment form. When omitted, the widget restores a saved reviewer from `localStorage`; otherwise the field starts empty
+- `reviewerStorageKey` (string, optional) — `localStorage` key used to persist the reviewer name; defaults to `patchloop:reviewer`
 - `deliveryMode` (`"receiver"` | `"slack-webhook"` | `"none"`, optional) — delivery target; defaults to `"receiver"`
 - `endpoint` (string, optional) — URL the widget POSTs each payload to; nothing is sent when omitted
 - `slackWebhookUrl` (string, optional) — Slack Incoming Webhook URL used when `deliveryMode: "slack-webhook"`
@@ -84,8 +84,10 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 1. Click the right-edge handle to open the drawer
 2. Start comment mode
 3. Click a point or drag an area on the page
-4. Write a comment and reviewer name, then submit
+4. Write a comment and reviewer name, then submit. Feedback cannot be submitted while the reviewer is blank
 5. The comment appears in the drawer list and is also passed to `onSubmit(payload)`. Each item can be edited or deleted from the list
+
+The reviewer name is saved to `localStorage` after submit and restored the next time the widget starts. Persisting the feedback list itself to `localStorage` is not included yet.
 
 ## Payload
 
@@ -199,7 +201,7 @@ This exposes the webhook URL in the browser, so keep it to disposable testing we
 
 ## Current Boundary
 
-This version does not send to GitHub directly yet. Slack support is currently a local-receiver Incoming Webhook prototype. Received feedback is stored by the local receiver. The drawer list inside the widget is kept in memory only and is cleared on reload — wire up `endpoint` if you need persistence.
+This version does not send to GitHub directly yet. Slack support is currently a local-receiver Incoming Webhook prototype. Received feedback is stored by the local receiver. The drawer list inside the widget is kept in memory only and is cleared on reload; only the reviewer name is persisted to `localStorage`. Wire up `endpoint` if you need feedback persistence.
 
 Not included yet:
 
