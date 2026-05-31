@@ -45,7 +45,6 @@ PatchLoop は、普通の HTML に `script` tag で埋め込める standalone wi
   window.PatchLoop.init({
     projectId: "patchloop",
     demoId: "plain-html-renewal-review",
-    reviewer: "Kosako",
     endpoint: "http://localhost:4000/feedback",
     showDeliverySettings: true,
     onSubmit(payload) {
@@ -59,7 +58,8 @@ PatchLoop は、普通の HTML に `script` tag で埋め込める standalone wi
 
 - `projectId` (string) — payload に乗せるプロジェクト識別子
 - `demoId` (string) — payload に乗せるデモ識別子
-- `reviewer` (string, optional) — コメントフォームに初期表示する投稿者名
+- `reviewer` (string, optional) — コメントフォームに初期表示する投稿者名。未指定の場合は保存済み reviewer を `localStorage` から復元し、保存値もなければ空欄
+- `reviewerStorageKey` (string, optional) — reviewer 名を保存する `localStorage` key。デフォルトは `patchloop:reviewer`
 - `deliveryMode` (`"receiver"` | `"slack-webhook"` | `"none"`, optional) — 送信方式。デフォルトは `"receiver"`
 - `endpoint` (string, optional) — payload を `POST` する URL。未設定なら送信しない
 - `slackWebhookUrl` (string, optional) — `deliveryMode: "slack-webhook"` 時にブラウザから直接送る Slack Incoming Webhook URL
@@ -84,8 +84,10 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 1. 右端のハンドルを押して drawer を開く
 2. 「コメントモード開始」を押す
 3. 画面上の場所をクリック、または範囲をドラッグする
-4. コメントと投稿者を書いて送信する
+4. コメントと投稿者を書いて送信する。投稿者が空欄の場合は送信できません
 5. drawer の一覧に追加され、`onSubmit(payload)` でも payload を受け取る。送信済みの項目は drawer 内から個別に編集・削除できる
+
+投稿者名は送信後に `localStorage` へ保存され、次回以降の widget 起動時に復元されます。feedback 本体の `localStorage` 永続化はまだ未対応です。
 
 ## Payload
 
@@ -199,7 +201,7 @@ window.PatchLoop.init({
 
 ## 現在の境界
 
-このバージョンは、まだ GitHub には直接送信しません。Slack は local receiver 経由の Incoming Webhook prototype として扱います。受信したフィードバックはローカル receiver に保存されます。widget 内の一覧はメモリ保持のみで、ページをリロードすると消えます。永続化したい場合は `endpoint` 経由で receiver に送ってください。
+このバージョンは、まだ GitHub には直接送信しません。Slack は local receiver 経由の Incoming Webhook prototype として扱います。受信したフィードバックはローカル receiver に保存されます。widget 内の一覧はメモリ保持のみで、ページをリロードすると消えます。投稿者名だけは `localStorage` に保存されます。feedback 本体を永続化したい場合は `endpoint` 経由で receiver に送ってください。
 
 未対応:
 

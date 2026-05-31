@@ -9,6 +9,7 @@
     slackWebhookUrl: "",
     showDeliverySettings: false,
     reviewer: "",
+    reviewerStorageKey: "patchloop:reviewer",
     position: "bottom-right",
     captureScreenshot: true,
     screenshotMaxBytes: 1_200_000,
@@ -29,6 +30,7 @@
 
   function init(options = {}) {
     state.options = { ...DEFAULTS, ...options };
+    state.options.reviewer = initialReviewer(state.options);
     injectStyles();
     renderShell();
     bindGlobalCapture();
@@ -52,6 +54,12 @@
     state.drag = null;
     state.feedbackMarkers.clear();
     state.editingId = null;
+  }
+
+  function initialReviewer(options) {
+    const configured = String(options.reviewer || "").trim();
+    if (configured) return configured;
+    return loadStoredReviewer(options.reviewerStorageKey);
   }
 
   function renderShell() {
@@ -86,8 +94,9 @@
         </label>
         <label>
           投稿者
-          <input data-pl-reviewer value="${escapeHtml(state.options.reviewer)}" placeholder="名前" />
+          <input data-pl-reviewer value="${escapeHtml(state.options.reviewer)}" placeholder="名前" aria-describedby="pl-reviewer-error" />
         </label>
+        <p class="pl-form-error" id="pl-reviewer-error" data-pl-form-error hidden></p>
         <div class="pl-form-actions">
           <button type="button" data-pl-cancel>キャンセル</button>
           <button type="submit">送信</button>
@@ -102,6 +111,7 @@
     root.querySelector("[data-pl-clear]").addEventListener("click", clearPins);
     root.querySelector("[data-pl-cancel]").addEventListener("click", cancelPendingComment);
     root.querySelector("[data-pl-comment]").addEventListener("submit", submitComment);
+    root.querySelector("[data-pl-reviewer]").addEventListener("input", () => clearFormError(root.querySelector("[data-pl-comment]")));
     root.querySelector("[data-pl-list]").addEventListener("click", handleListClick);
     root.querySelector("[data-pl-delivery-settings]")?.addEventListener("input", handleDeliverySettingsInput);
     root.querySelector("[data-pl-delivery-settings]")?.addEventListener("change", handleDeliverySettingsInput);
@@ -272,6 +282,7 @@
   function openCommentForm(point, options = {}) {
     const form = getRoot().querySelector("[data-pl-comment]");
     form.hidden = false;
+    clearFormError(form);
     form.style.left = `${Math.min(point.clientX + 14, window.innerWidth - 340)}px`;
     form.style.top = `${Math.min(point.clientY + 14, window.innerHeight - 250)}px`;
     const commentEl = form.querySelector("[data-pl-comment-text]");
@@ -284,7 +295,9 @@
   }
 
   function closeCommentForm() {
-    getRoot().querySelector("[data-pl-comment]").hidden = true;
+    const form = getRoot().querySelector("[data-pl-comment]");
+    clearFormError(form);
+    form.hidden = true;
     state.pendingTarget = null;
   }
 
@@ -311,19 +324,41 @@
     if (slackField) slackField.hidden = mode !== "slack-webhook";
   }
 
+  function showFormError(form, message) {
+    const errorEl = form?.querySelector("[data-pl-form-error]");
+    if (!errorEl) return;
+    errorEl.textContent = message;
+    errorEl.hidden = false;
+  }
+
+  function clearFormError(form) {
+    const errorEl = form?.querySelector("[data-pl-form-error]");
+    if (!errorEl) return;
+    errorEl.textContent = "";
+    errorEl.hidden = true;
+  }
+
   async function submitComment(event) {
     event.preventDefault();
 
     const root = getRoot();
+    const form = root.querySelector("[data-pl-comment]");
     const comment = root.querySelector("[data-pl-comment-text]").value.trim();
     const reviewer = root.querySelector("[data-pl-reviewer]").value.trim();
     if (!comment) return;
+    if (!reviewer) {
+      showFormError(form, "投稿者名を入力してください。");
+      root.querySelector("[data-pl-reviewer]").focus();
+      return;
+    }
+    clearFormError(form);
 
     if (state.editingId) {
       const target = state.feedback.find((item) => item.id === state.editingId);
       if (target) {
         target.comment = comment;
         target.reviewer = reviewer;
+        saveReviewer(reviewer);
         renderFeedbackList();
       }
       state.editingId = null;
@@ -333,6 +368,7 @@
 
     if (!state.pendingTarget) return;
 
+    saveReviewer(reviewer);
     const payload = buildPayload(comment, reviewer, state.pendingTarget);
     state.feedback.unshift(payload);
     finalizePendingMarker(payload.id);
@@ -552,6 +588,25 @@
       payload.delivery = { ok: false, error: error.message };
     }
     console.info("[PatchLoop] delivery", payload.id, payload.delivery);
+  }
+
+  function loadStoredReviewer(storageKey) {
+    if (!storageKey) return "";
+    try {
+      return String(window.localStorage.getItem(storageKey) || "").trim();
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function saveReviewer(reviewer) {
+    state.options.reviewer = reviewer;
+    if (!state.options.reviewerStorageKey) return;
+    try {
+      window.localStorage.setItem(state.options.reviewerStorageKey, reviewer);
+    } catch (_) {
+      // Storage can be unavailable in privacy-restricted contexts.
+    }
   }
 
   function shouldDeliverFeedback() {
@@ -1135,6 +1190,7 @@
       .pl-comment { position: fixed; z-index: 2147483001; width: min(320px, calc(100vw - 24px)); display: grid; gap: 10px; padding: 14px; background: #fff; border: 1px solid #d9e1dd; border-radius: 8px; box-shadow: 0 22px 70px rgba(20, 33, 29, 0.24); }
       .pl-comment label { display: grid; gap: 6px; color: #65716d; font-size: 12px; font-weight: 800; }
       .pl-comment textarea, .pl-comment input { width: 100%; border: 1px solid #d9e1dd; border-radius: 8px; padding: 9px 10px; color: #14211d; font: inherit; resize: vertical; }
+      .pl-form-error { margin: -2px 0 0; padding: 0; color: #b83d4d; font-size: 12px; font-weight: 800; }
       .pl-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
       .pl-pin { position: absolute; z-index: 2147482999; transform: translate(-50%, -50%); width: 30px; height: 30px; min-width: 30px; min-height: 30px; max-width: 30px; max-height: 30px; box-sizing: border-box; display: grid; place-items: center; padding: 0; line-height: 1; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font: 900 13px/1 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); cursor: pointer; }
       .pl-selection { position: fixed; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; }
