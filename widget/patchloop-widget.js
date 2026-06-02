@@ -16,6 +16,9 @@
     onSubmit: null
   };
 
+  const EXPORT_KIND = "patchloop-feedback-bundle";
+  const EXPORT_VERSION = 1;
+
   const state = {
     options: { ...DEFAULTS },
     active: false,
@@ -129,6 +132,7 @@
               <select data-pl-delivery-mode>
                 <option value="receiver"${state.options.deliveryMode === "receiver" ? " selected" : ""}>Receiver</option>
                 <option value="slack-webhook"${state.options.deliveryMode === "slack-webhook" ? " selected" : ""}>Slack direct</option>
+                <option value="download"${state.options.deliveryMode === "download" ? " selected" : ""}>Download</option>
                 <option value="none"${state.options.deliveryMode === "none" ? " selected" : ""}>送信なし</option>
               </select>
             </label>
@@ -611,17 +615,78 @@
 
   function shouldDeliverFeedback() {
     if (state.options.deliveryMode === "none") return false;
+    if (state.options.deliveryMode === "download") return true;
     if (state.options.deliveryMode === "slack-webhook") return Boolean(state.options.slackWebhookUrl);
     return Boolean(state.options.endpoint);
   }
 
   async function deliverFeedback(payload) {
+    if (state.options.deliveryMode === "download") {
+      downloadFeedbackBundle(payload);
+      return;
+    }
+
     if (state.options.deliveryMode === "slack-webhook") {
       await postSlackWebhook(payload);
       return;
     }
 
     await postFeedback(payload);
+  }
+
+  function downloadFeedbackBundle(payload) {
+    try {
+      const bundle = buildFeedbackBundle(payload);
+      const json = JSON.stringify(bundle, null, 2);
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = feedbackBundleFileName(payload);
+      link.style.display = "none";
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      payload.delivery = {
+        ok: true,
+        status: "downloaded",
+        target: "download",
+        fileName: link.download
+      };
+    } catch (error) {
+      payload.delivery = {
+        ok: false,
+        target: "download",
+        error: error.message
+      };
+    }
+    console.info("[PatchLoop] delivery", payload.id, payload.delivery);
+  }
+
+  function buildFeedbackBundle(payload) {
+    return {
+      kind: EXPORT_KIND,
+      version: EXPORT_VERSION,
+      exportedAt: new Date().toISOString(),
+      projectId: payload.projectId || "",
+      demoId: payload.demoId || "",
+      feedback: payload
+    };
+  }
+
+  function feedbackBundleFileName(payload) {
+    const project = safeFilePart(payload.projectId || "patchloop");
+    const demo = safeFilePart(payload.demoId || "feedback");
+    const id = safeFilePart(payload.id || Date.now());
+    return `${project}-${demo}-${id}.patchloop-feedback.json`;
+  }
+
+  function safeFilePart(value) {
+    return String(value || "feedback")
+      .replace(/[^a-zA-Z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80) || "feedback";
   }
 
   async function postSlackWebhook(payload) {
@@ -877,8 +942,8 @@
         const kind = (item.target && item.target.kind) || "point";
         const delivery = item.delivery
           ? item.delivery.ok
-            ? '<span class="pl-feedback-status pl-feedback-status-ok" title="delivered">✓</span>'
-            : '<span class="pl-feedback-status pl-feedback-status-fail" title="delivery failed">✗</span>'
+            ? `<span class="pl-feedback-status pl-feedback-status-ok" title="${escapeHtml(deliveryStatusText(item.delivery))}">✓</span>`
+            : `<span class="pl-feedback-status pl-feedback-status-fail" title="${escapeHtml(deliveryStatusText(item.delivery))}">✗</span>`
           : "";
         return `
           <article class="pl-feedback-item" data-feedback-id="${escapeHtml(item.id)}">
@@ -895,6 +960,20 @@
         `;
       })
       .join("");
+  }
+
+  function deliveryStatusText(delivery) {
+    if (!delivery) return "";
+    if (delivery.target === "download") {
+      if (delivery.ok) return `downloaded ${delivery.fileName || ""}`.trim();
+      return `download failed: ${delivery.error || "unknown error"}`;
+    }
+    if (delivery.target === "slack-webhook") {
+      if (delivery.ok) return "sent to Slack direct";
+      return `Slack direct failed: ${delivery.error || "unknown error"}`;
+    }
+    if (delivery.ok) return `delivered ${delivery.status || ""}`.trim();
+    return `delivery failed: ${delivery.error || delivery.status || "unknown error"}`;
   }
 
   function renumberMarkers() {

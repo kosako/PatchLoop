@@ -33,7 +33,9 @@ script-tag widget:
 - 任意の `onSubmit(payload)` callback
 - 任意の `endpoint` 設定で payload を receiver に POST
 - ローカル receiver から任意の Slack Incoming Webhook へ、スクショリンク / image block / 任意の file upload 付きで転送
-- 設定または drawer UI から、receiver 経由送信 / Slack webhook 直送 / 送信なしを切り替え
+- Download mode で 1 feedback ごとの versioned JSON bundle を保存
+- receiver inbox から download mode の bundle を import
+- 設定または drawer UI から、receiver 経由送信 / Slack webhook 直送 / download / 送信なしを切り替え
 
 ## 埋め込み Widget
 
@@ -60,7 +62,7 @@ PatchLoop は、普通の HTML に `script` tag で埋め込める standalone wi
 - `demoId` (string) — payload に乗せるデモ識別子
 - `reviewer` (string, optional) — コメントフォームに初期表示する投稿者名。未指定の場合は保存済み reviewer を `localStorage` から復元し、保存値もなければ空欄
 - `reviewerStorageKey` (string, optional) — reviewer 名を保存する `localStorage` key。デフォルトは `patchloop:reviewer`
-- `deliveryMode` (`"receiver"` | `"slack-webhook"` | `"none"`, optional) — 送信方式。デフォルトは `"receiver"`
+- `deliveryMode` (`"receiver"` | `"slack-webhook"` | `"download"` | `"none"`, optional) — 送信方式。デフォルトは `"receiver"`
 - `endpoint` (string, optional) — payload を `POST` する URL。未設定なら送信しない
 - `slackWebhookUrl` (string, optional) — `deliveryMode: "slack-webhook"` 時にブラウザから直接送る Slack Incoming Webhook URL
 - `showDeliverySettings` (boolean, optional) — drawer 内に送信先切替 UI を表示するか。デフォルトは `false`
@@ -132,7 +134,9 @@ node server/receive.js
 ```
 
 - `POST /feedback` で payload を受け取り、デフォルトでは `server/feedback.json` に追記します
+- `POST /import` で download mode の JSON bundle を読み込み、通常の inbox と同じ形式で保存します
 - `GET /` で受信した feedback の一覧（inbox）を表示します
+- inbox UI から `.patchloop-feedback.json` を選択して import できます
 - `GET /feedback.json` で raw JSON を返します
 - `GET /screenshots/:file` で保存済み screenshot を返します
 - `PORT` / `HOST` env で変更可能（デフォルトは `127.0.0.1:4000`）
@@ -199,9 +203,49 @@ window.PatchLoop.init({
 
 このモードでは webhook URL がブラウザに見えるため、公開環境では使い捨ての検証用 webhook に限定してください。Incoming Webhook はブラウザ内で生成した `dataUrl` screenshot を Slack image/file として送れないため、Slack direct mode が Slack に送るのはコメント本文・ページ・対象位置・selector・viewport・screenshot 取得ステータスです。widget 内の payload と `onSubmit` には screenshot 情報が残ります。画像そのものを Slack に表示または file upload したい場合は、receiver mode で `publicBaseUrl` / `slackBotToken` / `slackUploadChannelId` を使ってください。ブラウザ直送は `no-cors` で投げるため、成功レスポンスの本文は取得できません。
 
+## Download mode と receiver import
+
+`deliveryMode: "download"` を使うと、receiver や Slack webhook を使わずに feedback をローカルファイルとして保存できます。
+
+```js
+window.PatchLoop.init({
+  deliveryMode: "download",
+  showDeliverySettings: true
+});
+```
+
+送信時に `<project>-<demo>-<feedback-id>.patchloop-feedback.json` が保存されます。この bundle は単一 JSON ファイルで、現時点では ZIP ではありません。形式は versioned です。
+
+```json
+{
+  "kind": "patchloop-feedback-bundle",
+  "version": 1,
+  "exportedAt": "2026-06-02T00:00:00.000Z",
+  "projectId": "patchloop",
+  "demoId": "plain-html-renewal-review",
+  "feedback": {
+    "id": "pl_...",
+    "screenshot": {
+      "status": "captured",
+      "dataUrl": "data:image/svg+xml;base64,..."
+    }
+  }
+}
+```
+
+Import するには receiver を起動し、inbox (`http://127.0.0.1:4000/`) の `Import feedback bundle` から `.patchloop-feedback.json` を選択します。API から送る場合は同じ JSON を `POST /import` に投げます。
+
+```sh
+curl -X POST http://127.0.0.1:4000/import \
+  -H "Content-Type: application/json" \
+  --data-binary @patchloop-feedback.json
+```
+
+receiver は bundle version と payload shape を検証し、screenshot の `dataUrl` を `server/screenshots/` に保存してから `server/feedback.json` に追記します。import した feedback には `source: "import"` / `importedAt` が付きます。Slack への再転送はせず、inbox 上では `Slack: skipped` と表示されます。
+
 ## 現在の境界
 
-このバージョンは、まだ GitHub には直接送信しません。Slack は local receiver 経由の Incoming Webhook prototype として扱います。受信したフィードバックはローカル receiver に保存されます。widget 内の一覧はメモリ保持のみで、ページをリロードすると消えます。投稿者名だけは `localStorage` に保存されます。feedback 本体を永続化したい場合は `endpoint` 経由で receiver に送ってください。
+このバージョンは、まだ GitHub には直接送信しません。Slack は local receiver 経由の Incoming Webhook prototype として扱います。受信したフィードバックはローカル receiver に保存されます。widget 内の一覧はメモリ保持のみで、ページをリロードすると消えます。投稿者名だけは `localStorage` に保存されます。feedback 本体を永続化・回収したい場合は `endpoint` 経由で receiver に送るか、download mode で bundle を保存してください。
 
 未対応:
 

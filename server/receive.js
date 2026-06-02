@@ -21,6 +21,8 @@ const SLACK_TIMEOUT_MS = Number(process.env.SLACK_TIMEOUT_MS || config.slackTime
 const SLACK_IMAGE_MODE = normalizeSlackImageMode(process.env.SLACK_IMAGE_MODE || config.slackImageMode || "auto");
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || config.slackBotToken || "";
 const SLACK_UPLOAD_CHANNEL_ID = process.env.SLACK_UPLOAD_CHANNEL_ID || config.slackUploadChannelId || "";
+const IMPORT_BUNDLE_KIND = "patchloop-feedback-bundle";
+const IMPORT_BUNDLE_VERSION = 1;
 
 let feedback = loadFeedback();
 
@@ -35,6 +37,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && req.url === "/feedback") {
     handlePostFeedback(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/import") {
+    handlePostImport(req, res);
     return;
   }
 
@@ -104,31 +111,7 @@ function normalizeSlackImageMode(value) {
 }
 
 function handlePostFeedback(req, res) {
-  let received = 0;
-  const chunks = [];
-  let aborted = false;
-
-  req.on("data", (chunk) => {
-    if (aborted) return;
-    received += chunk.length;
-    if (received > MAX_BODY_BYTES) {
-      aborted = true;
-      respondJson(res, 413, { ok: false, error: "Payload too large" });
-      req.destroy();
-      return;
-    }
-    chunks.push(chunk);
-  });
-
-  req.on("end", async () => {
-    if (aborted) return;
-    let payload;
-    try {
-      payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    } catch (_) {
-      respondJson(res, 400, { ok: false, error: "Invalid JSON" });
-      return;
-    }
+  readJsonBody(req, res, async (payload) => {
     let screenshot;
     try {
       screenshot = saveScreenshot(payload.screenshot, payload.id);
@@ -155,11 +138,151 @@ function handlePostFeedback(req, res) {
       slack: stored.integrations.slack
     });
   });
+}
+
+function handlePostImport(req, res) {
+  readJsonBody(req, res, async (body) => {
+    let imported;
+    let screenshot;
+    try {
+      imported = normalizeImportedBundle(body);
+      screenshot = saveScreenshot(imported.screenshot, imported.id);
+    } catch (error) {
+      respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const stored = {
+      ...imported,
+      receivedAt: now,
+      importedAt: now,
+      source: "import",
+      screenshot,
+      integrations: {
+        slack: { status: "skipped", reason: "import" }
+      }
+    };
+
+    feedback.unshift(stored);
+    persist();
+    console.log(`[PatchLoop receiver] imported feedback id=${stored.id || "?"} comment="${truncate(stored.comment || "", 60)}"`);
+    respondJson(res, 201, {
+      ok: true,
+      id: stored.id,
+      count: feedback.length,
+      source: "import"
+    });
+  });
+}
+
+function readJsonBody(req, res, onJson) {
+  let received = 0;
+  const chunks = [];
+  let aborted = false;
+
+  req.on("data", (chunk) => {
+    if (aborted) return;
+    received += chunk.length;
+    if (received > MAX_BODY_BYTES) {
+      aborted = true;
+      respondJson(res, 413, { ok: false, error: "Payload too large" });
+      req.destroy();
+      return;
+    }
+    chunks.push(chunk);
+  });
+
+  req.on("end", async () => {
+    if (aborted) return;
+    let payload;
+    try {
+      payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } catch (_) {
+      respondJson(res, 400, { ok: false, error: "Invalid JSON" });
+      return;
+    }
+    try {
+      await onJson(payload);
+    } catch (error) {
+      if (!res.headersSent) {
+        respondJson(res, error.statusCode || 500, { ok: false, error: error.message });
+      }
+    }
+  });
 
   req.on("error", (error) => {
     if (aborted) return;
     respondJson(res, 500, { ok: false, error: error.message });
   });
+}
+
+function normalizeImportedBundle(body) {
+  requirePlainObject(body, "Import body");
+
+  let payload;
+  if (body.kind === IMPORT_BUNDLE_KIND) {
+    if (body.version !== IMPORT_BUNDLE_VERSION) {
+      throw httpError(`Unsupported PatchLoop bundle version: ${body.version}`, 400);
+    }
+    payload = body.feedback;
+  } else if (body.feedback) {
+    payload = body.feedback;
+  } else {
+    payload = body;
+  }
+
+  validateFeedbackPayload(payload);
+  const imported = JSON.parse(JSON.stringify(payload));
+  delete imported.delivery;
+  delete imported.integrations;
+  delete imported.receivedAt;
+  delete imported.importedAt;
+  delete imported.source;
+  return imported;
+}
+
+function validateFeedbackPayload(payload) {
+  requirePlainObject(payload, "Feedback payload");
+  requireNonEmptyString(payload.id, "feedback.id");
+  requireNonEmptyString(payload.comment, "feedback.comment");
+  requireNonEmptyString(payload.reviewer, "feedback.reviewer");
+  requirePlainObject(payload.page, "feedback.page");
+  requirePlainObject(payload.target, "feedback.target");
+  requirePlainObject(payload.environment, "feedback.environment");
+
+  if (payload.projectId != null) requireString(payload.projectId, "feedback.projectId");
+  if (payload.demoId != null) requireString(payload.demoId, "feedback.demoId");
+  if (payload.createdAt != null) requireString(payload.createdAt, "feedback.createdAt");
+  if (payload.page.url != null) requireString(payload.page.url, "feedback.page.url");
+  if (payload.page.title != null) requireString(payload.page.title, "feedback.page.title");
+
+  if (!["point", "area"].includes(payload.target.kind)) {
+    throw httpError("feedback.target.kind must be point or area", 400);
+  }
+  if (payload.target.selector != null) requireString(payload.target.selector, "feedback.target.selector");
+  if (payload.target.text != null) requireString(payload.target.text, "feedback.target.text");
+  if (payload.target.area != null) requirePlainObject(payload.target.area, "feedback.target.area");
+  if (payload.screenshot != null) requirePlainObject(payload.screenshot, "feedback.screenshot");
+}
+
+function requirePlainObject(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw httpError(`${label} must be an object`, 400);
+  }
+}
+
+function requireString(value, label) {
+  if (typeof value !== "string") {
+    throw httpError(`${label} must be a string`, 400);
+  }
+}
+
+function requireNonEmptyString(value, label) {
+  requireString(value, label);
+  if (!value.trim()) {
+    throw httpError(`${label} must not be empty`, 400);
+  }
 }
 
 function handleGetInbox(req, res) {
@@ -728,6 +851,8 @@ function renderInbox(items) {
     const reviewer = escapeHtml(item.reviewer || "");
     const createdAt = escapeHtml(item.createdAt || "");
     const receivedAt = escapeHtml(item.receivedAt || "");
+    const source = escapeHtml(item.source || "receiver");
+    const importedAt = escapeHtml(item.importedAt || "");
     const viewport = env.viewport
       ? `${env.viewport.width}×${env.viewport.height}`
       : "";
@@ -745,8 +870,10 @@ function renderInbox(items) {
           <div><dt>Title</dt><dd>${pageTitle}</dd></div>
           <div><dt>Selector</dt><dd><code>${selector}</code></dd></div>
           <div><dt>Viewport</dt><dd>${escapeHtml(viewport)}</dd></div>
+          <div><dt>Source</dt><dd>${source}</dd></div>
           <div><dt>Slack</dt><dd>${escapeHtml(formatSlackStatus(slack))}</dd></div>
           <div><dt>Created</dt><dd>${createdAt}</dd></div>
+          ${importedAt ? `<div><dt>Imported</dt><dd>${importedAt}</dd></div>` : ""}
         </dl>
         <details>
           <summary>raw payload</summary>
@@ -769,6 +896,14 @@ function renderInbox(items) {
     .meta { color: #65716d; margin-bottom: 24px; font-size: 13px; }
     .meta a { color: #0f7b63; }
     .empty { color: #65716d; }
+    .import-panel { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin: 0 0 18px; padding: 14px 16px; border: 1px solid #d9e1dd; border-radius: 8px; background: #fff; }
+    .import-panel h2 { margin: 0; font-size: 15px; }
+    .import-panel p { margin: 4px 0 0; color: #65716d; font-size: 12px; }
+    .import-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .import-form input { max-width: min(360px, 100%); }
+    .import-form button { min-height: 34px; border: 1px solid #0f7b63; border-radius: 6px; background: #0f7b63; color: #fff; padding: 0 12px; font: inherit; font-size: 13px; font-weight: 800; cursor: pointer; }
+    .import-status { min-width: 160px; color: #65716d; font-size: 12px; }
+    .import-status[data-state="error"] { color: #b83d4d; font-weight: 800; }
     .card { background: #fff; border: 1px solid #d9e1dd; border-radius: 8px; padding: 16px 18px; margin-bottom: 14px; box-shadow: 0 4px 12px rgba(20, 33, 29, 0.05); }
     .card header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; color: #65716d; }
     .kind { padding: 2px 8px; border-radius: 999px; font-weight: 800; color: #fff; font-size: 11px; text-transform: uppercase; }
@@ -796,9 +931,67 @@ function renderInbox(items) {
 <body>
   <h1>PatchLoop Inbox</h1>
   <p class="meta">${items.length} feedback received · <a href="/feedback.json">raw JSON</a></p>
+  ${renderImportPanel()}
   ${items.length === 0 ? '<p class="empty">まだフィードバックはありません。widget からコメントを送ると、ここに表示されます。</p>' : cards.join("")}
+  ${renderImportScript()}
 </body>
 </html>`;
+}
+
+function renderImportPanel() {
+  return `
+  <section class="import-panel">
+    <div>
+      <h2>Import feedback bundle</h2>
+      <p>Download mode で保存した .patchloop-feedback.json を読み込みます。</p>
+    </div>
+    <form class="import-form" data-import-form>
+      <input type="file" accept=".json,application/json" data-import-file />
+      <button type="submit">Import</button>
+      <span class="import-status" data-import-status></span>
+    </form>
+  </section>`;
+}
+
+function renderImportScript() {
+  return `<script>
+(() => {
+  const form = document.querySelector("[data-import-form]");
+  if (!form) return;
+  const input = form.querySelector("[data-import-file]");
+  const status = form.querySelector("[data-import-status]");
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    status.dataset.state = "";
+    const file = input.files && input.files[0];
+    if (!file) {
+      status.dataset.state = "error";
+      status.textContent = "Choose a JSON bundle first.";
+      return;
+    }
+
+    status.textContent = "Importing...";
+    try {
+      const text = await file.text();
+      const response = await fetch("/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: text
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(result.error || "Import failed");
+      }
+      status.textContent = "Imported " + (result.id || "feedback") + ". Reloading...";
+      window.location.reload();
+    } catch (error) {
+      status.dataset.state = "error";
+      status.textContent = error.message;
+    }
+  });
+})();
+</script>`;
 }
 
 function renderScreenshotPreview(screenshot) {

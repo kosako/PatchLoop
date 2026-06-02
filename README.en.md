@@ -33,7 +33,9 @@ script-tag widget:
 - Optional `onSubmit(payload)` callback
 - Optional `endpoint` setting that POSTs payloads to the bundled local receiver
 - Optional Slack Incoming Webhook forwarding from the local receiver with screenshot links, image blocks, and optional file upload
-- Configurable delivery mode for receiver forwarding, direct Slack webhook delivery, or no delivery
+- Download mode that saves a versioned JSON bundle for each feedback item
+- Receiver inbox import for bundles created by download mode
+- Configurable delivery mode for receiver forwarding, direct Slack webhook delivery, download, or no delivery
 
 ## Embeddable Widget
 
@@ -60,7 +62,7 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 - `demoId` (string) — identifier carried in the payload
 - `reviewer` (string, optional) — pre-fills the reviewer field in the comment form. When omitted, the widget restores a saved reviewer from `localStorage`; otherwise the field starts empty
 - `reviewerStorageKey` (string, optional) — `localStorage` key used to persist the reviewer name; defaults to `patchloop:reviewer`
-- `deliveryMode` (`"receiver"` | `"slack-webhook"` | `"none"`, optional) — delivery target; defaults to `"receiver"`
+- `deliveryMode` (`"receiver"` | `"slack-webhook"` | `"download"` | `"none"`, optional) — delivery target; defaults to `"receiver"`
 - `endpoint` (string, optional) — URL the widget POSTs each payload to; nothing is sent when omitted
 - `slackWebhookUrl` (string, optional) — Slack Incoming Webhook URL used when `deliveryMode: "slack-webhook"`
 - `showDeliverySettings` (boolean, optional) — show the delivery target controls in the drawer; defaults to `false`
@@ -132,7 +134,9 @@ node server/receive.js
 ```
 
 - Accepts payload at `POST /feedback`, appending to `server/feedback.json` by default
+- Imports download-mode JSON bundles at `POST /import`, storing them in the same inbox format
 - Renders an inbox of received feedback at `GET /`
+- Imports `.patchloop-feedback.json` files from the inbox UI
 - Returns the raw JSON at `GET /feedback.json`
 - Serves saved screenshots from `GET /screenshots/:file`
 - Configurable via `PORT` / `HOST` env (default `127.0.0.1:4000`)
@@ -199,9 +203,49 @@ window.PatchLoop.init({
 
 This exposes the webhook URL in the browser, so keep it to disposable testing webhooks in public environments. Incoming Webhooks cannot send a browser-generated `dataUrl` screenshot as a Slack image or file, so Slack direct mode sends the comment, page, target position, selector, viewport, and screenshot capture status. The screenshot data still remains available in the widget payload and `onSubmit`. To show or upload the generated screenshot in Slack, use receiver mode with `publicBaseUrl` or Slack file upload settings. Direct browser delivery uses `no-cors`, so the response body is not available to the widget.
 
+## Download Mode And Receiver Import
+
+Use `deliveryMode: "download"` to save feedback as a local file without running the receiver or using a Slack webhook.
+
+```js
+window.PatchLoop.init({
+  deliveryMode: "download",
+  showDeliverySettings: true
+});
+```
+
+On submit, the widget downloads `<project>-<demo>-<feedback-id>.patchloop-feedback.json`. The bundle is a single JSON file for now, not a ZIP. The format is versioned.
+
+```json
+{
+  "kind": "patchloop-feedback-bundle",
+  "version": 1,
+  "exportedAt": "2026-06-02T00:00:00.000Z",
+  "projectId": "patchloop",
+  "demoId": "plain-html-renewal-review",
+  "feedback": {
+    "id": "pl_...",
+    "screenshot": {
+      "status": "captured",
+      "dataUrl": "data:image/svg+xml;base64,..."
+    }
+  }
+}
+```
+
+To import a bundle, start the receiver and open the inbox (`http://127.0.0.1:4000/`), then choose the `.patchloop-feedback.json` file under `Import feedback bundle`. To import through the API, post the same JSON to `POST /import`.
+
+```sh
+curl -X POST http://127.0.0.1:4000/import \
+  -H "Content-Type: application/json" \
+  --data-binary @patchloop-feedback.json
+```
+
+The receiver validates the bundle version and payload shape, saves the screenshot `dataUrl` to `server/screenshots/`, and appends the imported feedback to `server/feedback.json`. Imported feedback gets `source: "import"` and `importedAt`. The receiver does not forward imported feedback to Slack; the inbox shows `Slack: skipped`.
+
 ## Current Boundary
 
-This version does not send to GitHub directly yet. Slack support is currently a local-receiver Incoming Webhook prototype. Received feedback is stored by the local receiver. The drawer list inside the widget is kept in memory only and is cleared on reload; only the reviewer name is persisted to `localStorage`. Wire up `endpoint` if you need feedback persistence.
+This version does not send to GitHub directly yet. Slack support is currently a local-receiver Incoming Webhook prototype. Received feedback is stored by the local receiver. The drawer list inside the widget is kept in memory only and is cleared on reload; only the reviewer name is persisted to `localStorage`. Use a receiver `endpoint` or download mode if you need to persist or collect feedback.
 
 Not included yet:
 
