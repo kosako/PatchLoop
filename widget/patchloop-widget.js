@@ -10,6 +10,8 @@
     showDeliverySettings: false,
     reviewer: "",
     reviewerStorageKey: "patchloop:reviewer",
+    persistFeedback: true,
+    feedbackStorageKey: "patchloop:feedback",
     position: "bottom-right",
     captureScreenshot: true,
     screenshotMaxBytes: 1_200_000,
@@ -18,6 +20,7 @@
 
   const EXPORT_KIND = "patchloop-feedback-bundle";
   const EXPORT_VERSION = 1;
+  const FEEDBACK_STORAGE_VERSION = 1;
 
   const state = {
     options: { ...DEFAULTS },
@@ -37,6 +40,7 @@
     injectStyles();
     renderShell();
     bindGlobalCapture();
+    restorePersistedFeedback();
     applyCollapseState();
     renderFeedbackList();
     return api;
@@ -81,7 +85,7 @@
         <div class="pl-panel-body" data-pl-body>
           <p data-pl-help>コメントモードを開始して、画面上の気になる場所をクリックしてください。</p>
           <div class="pl-actions">
-            <button type="button" data-pl-clear>ピンを消す</button>
+            <button type="button" data-pl-clear>フィードバックを消す</button>
           </div>
           ${renderDeliverySettings()}
           <div class="pl-feedback-list" data-pl-list>
@@ -363,6 +367,7 @@
         target.comment = comment;
         target.reviewer = reviewer;
         saveReviewer(reviewer);
+        persistFeedbackList();
         renderFeedbackList();
       }
       state.editingId = null;
@@ -376,6 +381,7 @@
     const payload = buildPayload(comment, reviewer, state.pendingTarget);
     state.feedback.unshift(payload);
     finalizePendingMarker(payload.id);
+    persistFeedbackList();
     renderFeedbackList();
     expandPanel();
     closeCommentForm();
@@ -389,6 +395,7 @@
 
     if (shouldDeliverFeedback()) {
       await deliverFeedback(payload);
+      persistFeedbackList();
       renderFeedbackList();
     }
   }
@@ -611,6 +618,103 @@
     } catch (_) {
       // Storage can be unavailable in privacy-restricted contexts.
     }
+  }
+
+  function restorePersistedFeedback() {
+    removeCommittedMarkers();
+    state.feedbackMarkers.clear();
+    state.feedback = [];
+
+    if (!state.options.persistFeedback) return;
+
+    const stored = loadPersistedFeedback();
+    if (!stored.length) return;
+
+    state.feedback = stored;
+    restoreFeedbackMarkers();
+  }
+
+  function loadPersistedFeedback() {
+    if (!state.options.feedbackStorageKey) return [];
+
+    try {
+      const raw = window.localStorage.getItem(state.options.feedbackStorageKey);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!isMatchingFeedbackEnvelope(parsed)) return [];
+      return Array.isArray(parsed.feedback)
+        ? parsed.feedback.map(normalizePersistedFeedback).filter(Boolean)
+        : [];
+    } catch (error) {
+      console.warn("[PatchLoop] persisted feedback ignored", error);
+      return [];
+    }
+  }
+
+  function persistFeedbackList() {
+    if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return;
+
+    const envelope = feedbackStorageEnvelope(state.feedback);
+    try {
+      window.localStorage.setItem(state.options.feedbackStorageKey, JSON.stringify(envelope));
+    } catch (error) {
+      const compactEnvelope = feedbackStorageEnvelope(state.feedback, { omitScreenshotDataUrl: true });
+      try {
+        window.localStorage.setItem(state.options.feedbackStorageKey, JSON.stringify(compactEnvelope));
+        console.warn("[PatchLoop] persisted feedback without screenshot dataUrl", error);
+      } catch (retryError) {
+        console.warn("[PatchLoop] unable to persist feedback", retryError);
+      }
+    }
+  }
+
+  function clearPersistedFeedback() {
+    if (!state.options.feedbackStorageKey) return;
+
+    try {
+      window.localStorage.removeItem(state.options.feedbackStorageKey);
+    } catch (_) {
+      // Storage can be unavailable in privacy-restricted contexts.
+    }
+  }
+
+  function feedbackStorageEnvelope(feedback, options = {}) {
+    return {
+      version: FEEDBACK_STORAGE_VERSION,
+      projectId: state.options.projectId,
+      demoId: state.options.demoId,
+      pageUrl: window.location.href,
+      savedAt: new Date().toISOString(),
+      feedback: feedback.map((item) => serializeFeedbackForStorage(item, options)).filter(Boolean)
+    };
+  }
+
+  function serializeFeedbackForStorage(item, options = {}) {
+    try {
+      const copy = JSON.parse(JSON.stringify(item));
+      if (options.omitScreenshotDataUrl && copy.screenshot) {
+        delete copy.screenshot.dataUrl;
+        copy.screenshot.persistedWithoutDataUrl = true;
+      }
+      return copy;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function normalizePersistedFeedback(item) {
+    if (!item || typeof item !== "object") return null;
+    if (!item.id || !item.target || typeof item.target !== "object") return null;
+    return item;
+  }
+
+  function isMatchingFeedbackEnvelope(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    if (value.version !== FEEDBACK_STORAGE_VERSION) return false;
+    if (value.projectId !== state.options.projectId) return false;
+    if (value.demoId !== state.options.demoId) return false;
+    if (value.pageUrl !== window.location.href) return false;
+    return Array.isArray(value.feedback);
   }
 
   function shouldDeliverFeedback() {
@@ -836,16 +940,85 @@
     return { node: pin, label: pin };
   }
 
+  function restoreFeedbackMarkers() {
+    removeCommittedMarkers();
+    state.feedbackMarkers.clear();
+
+    state.feedback.slice().reverse().forEach((item, index) => {
+      const marker = markerFromFeedback(item);
+      if (!marker) return;
+      marker.label.textContent = String(index + 1);
+      marker.node.dataset.patchloopFeedbackId = item.id;
+      state.feedbackMarkers.set(item.id, marker);
+      bindMarkerHover(marker, item.id);
+    });
+  }
+
+  function markerFromFeedback(item) {
+    const target = item?.target || {};
+    if (target.kind === "area" && target.area) {
+      const rect = rectFromStoredArea(target.area);
+      if (!rect) return null;
+      return addArea(rect);
+    }
+
+    const point = pointFromStoredTarget(target);
+    return point ? addPin(point) : null;
+  }
+
+  function pointFromStoredTarget(target) {
+    const documentWidth = Math.max(document.documentElement.scrollWidth, window.innerWidth, 1);
+    const documentHeight = Math.max(document.documentElement.scrollHeight, window.innerHeight, 1);
+    const pageX = numberOrNull(target.documentX) != null
+      ? (numberOrNull(target.documentX) / 100) * documentWidth
+      : numberOrNull(target.pageX);
+    const pageY = numberOrNull(target.documentY) != null
+      ? (numberOrNull(target.documentY) / 100) * documentHeight
+      : numberOrNull(target.pageY);
+    if (pageX == null || pageY == null) return null;
+    return { pageX, pageY };
+  }
+
+  function rectFromStoredArea(area) {
+    const documentWidth = Math.max(document.documentElement.scrollWidth, window.innerWidth, 1);
+    const documentHeight = Math.max(document.documentElement.scrollHeight, window.innerHeight, 1);
+    const pageLeftPx = numberOrNull(area.documentX) != null
+      ? (numberOrNull(area.documentX) / 100) * documentWidth
+      : numberOrNull(area.pageX);
+    const pageTopPx = numberOrNull(area.documentY) != null
+      ? (numberOrNull(area.documentY) / 100) * documentHeight
+      : numberOrNull(area.pageY);
+    const widthPx = numberOrNull(area.documentWidth) != null
+      ? (numberOrNull(area.documentWidth) / 100) * documentWidth
+      : numberOrNull(area.clientWidth);
+    const heightPx = numberOrNull(area.documentHeight) != null
+      ? (numberOrNull(area.documentHeight) / 100) * documentHeight
+      : numberOrNull(area.clientHeight);
+
+    if (pageLeftPx == null || pageTopPx == null || widthPx == null || heightPx == null) return null;
+    return {
+      pageLeftPx,
+      pageTopPx,
+      widthPx: Math.max(1, widthPx),
+      heightPx: Math.max(1, heightPx)
+    };
+  }
+
+  function removeCommittedMarkers() {
+    document.querySelectorAll("[data-patchloop-pin]").forEach((node) => node.remove());
+    document.querySelectorAll("[data-patchloop-area]").forEach((node) => node.remove());
+  }
+
   function clearPins() {
     discardPendingMarker();
     state.editingId = null;
     closeCommentForm();
-    document.querySelectorAll("[data-patchloop-pin]").forEach((node) => node.remove());
-    document.querySelectorAll("[data-patchloop-area]").forEach((node) => node.remove());
+    removeCommittedMarkers();
     document.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
     state.feedbackMarkers.clear();
     removeSelectionBox();
     state.feedback = [];
+    clearPersistedFeedback();
     hideTooltip();
     renderFeedbackList();
   }
@@ -1025,6 +1198,7 @@
       state.editingId = null;
       closeCommentForm();
     }
+    persistFeedbackList();
     renumberMarkers();
     renderFeedbackList();
     hideTooltip();
@@ -1201,6 +1375,11 @@
 
   function round(value) {
     return Math.round(value * 10) / 10;
+  }
+
+  function numberOrNull(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
   }
 
   function cssEscape(value) {
