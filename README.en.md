@@ -16,6 +16,24 @@ python3 -m http.server 4173
 http://localhost:4173/examples/plain-html/
 ```
 
+## Development
+
+Install dependencies.
+
+```sh
+npm install
+```
+
+Run lint and tests.
+
+```sh
+npm run lint
+npm test
+npm run check
+```
+
+`npm test` uses the Node.js test runner to start the local receiver on a temporary port and verify `/feedback` and `/import` storage, validation, and screenshot handling. Test data is created under the OS temp directory and removed after each test.
+
 ## What Works Now
 
 script-tag widget:
@@ -30,6 +48,7 @@ script-tag widget:
 - Per-item edit and delete inside the drawer with marker renumbering
 - Payload with URL, point/area position, selector, viewport, browser, reviewer, and timestamp
 - Lightweight viewport screenshot snapshot (SVG) attached to each payload
+- `localStorage` persistence for the feedback list, including pin / area overlay restoration after reload
 - Optional `onSubmit(payload)` callback
 - Optional `endpoint` setting that POSTs payloads to the bundled local receiver
 - Optional Slack Incoming Webhook forwarding from the local receiver with screenshot links, image blocks, and optional file upload
@@ -62,6 +81,8 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 - `demoId` (string) — identifier carried in the payload
 - `reviewer` (string, optional) — pre-fills the reviewer field in the comment form. When omitted, the widget restores a saved reviewer from `localStorage`; otherwise the field starts empty
 - `reviewerStorageKey` (string, optional) — `localStorage` key used to persist the reviewer name; defaults to `patchloop:reviewer`
+- `persistFeedback` (boolean, optional) — save the feedback list to `localStorage` and restore it after reloads on the same project / demo / page URL; defaults to `true`
+- `feedbackStorageKey` (string, optional) — `localStorage` key used to persist the feedback list; defaults to `patchloop:feedback`
 - `deliveryMode` (`"receiver"` | `"slack-webhook"` | `"download"` | `"none"`, optional) — delivery target; defaults to `"receiver"`
 - `endpoint` (string, optional) — URL the widget POSTs each payload to; nothing is sent when omitted
 - `slackWebhookUrl` (string, optional) — Slack Incoming Webhook URL used when `deliveryMode: "slack-webhook"`
@@ -89,7 +110,7 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 4. Write a comment and reviewer name, then submit. Feedback cannot be submitted while the reviewer is blank
 5. The comment appears in the drawer list and is also passed to `onSubmit(payload)`. Each item can be edited or deleted from the list
 
-The reviewer name is saved to `localStorage` after submit and restored the next time the widget starts. Persisting the feedback list itself to `localStorage` is not included yet.
+The reviewer name is saved to `localStorage` after submit and restored the next time the widget starts. The feedback list is also saved to `localStorage` by default and restored after reloads on the same project / demo / page URL, including pins and area overlays. The drawer's clear action removes both visible markers and saved feedback. Set `persistFeedback: false` for memory-only behavior.
 
 ## Payload
 
@@ -245,7 +266,7 @@ The receiver validates the bundle version and payload shape, saves the screensho
 
 ## Current Boundary
 
-This version does not send to GitHub directly yet. Slack support is currently a local-receiver Incoming Webhook prototype. Received feedback is stored by the local receiver. The drawer list inside the widget is kept in memory only and is cleared on reload; only the reviewer name is persisted to `localStorage`. Use a receiver `endpoint` or download mode if you need to persist or collect feedback.
+This version does not send to GitHub directly yet. Slack support is currently a local-receiver Incoming Webhook prototype. Received feedback is stored by the local receiver. The widget feedback list can be persisted in browser `localStorage`, but there is still no shared long-term database. Use a receiver `endpoint` or download mode when you need to collect feedback outside the current browser.
 
 Not included yet:
 

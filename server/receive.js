@@ -114,6 +114,7 @@ function handlePostFeedback(req, res) {
   readJsonBody(req, res, async (payload) => {
     let screenshot;
     try {
+      validateFeedbackPayload(payload);
       screenshot = saveScreenshot(payload.screenshot, payload.id);
     } catch (error) {
       respondJson(res, error.statusCode || 400, { ok: false, error: error.message });

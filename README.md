@@ -16,6 +16,24 @@ python3 -m http.server 4173
 http://localhost:4173/examples/plain-html/
 ```
 
+## 開発
+
+依存を入れます。
+
+```sh
+npm install
+```
+
+lint と test を実行します。
+
+```sh
+npm run lint
+npm test
+npm run check
+```
+
+`npm test` は Node.js の test runner でローカル receiver を一時ポートに起動し、`/feedback` と `/import` の保存・検証・screenshot 処理を確認します。テストデータは OS の一時ディレクトリに作られ、終了時に削除されます。
+
 ## 現在できること
 
 script-tag widget:
@@ -30,6 +48,7 @@ script-tag widget:
 - 個別の編集・削除と残りマーカーの自動再番号付け
 - URL / 点・範囲位置 / selector / viewport / browser / reviewer / timestamp を含む payload
 - viewport の lightweight screenshot snapshot（SVG）を payload に添付
+- feedback list の `localStorage` 永続化と reload 後の pin / area overlay 復元
 - 任意の `onSubmit(payload)` callback
 - 任意の `endpoint` 設定で payload を receiver に POST
 - ローカル receiver から任意の Slack Incoming Webhook へ、スクショリンク / image block / 任意の file upload 付きで転送
@@ -62,6 +81,8 @@ PatchLoop は、普通の HTML に `script` tag で埋め込める standalone wi
 - `demoId` (string) — payload に乗せるデモ識別子
 - `reviewer` (string, optional) — コメントフォームに初期表示する投稿者名。未指定の場合は保存済み reviewer を `localStorage` から復元し、保存値もなければ空欄
 - `reviewerStorageKey` (string, optional) — reviewer 名を保存する `localStorage` key。デフォルトは `patchloop:reviewer`
+- `persistFeedback` (boolean, optional) — feedback list を `localStorage` に保存し、同じ project / demo / page URL の reload 後に復元するか。デフォルトは `true`
+- `feedbackStorageKey` (string, optional) — feedback list を保存する `localStorage` key。デフォルトは `patchloop:feedback`
 - `deliveryMode` (`"receiver"` | `"slack-webhook"` | `"download"` | `"none"`, optional) — 送信方式。デフォルトは `"receiver"`
 - `endpoint` (string, optional) — payload を `POST` する URL。未設定なら送信しない
 - `slackWebhookUrl` (string, optional) — `deliveryMode: "slack-webhook"` 時にブラウザから直接送る Slack Incoming Webhook URL
@@ -89,7 +110,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 4. コメントと投稿者を書いて送信する。投稿者が空欄の場合は送信できません
 5. drawer の一覧に追加され、`onSubmit(payload)` でも payload を受け取る。送信済みの項目は drawer 内から個別に編集・削除できる
 
-投稿者名は送信後に `localStorage` へ保存され、次回以降の widget 起動時に復元されます。feedback 本体の `localStorage` 永続化はまだ未対応です。
+投稿者名は送信後に `localStorage` へ保存され、次回以降の widget 起動時に復元されます。feedback list もデフォルトで `localStorage` に保存され、同じ project / demo / page URL の reload 後に drawer list と pin / area overlay が復元されます。drawer の「フィードバックを消す」は、表示中の marker と保存済み feedback の両方を削除します。永続化を使わず memory-only にしたい場合は `persistFeedback: false` を指定してください。
 
 ## Payload
 
@@ -245,7 +266,7 @@ receiver は bundle version と payload shape を検証し、screenshot の `dat
 
 ## 現在の境界
 
-このバージョンは、まだ GitHub には直接送信しません。Slack は local receiver 経由の Incoming Webhook prototype として扱います。受信したフィードバックはローカル receiver に保存されます。widget 内の一覧はメモリ保持のみで、ページをリロードすると消えます。投稿者名だけは `localStorage` に保存されます。feedback 本体を永続化・回収したい場合は `endpoint` 経由で receiver に送るか、download mode で bundle を保存してください。
+このバージョンは、まだ GitHub には直接送信しません。Slack は local receiver 経由の Incoming Webhook prototype として扱います。受信したフィードバックはローカル receiver に保存されます。widget 内の feedback list はブラウザの `localStorage` に保存できますが、チーム共有や長期保存用の永続 DB はまだありません。feedback を回収したい場合は `endpoint` 経由で receiver に送るか、download mode で bundle を保存してください。
 
 未対応:
 
