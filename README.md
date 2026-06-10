@@ -16,6 +16,24 @@ python3 -m http.server 4173
 http://localhost:4173/examples/plain-html/
 ```
 
+## 開発
+
+依存を入れます。
+
+```sh
+npm install
+```
+
+lint と test を実行します。
+
+```sh
+npm run lint
+npm test
+npm run check
+```
+
+`npm test` は Node.js の test runner でローカル receiver を一時ポートに起動し、`/feedback` と `/import` の保存・検証・screenshot 処理を確認します。テストデータは OS の一時ディレクトリに作られ、終了時に削除されます。
+
 ## 現在できること
 
 script-tag widget:

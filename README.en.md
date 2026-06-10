@@ -16,6 +16,24 @@ python3 -m http.server 4173
 http://localhost:4173/examples/plain-html/
 ```
 
+## Development
+
+Install dependencies.
+
+```sh
+npm install
+```
+
+Run lint and tests.
+
+```sh
+npm run lint
+npm test
+npm run check
+```
+
+`npm test` uses the Node.js test runner to start the local receiver on a temporary port and verify `/feedback` and `/import` storage, validation, and screenshot handling. Test data is created under the OS temp directory and removed after each test.
+
 ## What Works Now
 
 script-tag widget:

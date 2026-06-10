@@ -1,0 +1,15 @@
+{
+  "name": "patchloop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser feedback widget and local receiver prototype.",
+  "scripts": {
+    "start": "node server/receive.js",
+    "lint": "eslint .",
+    "test": "node --test",
+    "check": "npm run lint && npm test"
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0"
+  }
+}
