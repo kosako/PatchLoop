@@ -51,6 +51,8 @@ script-tag widget:
 - URL / 点・範囲位置 / selector / viewport / browser / reviewer / timestamp を含む payload
 - viewport の lightweight screenshot snapshot（SVG）を payload に添付
 - feedback list の `localStorage` 永続化と reload 後の pin / area overlay 復元
+- ウィンドウリサイズ時は selector で対象要素を引き直し、pin / area を要素に追従して再配置
+- 再配置できない場合（要素が見つからない・非表示など）は従来座標のまま、marker と一覧に近似表示（≈）
 - 任意の `onSubmit(payload)` callback
 - 任意の `endpoint` 設定で payload を receiver に POST
 - ローカル receiver から任意の Slack Incoming Webhook へ、スクショリンク / image block / 任意の file upload 付きで転送
@@ -137,6 +139,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 - `target.area`
 - `target.selector`
 - `target.text`
+- `target.anchor` — 対象要素 rect 内の相対位置（%）。area の場合は `width` / `height` も含む。リサイズ・reload 時の要素への再アンカーに使用
 - `environment.viewport`
 - `environment.browser`
 - `environment.language`
@@ -146,7 +149,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 
 `target.kind` は `point` または `area` です。範囲選択の場合は `target.area` に viewport 上の percentage (`x` / `y` / `width` / `height`) に加えて、`clientX/Y/Width/Height`、`pageX/Y`、`documentX/Y/Width/Height` のピクセル値も入ります。
 
-`clientX/clientY` は現在の viewport 上の位置、`pageX/pageY` はスクロールを含む document 上の位置です。pin / area overlay は document 上に固定されるため、スクロールしても対象箇所に追従します。
+`clientX/clientY` は現在の viewport 上の位置、`pageX/pageY` はスクロールを含む document 上の位置です。pin / area overlay は document 上に固定されるため、スクロールしても対象箇所に追従します。ウィンドウリサイズでレイアウトが変わった場合は `target.selector` + `target.anchor` で対象要素に再アンカーされ、保存座標も再計算されます。
 
 ## ローカル receiver
 

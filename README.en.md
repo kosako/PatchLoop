@@ -51,6 +51,8 @@ script-tag widget:
 - Payload with URL, point/area position, selector, viewport, browser, reviewer, and timestamp
 - Lightweight viewport screenshot snapshot (SVG) attached to each payload
 - `localStorage` persistence for the feedback list, including pin / area overlay restoration after reload
+- Markers re-anchor to their target element (via selector) on window resize, following layout reflows
+- When re-anchoring fails (element missing or hidden), markers keep their stored position and show an approximate badge (≈)
 - Optional `onSubmit(payload)` callback
 - Optional `endpoint` setting that POSTs payloads to the bundled local receiver
 - Optional Slack Incoming Webhook forwarding from the local receiver with screenshot links, image blocks, and optional file upload
@@ -137,6 +139,7 @@ Main payload fields:
 - `target.area`
 - `target.selector`
 - `target.text`
+- `target.anchor` — position inside the target element rect (percent); includes `width` / `height` for areas. Used to re-anchor markers on resize and reload
 - `environment.viewport`
 - `environment.browser`
 - `environment.language`
@@ -146,7 +149,7 @@ Main payload fields:
 
 `target.kind` is either `point` or `area`. For area selections, `target.area` carries the viewport percentages (`x` / `y` / `width` / `height`) plus pixel values for `clientX/Y/Width/Height`, `pageX/Y`, and `documentX/Y/Width/Height`.
 
-`clientX/clientY` represent viewport coordinates, while `pageX/pageY` represent document coordinates including scroll. Pins and area overlays are anchored to document coordinates so they stay attached to the target while scrolling.
+`clientX/clientY` represent viewport coordinates, while `pageX/pageY` represent document coordinates including scroll. Pins and area overlays are anchored to document coordinates so they stay attached to the target while scrolling. When a window resize reflows the layout, markers re-anchor to the target element via `target.selector` + `target.anchor` and the stored coordinates are recalculated.
 
 ## Local Receiver
 
