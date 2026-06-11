@@ -159,6 +159,9 @@ node server/receive.js
 - Accepts payload at `POST /feedback`, appending to `server/feedback.json` by default
 - Imports download-mode JSON bundles at `POST /import`, storing them in the same inbox format
 - Renders an inbox of received feedback at `GET /`
+- The inbox has text search plus status / kind / reviewer / source / Slack filters
+- Each feedback has a triage status (`new` / `accepted` / `fixed` / `ignored`) editable from the card; statuses persist to `server/feedback.json`
+- `POST /feedback/:id/status` updates the status via the API (body: `{"status": "accepted"}`)
 - Imports `.patchloop-feedback.json` files from the inbox UI
 - Returns the raw JSON at `GET /feedback.json`
 - Serves saved screenshots from `GET /screenshots/:file`
