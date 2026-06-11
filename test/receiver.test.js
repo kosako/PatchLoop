@@ -102,6 +102,38 @@ test("POST /import rejects unsupported bundle versions", async (t) => {
   assert.deepEqual(await readStoredFeedback(receiver.storePath), []);
 });
 
+test("POST /feedback/:id/status updates triage status and persists it", async (t) => {
+  const receiver = await startReceiver(t);
+  const payload = feedbackPayload("pl_status_1");
+  await postJson(`${receiver.baseUrl}/feedback`, payload);
+
+  const response = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "accepted" });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body, { ok: true, id: payload.id, status: "accepted" });
+
+  const stored = await readStoredFeedback(receiver.storePath);
+  assert.equal(stored[0].status, "accepted");
+  assert.match(stored[0].statusUpdatedAt, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test("POST /feedback/:id/status rejects unknown statuses and ids", async (t) => {
+  const receiver = await startReceiver(t);
+  const payload = feedbackPayload("pl_status_2");
+  await postJson(`${receiver.baseUrl}/feedback`, payload);
+
+  const invalid = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "wontfix" });
+  assert.equal(invalid.status, 400);
+  assert.match(invalid.body.error, /status must be one of/);
+
+  const missing = await postJson(`${receiver.baseUrl}/feedback/pl_missing/status`, { status: "fixed" });
+  assert.equal(missing.status, 404);
+  assert.match(missing.body.error, /Unknown feedback id/);
+
+  const stored = await readStoredFeedback(receiver.storePath);
+  assert.equal(stored[0].status, undefined);
+});
+
 async function startReceiver(t) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const port = await getFreePort();

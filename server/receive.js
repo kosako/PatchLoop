@@ -23,6 +23,7 @@ const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || config.slackBotToken || "
 const SLACK_UPLOAD_CHANNEL_ID = process.env.SLACK_UPLOAD_CHANNEL_ID || config.slackUploadChannelId || "";
 const IMPORT_BUNDLE_KIND = "patchloop-feedback-bundle";
 const IMPORT_BUNDLE_VERSION = 1;
+const FEEDBACK_STATUSES = ["new", "accepted", "fixed", "ignored"];
 
 let feedback = loadFeedback();
 
@@ -42,6 +43,12 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && req.url === "/import") {
     handlePostImport(req, res);
+    return;
+  }
+
+  const statusMatch = req.method === "POST" && /^\/feedback\/([^/]+)\/status$/.exec(req.url);
+  if (statusMatch) {
+    handlePostStatus(req, res, decodeURIComponent(statusMatch[1]));
     return;
   }
 
@@ -174,6 +181,27 @@ function handlePostImport(req, res) {
       count: feedback.length,
       source: "import"
     });
+  });
+}
+
+function handlePostStatus(req, res, id) {
+  readJsonBody(req, res, async (body) => {
+    const status = body && body.status;
+    if (!FEEDBACK_STATUSES.includes(status)) {
+      respondJson(res, 400, { ok: false, error: `status must be one of: ${FEEDBACK_STATUSES.join(", ")}` });
+      return;
+    }
+
+    const item = feedback.find((entry) => entry.id === id);
+    if (!item) {
+      respondJson(res, 404, { ok: false, error: `Unknown feedback id: ${id}` });
+      return;
+    }
+
+    item.status = status;
+    item.statusUpdatedAt = new Date().toISOString();
+    persist();
+    respondJson(res, 200, { ok: true, id, status });
   });
 }
 
@@ -837,6 +865,10 @@ function present(value) {
   return value === undefined || value === null || value === "" ? "?" : value;
 }
 
+function feedbackStatusOf(item) {
+  return FEEDBACK_STATUSES.includes(item.status) ? item.status : "new";
+}
+
 function renderInbox(items) {
   const cards = items.map((item) => {
     const target = item.target || {};
@@ -854,14 +886,24 @@ function renderInbox(items) {
     const receivedAt = escapeHtml(item.receivedAt || "");
     const source = escapeHtml(item.source || "receiver");
     const importedAt = escapeHtml(item.importedAt || "");
+    const status = feedbackStatusOf(item);
+    const slackStatus = escapeHtml((slack && slack.status) || "unknown");
+    const searchText = escapeHtml([item.comment, item.reviewer, target.selector, page.url, page.title, item.id]
+      .filter(Boolean).join(" ").toLowerCase());
+    const statusOptions = FEEDBACK_STATUSES
+      .map((value) => `<option value="${value}"${value === status ? " selected" : ""}>${value}</option>`)
+      .join("");
     const viewport = env.viewport
       ? `${env.viewport.width}×${env.viewport.height}`
       : "";
     return `
-      <article class="card">
+      <article class="card" data-card data-status="${status}" data-kind="${kind}" data-reviewer="${reviewer}" data-source="${source}" data-slack="${slackStatus}" data-search="${searchText}">
         <header>
           <span class="kind kind-${kind}">${kind}</span>
           <span class="reviewer">${reviewer || "(no name)"}</span>
+          <label class="status-control">
+            <select data-status-select data-feedback-id="${escapeHtml(item.id || "")}">${statusOptions}</select>
+          </label>
           <time>${receivedAt}</time>
         </header>
         <p class="comment">${comment}</p>
@@ -905,8 +947,17 @@ function renderInbox(items) {
     .import-form button { min-height: 34px; border: 1px solid #0f7b63; border-radius: 6px; background: #0f7b63; color: #fff; padding: 0 12px; font: inherit; font-size: 13px; font-weight: 800; cursor: pointer; }
     .import-status { min-width: 160px; color: #65716d; font-size: 12px; }
     .import-status[data-state="error"] { color: #b83d4d; font-weight: 800; }
-    .card { background: #fff; border: 1px solid #d9e1dd; border-radius: 8px; padding: 16px 18px; margin-bottom: 14px; box-shadow: 0 4px 12px rgba(20, 33, 29, 0.05); }
+    .filter-panel { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 18px; padding: 12px 16px; border: 1px solid #d9e1dd; border-radius: 8px; background: #fff; }
+    .filter-panel input[type="search"] { flex: 1; min-width: 220px; min-height: 32px; border: 1px solid #d9e1dd; border-radius: 6px; padding: 4px 10px; font: inherit; font-size: 13px; }
+    .filter-panel select { min-height: 32px; border: 1px solid #d9e1dd; border-radius: 6px; background: #fff; padding: 4px 6px; font: inherit; font-size: 12px; color: #14211d; }
+    .filter-count { color: #65716d; font-size: 12px; min-width: 70px; text-align: right; margin-left: auto; }
+    .card { background: #fff; border: 1px solid #d9e1dd; border-left: 4px solid #8a9590; border-radius: 8px; padding: 16px 18px; margin-bottom: 14px; box-shadow: 0 4px 12px rgba(20, 33, 29, 0.05); }
+    .card[data-status="new"] { border-left-color: #8a9590; }
+    .card[data-status="accepted"] { border-left-color: #0f7b63; }
+    .card[data-status="fixed"] { border-left-color: #2c6fb0; }
+    .card[data-status="ignored"] { border-left-color: #c2c9c5; opacity: 0.72; }
     .card header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; color: #65716d; }
+    .status-control select { min-height: 26px; border: 1px solid #d9e1dd; border-radius: 999px; background: #f7f8f5; padding: 2px 8px; font: inherit; font-size: 11px; font-weight: 800; color: #14211d; cursor: pointer; }
     .kind { padding: 2px 8px; border-radius: 999px; font-weight: 800; color: #fff; font-size: 11px; text-transform: uppercase; }
     .kind-point { background: #0f7b63; }
     .kind-area { background: #d1495b; }
@@ -933,8 +984,11 @@ function renderInbox(items) {
   <h1>PatchLoop Inbox</h1>
   <p class="meta">${items.length} feedback received · <a href="/feedback.json">raw JSON</a></p>
   ${renderImportPanel()}
+  ${items.length === 0 ? "" : renderFilterPanel(items)}
   ${items.length === 0 ? '<p class="empty">まだフィードバックはありません。widget からコメントを送ると、ここに表示されます。</p>' : cards.join("")}
+  <p class="empty" data-filter-empty hidden>絞り込みに一致する feedback はありません。</p>
   ${renderImportScript()}
+  ${renderTriageScript()}
 </body>
 </html>`;
 }
@@ -952,6 +1006,84 @@ function renderImportPanel() {
       <span class="import-status" data-import-status></span>
     </form>
   </section>`;
+}
+
+function renderFilterPanel(items) {
+  const optionList = (values, allLabel) => [`<option value="">${allLabel}</option>`]
+    .concat(values.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`))
+    .join("");
+  const unique = (mapper) => Array.from(new Set(items.map(mapper).filter(Boolean))).sort();
+  const reviewers = unique((item) => item.reviewer || "");
+  const sources = unique((item) => item.source || "receiver");
+  const slackStatuses = unique((item) => (item.integrations && item.integrations.slack && item.integrations.slack.status) || "unknown");
+
+  return `
+  <section class="filter-panel" data-filter-panel>
+    <input type="search" placeholder="検索（コメント / reviewer / selector / URL）" data-filter-text />
+    <select data-filter-key="status">${optionList(FEEDBACK_STATUSES, "Status: all")}</select>
+    <select data-filter-key="kind">${optionList(["point", "area"], "Kind: all")}</select>
+    <select data-filter-key="reviewer">${optionList(reviewers, "Reviewer: all")}</select>
+    <select data-filter-key="source">${optionList(sources, "Source: all")}</select>
+    <select data-filter-key="slack">${optionList(slackStatuses, "Slack: all")}</select>
+    <span class="filter-count" data-filter-count></span>
+  </section>`;
+}
+
+function renderTriageScript() {
+  return `<script>
+(() => {
+  const cards = Array.from(document.querySelectorAll("[data-card]"));
+
+  const panel = document.querySelector("[data-filter-panel]");
+  if (panel) {
+    const textInput = panel.querySelector("[data-filter-text]");
+    const selects = Array.from(panel.querySelectorAll("[data-filter-key]"));
+    const count = panel.querySelector("[data-filter-count]");
+    const emptyNote = document.querySelector("[data-filter-empty]");
+
+    const applyFilters = () => {
+      const text = textInput.value.trim().toLowerCase();
+      let visible = 0;
+      cards.forEach((card) => {
+        const matchesText = !text || card.dataset.search.includes(text);
+        const matchesSelects = selects.every((select) => !select.value || card.dataset[select.dataset.filterKey] === select.value);
+        const show = matchesText && matchesSelects;
+        card.hidden = !show;
+        if (show) visible += 1;
+      });
+      count.textContent = visible === cards.length ? cards.length + " 件" : visible + " / " + cards.length + " 件";
+      if (emptyNote) emptyNote.hidden = visible > 0;
+    };
+
+    textInput.addEventListener("input", applyFilters);
+    selects.forEach((select) => select.addEventListener("change", applyFilters));
+    applyFilters();
+  }
+
+  document.querySelectorAll("[data-status-select]").forEach((select) => {
+    select.addEventListener("change", async () => {
+      const card = select.closest("[data-card]");
+      const previous = card.dataset.status;
+      select.disabled = true;
+      try {
+        const response = await fetch("/feedback/" + encodeURIComponent(select.dataset.feedbackId) + "/status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: select.value })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || "Status update failed");
+        card.dataset.status = select.value;
+      } catch (error) {
+        select.value = previous;
+        window.alert(error.message);
+      } finally {
+        select.disabled = false;
+      }
+    });
+  });
+})();
+</script>`;
 }
 
 function renderImportScript() {

@@ -159,6 +159,9 @@ node server/receive.js
 - `POST /feedback` で payload を受け取り、デフォルトでは `server/feedback.json` に追記します
 - `POST /import` で download mode の JSON bundle を読み込み、通常の inbox と同じ形式で保存します
 - `GET /` で受信した feedback の一覧（inbox）を表示します
+- inbox にはテキスト検索と status / kind / reviewer / source / Slack の絞り込みがあります
+- 各 feedback には triage status（`new` / `accepted` / `fixed` / `ignored`）があり、card 上の select から変更できます。status は `server/feedback.json` に永続化されます
+- `POST /feedback/:id/status` で API からも status を更新できます（body は `{"status": "accepted"}` 形式）
 - inbox UI から `.patchloop-feedback.json` を選択して import できます
 - `GET /feedback.json` で raw JSON を返します
 - `GET /screenshots/:file` で保存済み screenshot を返します
