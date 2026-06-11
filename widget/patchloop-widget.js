@@ -220,6 +220,7 @@
     let marker;
     if (state.drag.isDragging) {
       marker = addArea(rect);
+      const areaAnchor = buildAreaAnchor(target, rect);
       state.pendingTarget = {
         kind: "area",
         ...pointFromClient(rect.leftPx, rect.topPx),
@@ -241,7 +242,8 @@
         },
         selector: selectorFor(target),
         elementText: textFor(target),
-        anchor: areaAnchorFor(target, rect),
+        anchor: areaAnchor.anchor,
+        anchorElement: areaAnchor.anchorElement,
         markerNode: marker.node,
         markerLabelNode: marker.label,
         targetElement: target
@@ -250,12 +252,14 @@
     } else {
       const point = pointFromEvent(event);
       marker = addPin(point);
+      const pointAnchor = buildPointAnchor(target, point);
       state.pendingTarget = {
         kind: "point",
         ...point,
         selector: selectorFor(target),
         elementText: textFor(target),
-        anchor: pointAnchorFor(target, point),
+        anchor: pointAnchor.anchor,
+        anchorElement: pointAnchor.anchorElement,
         markerNode: marker.node,
         markerLabelNode: marker.label,
         targetElement: target
@@ -1068,11 +1072,70 @@
     };
   }
 
+  // Anchoring to oversized containers (body, main, …) is unstable: a few
+  // percent of an element taller than the viewport translates to hundreds of
+  // pixels whenever the container grows or reflows. Only elements that fit
+  // inside one viewport qualify; markers without a qualifying element stay on
+  // their page pixels and report an approximate position instead.
+  function anchorableElement(element) {
+    if (!element) return null;
+    if (element === document.body || element === document.documentElement) return null;
+    if (element.closest && element.closest("[data-patchloop-root]")) return null;
+    const rect = elementRectOrNull(element);
+    if (!rect) return null;
+    if (rect.width > window.innerWidth || rect.height > window.innerHeight) return null;
+    return element;
+  }
+
+  function buildPointAnchor(element, point) {
+    const anchorElement = anchorableElement(element);
+    const offsets = anchorElement && pointAnchorFor(anchorElement, point);
+    if (!offsets) return { anchor: null, anchorElement: null };
+    return { anchor: { ...offsets, selector: selectorFor(anchorElement) }, anchorElement };
+  }
+
+  // Drags often start in the gap between elements; the element under the
+  // area's center is the better anchor candidate for what the area covers.
+  // From there, climb to the nearest anchorable ancestor that contains the
+  // dragged rect: a tiny element under the center produces huge relative
+  // offsets that blow up whenever its own size changes (e.g. text wrapping).
+  function buildAreaAnchor(startElement, rect) {
+    const centerElement = document.elementFromPoint(
+      Math.min(Math.max(rect.leftPx + rect.widthPx / 2, 0), window.innerWidth - 1),
+      Math.min(Math.max(rect.topPx + rect.heightPx / 2, 0), window.innerHeight - 1)
+    );
+    let anchorElement = anchorableElement(centerElement) || anchorableElement(startElement);
+
+    let cursor = anchorElement;
+    for (let depth = 0; cursor && depth < 6; depth++) {
+      if (rectContainsArea(cursor.getBoundingClientRect(), rect)) {
+        anchorElement = cursor;
+        break;
+      }
+      const parent = anchorableElement(cursor.parentElement);
+      if (!parent) break;
+      cursor = parent;
+      anchorElement = parent;
+    }
+
+    const offsets = anchorElement && areaAnchorFor(anchorElement, rect);
+    if (!offsets) return { anchor: null, anchorElement: null };
+    return { anchor: { ...offsets, selector: selectorFor(anchorElement) }, anchorElement };
+  }
+
+  function rectContainsArea(elementRect, rect) {
+    return elementRect.left <= rect.leftPx + 1
+      && elementRect.top <= rect.topPx + 1
+      && elementRect.right >= rect.rightPx - 1
+      && elementRect.bottom >= rect.bottomPx - 1;
+  }
+
   function roundedAnchor(anchor) {
     if (!anchor) return null;
     const rounded = { x: round(anchor.x), y: round(anchor.y) };
     if (anchor.width != null) rounded.width = round(anchor.width);
     if (anchor.height != null) rounded.height = round(anchor.height);
+    if (anchor.selector) rounded.selector = anchor.selector;
     return rounded;
   }
 
@@ -1096,7 +1159,8 @@
   function reanchorGeometry(target, element) {
     const anchor = target && target.anchor;
     if (!anchor || numberOrNull(anchor.x) == null || numberOrNull(anchor.y) == null) return null;
-    const rect = elementRectOrNull(element) || elementRectOrNull(elementForSelector(target.selector));
+    const rect = elementRectOrNull(element)
+      || elementRectOrNull(elementForSelector(anchor.selector || target.selector));
     if (!rect) return null;
 
     if (target.kind === "area") {
@@ -1219,7 +1283,7 @@
 
     if (state.pendingTarget) {
       const pending = state.pendingTarget;
-      const geometry = reanchorGeometry(pending, pending.targetElement);
+      const geometry = reanchorGeometry(pending, pending.anchorElement);
       if (geometry) {
         refreshTargetCoordinates(pending, geometry);
         repositionMarker({ node: pending.markerNode }, pending);

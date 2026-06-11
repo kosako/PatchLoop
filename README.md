@@ -139,7 +139,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 - `target.area`
 - `target.selector`
 - `target.text`
-- `target.anchor` — 対象要素 rect 内の相対位置（%）。area の場合は `width` / `height` も含む。リサイズ・reload 時の要素への再アンカーに使用
+- `target.anchor` — アンカー要素 rect 内の相対位置（%）と `selector`。area の場合は `width` / `height` も含む。リサイズ・reload 時の要素への再アンカーに使用。area はドラッグ開始点ではなく範囲中心の要素にアンカーします。viewport より大きい要素（`main` / `body` 等）は相対位置が不安定なためアンカー対象にせず、その marker は従来座標（page px）固定 + 近似表示になります
 - `environment.viewport`
 - `environment.browser`
 - `environment.language`

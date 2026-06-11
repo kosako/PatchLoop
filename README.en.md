@@ -139,7 +139,7 @@ Main payload fields:
 - `target.area`
 - `target.selector`
 - `target.text`
-- `target.anchor` — position inside the target element rect (percent); includes `width` / `height` for areas. Used to re-anchor markers on resize and reload
+- `target.anchor` — position inside the anchor element rect (percent) plus its `selector`; includes `width` / `height` for areas. Used to re-anchor markers on resize and reload. Areas anchor to the element under the area's center rather than the drag start. Elements larger than the viewport (`main`, `body`, …) are skipped because relative positions inside them are unstable; such markers keep their page pixels and show the approximate badge
 - `environment.viewport`
 - `environment.browser`
 - `environment.language`
