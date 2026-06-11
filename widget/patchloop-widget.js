@@ -30,6 +30,8 @@
     suppressNextClick: false,
     feedback: [],
     feedbackMarkers: new Map(),
+    approximateIds: new Set(),
+    resizeTimer: null,
     editingId: null,
     collapsed: true
   };
@@ -51,6 +53,9 @@
     document.removeEventListener("mousemove", handleDocumentMouseMove, true);
     document.removeEventListener("mouseup", handleDocumentMouseUp, true);
     document.removeEventListener("click", suppressDocumentClick, true);
+    window.removeEventListener("resize", handleWindowResize);
+    window.clearTimeout(state.resizeTimer);
+    state.approximateIds.clear();
     document.querySelector("[data-patchloop-root]")?.remove();
     document.querySelectorAll("[data-patchloop-pin]").forEach((node) => node.remove());
     document.querySelectorAll("[data-patchloop-area]").forEach((node) => node.remove());
@@ -162,6 +167,8 @@
     document.addEventListener("mousemove", handleDocumentMouseMove, true);
     document.addEventListener("mouseup", handleDocumentMouseUp, true);
     document.addEventListener("click", suppressDocumentClick, true);
+    window.removeEventListener("resize", handleWindowResize);
+    window.addEventListener("resize", handleWindowResize);
   }
 
   function handleDocumentMouseDown(event) {
@@ -213,6 +220,7 @@
     let marker;
     if (state.drag.isDragging) {
       marker = addArea(rect);
+      const areaAnchor = buildAreaAnchor(target, rect);
       state.pendingTarget = {
         kind: "area",
         ...pointFromClient(rect.leftPx, rect.topPx),
@@ -234,6 +242,8 @@
         },
         selector: selectorFor(target),
         elementText: textFor(target),
+        anchor: areaAnchor.anchor,
+        anchorElement: areaAnchor.anchorElement,
         markerNode: marker.node,
         markerLabelNode: marker.label,
         targetElement: target
@@ -242,11 +252,14 @@
     } else {
       const point = pointFromEvent(event);
       marker = addPin(point);
+      const pointAnchor = buildPointAnchor(target, point);
       state.pendingTarget = {
         kind: "point",
         ...point,
         selector: selectorFor(target),
         elementText: textFor(target),
+        anchor: pointAnchor.anchor,
+        anchorElement: pointAnchor.anchorElement,
         markerNode: marker.node,
         markerLabelNode: marker.label,
         targetElement: target
@@ -429,7 +442,8 @@
         documentY: round(target.documentY),
         area: target.area || null,
         selector: target.selector,
-        text: target.elementText
+        text: target.elementText,
+        anchor: roundedAnchor(target.anchor)
       },
       environment: {
         viewport: {
@@ -590,12 +604,15 @@
       .join("\n");
   }
 
+  // Overlay coordinates must be viewport-relative at capture time, so derive
+  // them from the page-pixel position (kept fresh by re-anchoring) and the
+  // current scroll instead of the click-time client coordinates.
   function screenshotOverlayFor(target) {
     if (target.kind === "area" && target.area) {
       return {
         kind: "area",
-        x: Math.round(target.area.clientX),
-        y: Math.round(target.area.clientY),
+        x: Math.round(target.area.pageX - window.scrollX),
+        y: Math.round(target.area.pageY - window.scrollY),
         width: Math.round(target.area.clientWidth),
         height: Math.round(target.area.clientHeight)
       };
@@ -603,8 +620,8 @@
 
     return {
       kind: "point",
-      x: Math.round(target.clientX),
-      y: Math.round(target.clientY)
+      x: Math.round(target.pageX - window.scrollX),
+      y: Math.round(target.pageY - window.scrollY)
     };
   }
 
@@ -685,6 +702,7 @@
 
     state.feedback = stored;
     restoreFeedbackMarkers();
+    persistFeedbackList();
   }
 
   function loadPersistedFeedback() {
@@ -1004,11 +1022,20 @@
       marker.node.dataset.patchloopFeedbackId = item.id;
       state.feedbackMarkers.set(item.id, marker);
       bindMarkerHover(marker, item.id);
+      setMarkerApproximate(marker, state.approximateIds.has(item.id));
     });
   }
 
   function markerFromFeedback(item) {
     const target = item?.target || {};
+    const geometry = reanchorGeometry(target);
+    if (geometry) {
+      refreshTargetCoordinates(target, geometry);
+      state.approximateIds.delete(item.id);
+    } else if (viewportDiffersFromCreation(item)) {
+      state.approximateIds.add(item.id);
+    }
+
     if (target.kind === "area" && target.area) {
       const rect = rectFromStoredArea(target.area);
       if (!rect) return null;
@@ -1017,6 +1044,254 @@
 
     const point = pointFromStoredTarget(target);
     return point ? addPin(point) : null;
+  }
+
+  // --- Re-anchoring (issue #41) -------------------------------------------
+  // Markers are anchored to their target element via selector + the position
+  // inside the element rect (percent), so they can follow layout reflows
+  // (window resize, restore at a different viewport). Absolute page pixels
+  // remain the fallback when the element cannot be resolved.
+
+  function pointAnchorFor(element, point) {
+    const rect = elementRectOrNull(element);
+    if (!rect) return null;
+    return {
+      x: ((point.clientX - rect.left) / rect.width) * 100,
+      y: ((point.clientY - rect.top) / rect.height) * 100
+    };
+  }
+
+  function areaAnchorFor(element, rect) {
+    const elementRect = elementRectOrNull(element);
+    if (!elementRect) return null;
+    return {
+      x: ((rect.leftPx - elementRect.left) / elementRect.width) * 100,
+      y: ((rect.topPx - elementRect.top) / elementRect.height) * 100,
+      width: (rect.widthPx / elementRect.width) * 100,
+      height: (rect.heightPx / elementRect.height) * 100
+    };
+  }
+
+  // Anchoring to oversized containers (body, main, …) is unstable: a few
+  // percent of an element taller than the viewport translates to hundreds of
+  // pixels whenever the container grows or reflows. Only elements that fit
+  // inside one viewport qualify; markers without a qualifying element stay on
+  // their page pixels and report an approximate position instead.
+  function anchorableElement(element) {
+    if (!element) return null;
+    if (element === document.body || element === document.documentElement) return null;
+    if (element.closest && element.closest("[data-patchloop-root]")) return null;
+    const rect = elementRectOrNull(element);
+    if (!rect) return null;
+    if (rect.width > window.innerWidth || rect.height > window.innerHeight) return null;
+    return element;
+  }
+
+  function buildPointAnchor(element, point) {
+    const anchorElement = anchorableElement(element);
+    const offsets = anchorElement && pointAnchorFor(anchorElement, point);
+    if (!offsets) return { anchor: null, anchorElement: null };
+    return { anchor: { ...offsets, selector: selectorFor(anchorElement) }, anchorElement };
+  }
+
+  // Drags often start in the gap between elements; the element under the
+  // area's center is the better anchor candidate for what the area covers.
+  // From there, climb to the nearest anchorable ancestor that contains the
+  // dragged rect: a tiny element under the center produces huge relative
+  // offsets that blow up whenever its own size changes (e.g. text wrapping).
+  function buildAreaAnchor(startElement, rect) {
+    const centerElement = document.elementFromPoint(
+      Math.min(Math.max(rect.leftPx + rect.widthPx / 2, 0), window.innerWidth - 1),
+      Math.min(Math.max(rect.topPx + rect.heightPx / 2, 0), window.innerHeight - 1)
+    );
+    let anchorElement = anchorableElement(centerElement) || anchorableElement(startElement);
+
+    let cursor = anchorElement;
+    for (let depth = 0; cursor && depth < 6; depth++) {
+      if (rectContainsArea(cursor.getBoundingClientRect(), rect)) {
+        anchorElement = cursor;
+        break;
+      }
+      const parent = anchorableElement(cursor.parentElement);
+      if (!parent) break;
+      cursor = parent;
+      anchorElement = parent;
+    }
+
+    const offsets = anchorElement && areaAnchorFor(anchorElement, rect);
+    if (!offsets) return { anchor: null, anchorElement: null };
+    return { anchor: { ...offsets, selector: selectorFor(anchorElement) }, anchorElement };
+  }
+
+  function rectContainsArea(elementRect, rect) {
+    return elementRect.left <= rect.leftPx + 1
+      && elementRect.top <= rect.topPx + 1
+      && elementRect.right >= rect.rightPx - 1
+      && elementRect.bottom >= rect.bottomPx - 1;
+  }
+
+  function roundedAnchor(anchor) {
+    if (!anchor) return null;
+    const rounded = { x: round(anchor.x), y: round(anchor.y) };
+    if (anchor.width != null) rounded.width = round(anchor.width);
+    if (anchor.height != null) rounded.height = round(anchor.height);
+    if (anchor.selector) rounded.selector = anchor.selector;
+    return rounded;
+  }
+
+  function elementRectOrNull(element) {
+    if (!element || typeof element.getBoundingClientRect !== "function") return null;
+    if (!element.isConnected) return null;
+    const rect = element.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return null;
+    return rect;
+  }
+
+  function elementForSelector(selector) {
+    if (!selector) return null;
+    try {
+      return document.querySelector(selector);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function reanchorGeometry(target, element) {
+    const anchor = target && target.anchor;
+    if (!anchor || numberOrNull(anchor.x) == null || numberOrNull(anchor.y) == null) return null;
+    const rect = elementRectOrNull(element)
+      || elementRectOrNull(elementForSelector(anchor.selector || target.selector));
+    if (!rect) return null;
+
+    if (target.kind === "area") {
+      if (numberOrNull(anchor.width) == null || numberOrNull(anchor.height) == null) return null;
+      return {
+        kind: "area",
+        pageLeftPx: window.scrollX + rect.left + (anchor.x / 100) * rect.width,
+        pageTopPx: window.scrollY + rect.top + (anchor.y / 100) * rect.height,
+        widthPx: Math.max(1, (anchor.width / 100) * rect.width),
+        heightPx: Math.max(1, (anchor.height / 100) * rect.height)
+      };
+    }
+
+    return {
+      kind: "point",
+      pageX: window.scrollX + rect.left + (anchor.x / 100) * rect.width,
+      pageY: window.scrollY + rect.top + (anchor.y / 100) * rect.height
+    };
+  }
+
+  function refreshTargetCoordinates(target, geometry) {
+    if (geometry.kind === "area" && target.area) {
+      const topLeft = pointFromClient(geometry.pageLeftPx - window.scrollX, geometry.pageTopPx - window.scrollY);
+      const viewportWidth = Math.max(document.documentElement.clientWidth, 1);
+      const viewportHeight = Math.max(document.documentElement.clientHeight, 1);
+      const documentWidth = Math.max(document.documentElement.scrollWidth, 1);
+      const documentHeight = Math.max(document.documentElement.scrollHeight, 1);
+
+      assignPointFields(target, topLeft);
+      Object.assign(target.area, {
+        x: round(topLeft.x),
+        y: round(topLeft.y),
+        width: round((geometry.widthPx / viewportWidth) * 100),
+        height: round((geometry.heightPx / viewportHeight) * 100),
+        clientX: Math.round(topLeft.clientX),
+        clientY: Math.round(topLeft.clientY),
+        clientWidth: Math.round(geometry.widthPx),
+        clientHeight: Math.round(geometry.heightPx),
+        pageX: Math.round(topLeft.pageX),
+        pageY: Math.round(topLeft.pageY),
+        documentX: round(topLeft.documentX),
+        documentY: round(topLeft.documentY),
+        documentWidth: round((geometry.widthPx / documentWidth) * 100),
+        documentHeight: round((geometry.heightPx / documentHeight) * 100)
+      });
+      return;
+    }
+
+    const point = pointFromClient(geometry.pageX - window.scrollX, geometry.pageY - window.scrollY);
+    assignPointFields(target, point);
+  }
+
+  function assignPointFields(target, point) {
+    target.x = round(point.x);
+    target.y = round(point.y);
+    target.clientX = Math.round(point.clientX);
+    target.clientY = Math.round(point.clientY);
+    target.pageX = Math.round(point.pageX);
+    target.pageY = Math.round(point.pageY);
+    target.documentX = round(point.documentX);
+    target.documentY = round(point.documentY);
+  }
+
+  function repositionMarker(marker, target) {
+    if (!marker || !marker.node) return;
+    if (target.kind === "area" && target.area) {
+      Object.assign(marker.node.style, {
+        left: `${target.area.pageX}px`,
+        top: `${target.area.pageY}px`,
+        width: `${target.area.clientWidth}px`,
+        height: `${target.area.clientHeight}px`
+      });
+      return;
+    }
+    marker.node.style.left = `${target.pageX}px`;
+    marker.node.style.top = `${target.pageY}px`;
+  }
+
+  function setMarkerApproximate(marker, isApproximate) {
+    if (!marker || !marker.node) return;
+    marker.node.classList.toggle("pl-marker-approx", Boolean(isApproximate));
+    if (isApproximate) {
+      marker.node.title = "ウィンドウサイズが変わったため、位置が近似になっています";
+    } else {
+      marker.node.removeAttribute("title");
+    }
+  }
+
+  function viewportDiffersFromCreation(item) {
+    const viewport = item?.environment?.viewport;
+    if (!viewport) return true;
+    return Math.abs(viewport.width - window.innerWidth) > 1
+      || Math.abs(viewport.height - window.innerHeight) > 1;
+  }
+
+  function handleWindowResize() {
+    window.clearTimeout(state.resizeTimer);
+    state.resizeTimer = window.setTimeout(reanchorAllMarkers, 200);
+  }
+
+  function reanchorAllMarkers() {
+    let changed = false;
+
+    state.feedback.forEach((item) => {
+      const marker = state.feedbackMarkers.get(item.id);
+      const geometry = reanchorGeometry(item.target);
+      if (geometry) {
+        refreshTargetCoordinates(item.target, geometry);
+        repositionMarker(marker, item.target);
+        state.approximateIds.delete(item.id);
+        setMarkerApproximate(marker, false);
+        changed = true;
+      } else {
+        const isApproximate = viewportDiffersFromCreation(item);
+        if (isApproximate) state.approximateIds.add(item.id);
+        else state.approximateIds.delete(item.id);
+        setMarkerApproximate(marker, isApproximate);
+      }
+    });
+
+    if (state.pendingTarget) {
+      const pending = state.pendingTarget;
+      const geometry = reanchorGeometry(pending, pending.anchorElement);
+      if (geometry) {
+        refreshTargetCoordinates(pending, geometry);
+        repositionMarker({ node: pending.markerNode }, pending);
+      }
+    }
+
+    if (changed) persistFeedbackList();
+    renderFeedbackList();
   }
 
   // Restore prefers stored document pixels over document-size percentages:
@@ -1069,6 +1344,7 @@
     removeCommittedMarkers();
     document.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
     state.feedbackMarkers.clear();
+    state.approximateIds.clear();
     removeSelectionBox();
     state.feedback = [];
     clearPersistedFeedback();
@@ -1171,11 +1447,14 @@
             ? `<span class="pl-feedback-status pl-feedback-status-ok" title="${escapeHtml(deliveryStatusText(item.delivery))}">✓</span>`
             : `<span class="pl-feedback-status pl-feedback-status-fail" title="${escapeHtml(deliveryStatusText(item.delivery))}">✗</span>`
           : "";
+        const approximate = state.approximateIds.has(item.id)
+          ? '<span class="pl-feedback-approx" title="ウィンドウサイズが変わったため、位置が近似になっています">≈</span>'
+          : "";
         return `
           <article class="pl-feedback-item" data-feedback-id="${escapeHtml(item.id)}">
             <span class="pl-feedback-num kind-${escapeHtml(kind)}">${num}</span>
             <div class="pl-feedback-body">
-              <div class="pl-feedback-meta">${escapeHtml(item.reviewer || "(no name)")} ${delivery}</div>
+              <div class="pl-feedback-meta">${escapeHtml(item.reviewer || "(no name)")} ${delivery}${approximate}</div>
               <div class="pl-feedback-text">${escapeHtml(item.comment || "")}</div>
             </div>
             <div class="pl-feedback-actions">
@@ -1247,6 +1526,7 @@
       state.feedbackMarkers.delete(id);
     }
     state.feedback = state.feedback.filter((f) => f.id !== id);
+    state.approximateIds.delete(id);
     if (state.editingId === id) {
       state.editingId = null;
       closeCommentForm();
@@ -1509,6 +1789,8 @@
       .pl-area span { position: absolute; top: 6px; left: 6px; width: 30px; height: 30px; box-sizing: border-box; display: grid; place-items: center; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font-weight: 900; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); pointer-events: auto; cursor: pointer; }
       .pl-feedback-active [data-patchloop-pin], .pl-feedback-active .pl-area span { pointer-events: none; }
       .pl-target-highlight { outline: 2px dashed #d1495b; outline-offset: 2px; }
+      .pl-marker-approx { outline: 3px dashed #f2a33c !important; outline-offset: 2px; }
+      .pl-feedback-approx { color: #f2a33c; font-weight: 900; cursor: help; margin-left: 2px; }
       .pl-feedback-active, .pl-feedback-active * { cursor: crosshair !important; }
     `;
     document.head.append(style);
