@@ -165,6 +165,7 @@ node server/receive.js
 - inbox にはテキスト検索と status / kind / reviewer / source / Slack の絞り込みがあります
 - 各 feedback には triage status（`new` / `accepted` / `fixed` / `ignored`）があり、card 上の select から変更できます。status は `server/feedback.json` に永続化されます
 - `POST /feedback/:id/status` で API からも status を更新できます（body は `{"status": "accepted"}` 形式）
+- GitHub 連携を設定すると、inbox の各 card から GitHub Issue を作成できます（後述）
 - inbox UI から `.patchloop-feedback.json` を選択して import できます
 - `GET /feedback.json` で raw JSON を返します
 - `GET /screenshots/:file` で保存済み screenshot を返します
@@ -218,6 +219,25 @@ SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..." node server/receive.js
 ```
 
 Slack 転送に失敗しても、receiver は payload を保存します。Slack の結果は保存済み payload の `integrations.slack` と inbox の `Slack` 行で確認できます。screenshot の `dataUrl` は receiver でファイル保存されたあと payload から取り除かれ、`screenshot.url` として参照されます。
+
+### GitHub Issue 作成
+
+inbox の feedback から GitHub Issue を作成できます。Issue 作成は receiver 側で行い、token がブラウザに渡ることはありません。
+
+```sh
+GITHUB_TOKEN="github_pat_..." GITHUB_REPO="owner/repo" node server/receive.js
+```
+
+- `GITHUB_TOKEN` / `githubToken` — GitHub token。**fine-grained PAT で対象リポジトリ + Issues: write のみに絞ることを推奨**
+- `GITHUB_REPO` / `githubRepo` — Issue を作成するリポジトリ（`owner/repo` 形式）
+- `GITHUB_LABELS` / `githubLabels` — 付与するラベル（env はカンマ区切り、config は配列）
+- `GITHUB_ASSIGNEES` / `githubAssignees` — アサイン先（同上）
+- `GITHUB_API_BASE` / `githubApiBase` — API base URL（デフォルト `https://api.github.com`。GHES やテスト時に変更）
+- `GITHUB_TIMEOUT_MS` / `githubTimeoutMs` — timeout（デフォルト `8000`）
+
+設定済みの場合、inbox の各 card に `Create GitHub Issue` ボタンが表示されます。作成された issue には feedback 本文・reviewer・ページ URL・selector・対象位置・viewport・screenshot link・raw payload が含まれます。結果は保存済み payload の `integrations.github` に永続化され、card には issue link（失敗時はエラー）が表示されます。同じ feedback からの二重作成は拒否されます。API から行う場合は `POST /feedback/:id/github-issue` を使います。
+
+screenshot の画像は GitHub から `publicBaseUrl` に到達できる場合のみ issue 上に表示されます（ローカル receiver のままなら link のみ機能します）。
 
 ## Slack direct mode
 
@@ -274,12 +294,11 @@ receiver は bundle version と payload shape を検証し、screenshot の `dat
 
 ## 現在の境界
 
-このバージョンは、まだ GitHub には直接送信しません。Slack は local receiver 経由の Incoming Webhook prototype として扱います。受信したフィードバックはローカル receiver に保存されます。widget 内の feedback list はブラウザの `localStorage` に保存できますが、チーム共有や長期保存用の永続 DB はまだありません。feedback を回収したい場合は `endpoint` 経由で receiver に送るか、download mode で bundle を保存してください。
+GitHub Issue 作成は receiver inbox からの手動操作のみで、自動作成や issue との双方向同期はありません。Slack は local receiver 経由の Incoming Webhook prototype として扱います。受信したフィードバックはローカル receiver に保存されます。widget 内の feedback list はブラウザの `localStorage` に保存できますが、チーム共有や長期保存用の永続 DB はまだありません。feedback を回収したい場合は `endpoint` 経由で receiver に送るか、download mode で bundle を保存してください。
 
 未対応:
 
 - Slack App / OAuth 連携
-- GitHub Issue 作成
 - 永続 DB
 - pixel-perfect なブラウザ screenshot capture
 - 認証

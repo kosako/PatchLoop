@@ -10,5 +10,11 @@
   "slackImageMode": "auto",
   "slackBotToken": "",
   "slackUploadChannelId": "",
-  "slackTimeoutMs": 5000
+  "slackTimeoutMs": 5000,
+  "githubToken": "",
+  "githubRepo": "",
+  "githubLabels": [],
+  "githubAssignees": [],
+  "githubApiBase": "https://api.github.com",
+  "githubTimeoutMs": 8000
 }

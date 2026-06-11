@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs/promises");
+const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
@@ -117,6 +118,105 @@ test("POST /feedback/:id/status updates triage status and persists it", async (t
   assert.match(stored[0].statusUpdatedAt, /^\d{4}-\d{2}-\d{2}T/);
 });
 
+test("POST /feedback/:id/github-issue creates an issue via the GitHub API", async (t) => {
+  const github = await startMockGitHub(t, (res) => {
+    res.writeHead(201, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ number: 7, html_url: "https://github.com/acme/demo/issues/7" }));
+  });
+  const receiver = await startReceiver(t, {
+    GITHUB_TOKEN: "test-token",
+    GITHUB_REPO: "acme/demo",
+    GITHUB_LABELS: "feedback, patchloop",
+    GITHUB_ASSIGNEES: "kosako",
+    GITHUB_API_BASE: github.baseUrl
+  });
+  const payload = feedbackPayload("pl_github_1");
+  await postJson(`${receiver.baseUrl}/feedback`, payload);
+
+  const response = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {});
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.github.issueNumber, 7);
+  assert.equal(response.body.github.url, "https://github.com/acme/demo/issues/7");
+
+  const request = github.requests[0];
+  assert.equal(request.url, "/repos/acme/demo/issues");
+  assert.equal(request.headers.authorization, "Bearer test-token");
+  assert.match(request.body.title, /^\[PatchLoop\] Move this button above the fold\./);
+  assert.match(request.body.body, /## Feedback/);
+  assert.match(request.body.body, /Test Reviewer/);
+  assert.match(request.body.body, /#hero button/);
+  assert.match(request.body.body, /screenshots\//);
+  assert.deepEqual(request.body.labels, ["feedback", "patchloop"]);
+  assert.deepEqual(request.body.assignees, ["kosako"]);
+
+  const stored = await readStoredFeedback(receiver.storePath);
+  assert.equal(stored[0].integrations.github.status, "created");
+  assert.equal(stored[0].integrations.github.issueNumber, 7);
+
+  const again = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {});
+  assert.equal(again.status, 409);
+  assert.equal(github.requests.length, 1);
+});
+
+test("POST /feedback/:id/github-issue persists failures and requires configuration", async (t) => {
+  const unconfigured = await startReceiver(t);
+  const payload = feedbackPayload("pl_github_2");
+  await postJson(`${unconfigured.baseUrl}/feedback`, payload);
+
+  const rejected = await postJson(`${unconfigured.baseUrl}/feedback/${payload.id}/github-issue`, {});
+  assert.equal(rejected.status, 400);
+  assert.match(rejected.body.error, /not configured/);
+
+  const github = await startMockGitHub(t, (res) => {
+    res.writeHead(422, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ message: "Validation Failed" }));
+  });
+  const receiver = await startReceiver(t, {
+    GITHUB_TOKEN: "test-token",
+    GITHUB_REPO: "acme/demo",
+    GITHUB_API_BASE: github.baseUrl
+  });
+  await postJson(`${receiver.baseUrl}/feedback`, payload);
+
+  const failed = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {});
+  assert.equal(failed.status, 502);
+  assert.match(failed.body.error, /Validation Failed/);
+
+  const stored = await readStoredFeedback(receiver.storePath);
+  assert.equal(stored[0].integrations.github.status, "failed");
+  assert.equal(stored[0].integrations.github.statusCode, 422);
+});
+
+function startMockGitHub(t, respond) {
+  return new Promise((resolve) => {
+    const requests = [];
+    const server = http.createServer((req, res) => {
+      let raw = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => {
+        raw += chunk;
+      });
+      req.on("end", () => {
+        requests.push({
+          method: req.method,
+          url: req.url,
+          headers: req.headers,
+          body: raw ? JSON.parse(raw) : null
+        });
+        respond(res, requests[requests.length - 1]);
+      });
+    });
+
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      t.after(() => new Promise((done) => server.close(done)));
+      resolve({ baseUrl: `http://127.0.0.1:${port}`, requests });
+    });
+  });
+}
+
 test("POST /feedback/:id/status rejects unknown statuses and ids", async (t) => {
   const receiver = await startReceiver(t);
   const payload = feedbackPayload("pl_status_2");
@@ -134,7 +234,7 @@ test("POST /feedback/:id/status rejects unknown statuses and ids", async (t) => 
   assert.equal(stored[0].status, undefined);
 });
 
-async function startReceiver(t) {
+async function startReceiver(t, extraEnv = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const port = await getFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -153,7 +253,10 @@ async function startReceiver(t) {
       SLACK_IMAGE_MODE: "off",
       SLACK_BOT_TOKEN: "",
       SLACK_UPLOAD_CHANNEL_ID: "",
-      PATCHLOOP_RECEIVER_CONFIG: path.join(tempDir, "missing-config.json")
+      GITHUB_TOKEN: "",
+      GITHUB_REPO: "",
+      PATCHLOOP_RECEIVER_CONFIG: path.join(tempDir, "missing-config.json"),
+      ...extraEnv
     },
     stdio: ["ignore", "pipe", "pipe"]
   });

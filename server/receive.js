@@ -21,6 +21,13 @@ const SLACK_TIMEOUT_MS = Number(process.env.SLACK_TIMEOUT_MS || config.slackTime
 const SLACK_IMAGE_MODE = normalizeSlackImageMode(process.env.SLACK_IMAGE_MODE || config.slackImageMode || "auto");
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || config.slackBotToken || "";
 const SLACK_UPLOAD_CHANNEL_ID = process.env.SLACK_UPLOAD_CHANNEL_ID || config.slackUploadChannelId || "";
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || config.githubToken || "";
+const GITHUB_REPO = normalizeGitHubRepo(process.env.GITHUB_REPO || config.githubRepo || "");
+const GITHUB_LABELS = normalizeStringList(process.env.GITHUB_LABELS ?? config.githubLabels);
+const GITHUB_ASSIGNEES = normalizeStringList(process.env.GITHUB_ASSIGNEES ?? config.githubAssignees);
+const GITHUB_API_BASE = trimTrailingSlash(process.env.GITHUB_API_BASE || config.githubApiBase || "https://api.github.com");
+const GITHUB_TIMEOUT_MS = Number(process.env.GITHUB_TIMEOUT_MS || config.githubTimeoutMs || 8000);
+const GITHUB_CONFIGURED = Boolean(GITHUB_TOKEN && GITHUB_REPO);
 const IMPORT_BUNDLE_KIND = "patchloop-feedback-bundle";
 const IMPORT_BUNDLE_VERSION = 1;
 const FEEDBACK_STATUSES = ["new", "accepted", "fixed", "ignored"];
@@ -52,6 +59,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  const githubMatch = req.method === "POST" && /^\/feedback\/([^/]+)\/github-issue$/.exec(req.url);
+  if (githubMatch) {
+    handlePostGitHubIssue(req, res, decodeURIComponent(githubMatch[1]));
+    return;
+  }
+
   if (req.method === "GET" && (req.url === "/" || req.url === "/index.html")) {
     handleGetInbox(req, res);
     return;
@@ -79,6 +92,7 @@ server.listen(PORT, HOST, () => {
   console.log(`[PatchLoop receiver] Slack webhook: ${SLACK_WEBHOOK_URL ? "enabled" : "disabled"}`);
   console.log(`[PatchLoop receiver] Slack image mode: ${SLACK_IMAGE_MODE}`);
   console.log(`[PatchLoop receiver] Slack file upload: ${SLACK_BOT_TOKEN && SLACK_UPLOAD_CHANNEL_ID ? "enabled" : "disabled"}`);
+  console.log(`[PatchLoop receiver] GitHub issues: ${GITHUB_CONFIGURED ? `enabled (${GITHUB_REPO})` : "disabled"}`);
 });
 
 function setCors(res) {
@@ -115,6 +129,16 @@ function normalizeSlackImageMode(value) {
   const mode = String(value || "").trim().toLowerCase();
   if (["auto", "link", "block", "upload", "off"].includes(mode)) return mode;
   return "auto";
+}
+
+function normalizeGitHubRepo(value) {
+  const repo = String(value || "").trim();
+  return /^[\w.-]+\/[\w.-]+$/.test(repo) ? repo : "";
+}
+
+function normalizeStringList(value) {
+  const items = Array.isArray(value) ? value : String(value || "").split(",");
+  return items.map((item) => String(item).trim()).filter(Boolean);
 }
 
 function handlePostFeedback(req, res) {
@@ -205,6 +229,140 @@ function handlePostStatus(req, res, id) {
   });
 }
 
+function handlePostGitHubIssue(req, res, id) {
+  readJsonBody(req, res, async () => {
+    if (!GITHUB_CONFIGURED) {
+      respondJson(res, 400, { ok: false, error: "GitHub integration is not configured. Set GITHUB_TOKEN and GITHUB_REPO." });
+      return;
+    }
+
+    const item = feedback.find((entry) => entry.id === id);
+    if (!item) {
+      respondJson(res, 404, { ok: false, error: `Unknown feedback id: ${id}` });
+      return;
+    }
+
+    const existing = item.integrations && item.integrations.github;
+    if (existing && existing.status === "created") {
+      respondJson(res, 409, { ok: false, error: `GitHub issue already created: ${existing.url || `#${existing.issueNumber}`}`, github: existing });
+      return;
+    }
+
+    const github = await createGitHubIssue(item);
+    item.integrations = { ...(item.integrations || {}), github };
+    persist();
+    console.log(`[PatchLoop receiver] github issue ${github.status} id=${id}${github.url ? ` url=${github.url}` : ""}`);
+
+    if (github.status === "created") {
+      respondJson(res, 201, { ok: true, github });
+    } else {
+      respondJson(res, 502, { ok: false, error: github.error || "GitHub issue creation failed", github });
+    }
+  });
+}
+
+async function createGitHubIssue(item) {
+  const issue = {
+    title: gitHubIssueTitle(item),
+    body: gitHubIssueBody(item)
+  };
+  if (GITHUB_LABELS.length) issue.labels = GITHUB_LABELS;
+  if (GITHUB_ASSIGNEES.length) issue.assignees = GITHUB_ASSIGNEES;
+
+  try {
+    const response = await postJson(`${GITHUB_API_BASE}/repos/${GITHUB_REPO}/issues`, issue, {
+      "Authorization": `Bearer ${GITHUB_TOKEN}`,
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28"
+    }, GITHUB_TIMEOUT_MS);
+
+    if (response.statusCode === 201) {
+      let parsed = {};
+      try {
+        parsed = JSON.parse(response.body);
+      } catch (_) {
+        // Issue was created; metadata stays partial if the body is unreadable.
+      }
+      return {
+        status: "created",
+        issueNumber: parsed.number ?? null,
+        url: parsed.html_url || "",
+        createdAt: new Date().toISOString()
+      };
+    }
+
+    return {
+      status: "failed",
+      statusCode: response.statusCode,
+      error: truncate(gitHubErrorMessage(response.body) || "GitHub API returned a non-201 response", 240),
+      failedAt: new Date().toISOString()
+    };
+  } catch (error) {
+    return { status: "failed", error: error.message, failedAt: new Date().toISOString() };
+  }
+}
+
+function gitHubErrorMessage(raw) {
+  try {
+    return JSON.parse(raw).message || "";
+  } catch (_) {
+    return String(raw || "");
+  }
+}
+
+function gitHubIssueTitle(item) {
+  const firstLine = String(item.comment || "").split("\n")[0].trim() || "(no comment)";
+  return `[PatchLoop] ${truncate(firstLine, 80)}`;
+}
+
+function gitHubIssueBody(item) {
+  const target = item.target || {};
+  const env = item.environment || {};
+  const page = item.page || {};
+  const lines = [];
+
+  lines.push("## Feedback", "");
+  lines.push(...String(item.comment || "(empty comment)").split("\n").map((line) => `> ${line}`), "");
+  lines.push("| | |");
+  lines.push("|---|---|");
+  lines.push(`| Reviewer | ${mdTableCell(item.reviewer || "(no name)")} |`);
+  lines.push(`| Page | ${page.url ? `[${mdTableCell(page.title || page.url)}](${page.url})` : mdTableCell(page.title || "(unknown)")} |`);
+  lines.push(`| Target | ${mdTableCell(formatTarget(target))} |`);
+  lines.push(`| Selector | \`${String(target.selector || "(none)").replaceAll("\`", "'")}\` |`);
+  lines.push(`| Viewport | ${mdTableCell(formatViewport(env.viewport))} |`);
+  lines.push(`| Created | ${mdTableCell(item.createdAt || item.receivedAt || "(unknown)")} |`);
+  lines.push(`| Feedback ID | \`${String(item.id || "-").replaceAll("\`", "'")}\` |`);
+  lines.push("");
+
+  if (target.text) {
+    lines.push("### Element text", "");
+    lines.push(...truncate(String(target.text), 500).split("\n").map((line) => `> ${line}`), "");
+  }
+
+  const screenshotUrl = screenshotUrlFor(item.screenshot);
+  if (screenshotUrl) {
+    lines.push("### Screenshot", "");
+    lines.push(`![PatchLoop screenshot](${screenshotUrl})`, "");
+    lines.push(`[Open screenshot](${screenshotUrl})`, "");
+    lines.push("_The image only renders if the receiver's `publicBaseUrl` is reachable from GitHub._", "");
+  } else if (item.screenshot && item.screenshot.status) {
+    lines.push(`Screenshot: ${formatScreenshotStatus(item.screenshot)}`, "");
+  }
+
+  lines.push("<details><summary>Raw payload</summary>", "");
+  lines.push("```json");
+  lines.push(JSON.stringify(item, null, 2));
+  lines.push("```");
+  lines.push("", "</details>", "");
+  lines.push("---");
+  lines.push("_Created from the PatchLoop receiver inbox._");
+  return lines.join("\n");
+}
+
+function mdTableCell(value) {
+  return String(value ?? "").replaceAll("|", "\\|").replaceAll("\n", " ");
+}
+
 function readJsonBody(req, res, onJson) {
   let received = 0;
   const chunks = [];
@@ -226,7 +384,8 @@ function readJsonBody(req, res, onJson) {
     if (aborted) return;
     let payload;
     try {
-      payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const raw = Buffer.concat(chunks).toString("utf8");
+      payload = raw.trim() ? JSON.parse(raw) : {};
     } catch (_) {
       respondJson(res, 400, { ok: false, error: "Invalid JSON" });
       return;
@@ -498,30 +657,31 @@ async function deliverToSlack(item) {
   }
 }
 
-function postJson(targetUrl, body) {
+function postJson(targetUrl, body, extraHeaders = {}, timeoutMs = SLACK_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     let url;
     try {
       url = new URL(targetUrl);
     } catch (error) {
-      reject(new Error(`Invalid SLACK_WEBHOOK_URL: ${error.message}`));
+      reject(new Error(`Invalid request URL: ${error.message}`));
       return;
     }
 
     const client = url.protocol === "https:" ? https : url.protocol === "http:" ? http : null;
     if (!client) {
-      reject(new Error(`Unsupported webhook protocol: ${url.protocol}`));
+      reject(new Error(`Unsupported request protocol: ${url.protocol}`));
       return;
     }
 
     const json = JSON.stringify(body);
     const request = client.request(url, {
       method: "POST",
-      timeout: SLACK_TIMEOUT_MS,
+      timeout: timeoutMs,
       headers: {
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(json),
-        "User-Agent": "PatchLoop receiver"
+        "User-Agent": "PatchLoop receiver",
+        ...extraHeaders
       }
     }, (response) => {
       let raw = "";
@@ -535,7 +695,7 @@ function postJson(targetUrl, body) {
     });
 
     request.on("timeout", () => {
-      request.destroy(new Error(`Slack webhook timed out after ${SLACK_TIMEOUT_MS}ms`));
+      request.destroy(new Error(`Request to ${url.hostname} timed out after ${timeoutMs}ms`));
     });
     request.on("error", reject);
     request.write(json);
@@ -888,6 +1048,8 @@ function renderInbox(items) {
     const importedAt = escapeHtml(item.importedAt || "");
     const status = feedbackStatusOf(item);
     const slackStatus = escapeHtml((slack && slack.status) || "unknown");
+    const github = item.integrations && item.integrations.github;
+    const githubStatus = escapeHtml((github && github.status) || "none");
     const searchText = escapeHtml([item.comment, item.reviewer, target.selector, page.url, page.title, item.id]
       .filter(Boolean).join(" ").toLowerCase());
     const statusOptions = FEEDBACK_STATUSES
@@ -897,7 +1059,7 @@ function renderInbox(items) {
       ? `${env.viewport.width}×${env.viewport.height}`
       : "";
     return `
-      <article class="card" data-card data-status="${status}" data-kind="${kind}" data-reviewer="${reviewer}" data-source="${source}" data-slack="${slackStatus}" data-search="${searchText}">
+      <article class="card" data-card data-status="${status}" data-kind="${kind}" data-reviewer="${reviewer}" data-source="${source}" data-slack="${slackStatus}" data-github="${githubStatus}" data-search="${searchText}">
         <header>
           <span class="kind kind-${kind}">${kind}</span>
           <span class="reviewer">${reviewer || "(no name)"}</span>
@@ -915,6 +1077,7 @@ function renderInbox(items) {
           <div><dt>Viewport</dt><dd>${escapeHtml(viewport)}</dd></div>
           <div><dt>Source</dt><dd>${source}</dd></div>
           <div><dt>Slack</dt><dd>${escapeHtml(formatSlackStatus(slack))}</dd></div>
+          <div><dt>GitHub</dt><dd>${renderGitHubCell(github, item.id)}</dd></div>
           <div><dt>Created</dt><dd>${createdAt}</dd></div>
           ${importedAt ? `<div><dt>Imported</dt><dd>${importedAt}</dd></div>` : ""}
         </dl>
@@ -958,6 +1121,9 @@ function renderInbox(items) {
     .card[data-status="ignored"] { border-left-color: #c2c9c5; opacity: 0.72; }
     .card header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; color: #65716d; }
     .status-control select { min-height: 26px; border: 1px solid #d9e1dd; border-radius: 999px; background: #f7f8f5; padding: 2px 8px; font: inherit; font-size: 11px; font-weight: 800; color: #14211d; cursor: pointer; }
+    .github-create { min-height: 24px; border: 1px solid #0f7b63; border-radius: 6px; background: #fff; color: #0f7b63; padding: 1px 8px; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
+    .github-create:disabled { opacity: 0.6; cursor: default; }
+    .github-error { color: #b83d4d; }
     .kind { padding: 2px 8px; border-radius: 999px; font-weight: 800; color: #fff; font-size: 11px; text-transform: uppercase; }
     .kind-point { background: #0f7b63; }
     .kind-area { background: #d1495b; }
@@ -1016,6 +1182,7 @@ function renderFilterPanel(items) {
   const reviewers = unique((item) => item.reviewer || "");
   const sources = unique((item) => item.source || "receiver");
   const slackStatuses = unique((item) => (item.integrations && item.integrations.slack && item.integrations.slack.status) || "unknown");
+  const githubStatuses = unique((item) => (item.integrations && item.integrations.github && item.integrations.github.status) || "none");
 
   return `
   <section class="filter-panel" data-filter-panel>
@@ -1025,8 +1192,27 @@ function renderFilterPanel(items) {
     <select data-filter-key="reviewer">${optionList(reviewers, "Reviewer: all")}</select>
     <select data-filter-key="source">${optionList(sources, "Source: all")}</select>
     <select data-filter-key="slack">${optionList(slackStatuses, "Slack: all")}</select>
+    <select data-filter-key="github">${optionList(githubStatuses, "GitHub: all")}</select>
     <span class="filter-count" data-filter-count></span>
   </section>`;
+}
+
+function renderGitHubCell(github, id) {
+  if (github && github.status === "created") {
+    const number = github.issueNumber != null ? `#${escapeHtml(String(github.issueNumber))}` : "issue";
+    return github.url
+      ? `<a href="${escapeHtml(github.url)}" target="_blank" rel="noopener">${number} created</a>`
+      : `${number} created`;
+  }
+
+  if (!GITHUB_CONFIGURED) return "not configured";
+
+  const button = `<button type="button" class="github-create" data-github-create data-feedback-id="${escapeHtml(id || "")}">Create GitHub Issue</button>`;
+  if (github && github.status === "failed") {
+    const code = github.statusCode ? ` (${escapeHtml(String(github.statusCode))})` : "";
+    return `<span class="github-error">failed${code}: ${escapeHtml(github.error || "unknown error")}</span> ${button}`;
+  }
+  return button;
 }
 
 function renderTriageScript() {
@@ -1059,6 +1245,21 @@ function renderTriageScript() {
     selects.forEach((select) => select.addEventListener("change", applyFilters));
     applyFilters();
   }
+
+  document.querySelectorAll("[data-github-create]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      button.textContent = "Creating...";
+      try {
+        const response = await fetch("/feedback/" + encodeURIComponent(button.dataset.feedbackId) + "/github-issue", { method: "POST" });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || "GitHub issue creation failed");
+      } catch (error) {
+        window.alert(error.message);
+      }
+      window.location.reload();
+    });
+  });
 
   document.querySelectorAll("[data-status-select]").forEach((select) => {
     select.addEventListener("change", async () => {

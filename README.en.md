@@ -165,6 +165,7 @@ node server/receive.js
 - The inbox has text search plus status / kind / reviewer / source / Slack filters
 - Each feedback has a triage status (`new` / `accepted` / `fixed` / `ignored`) editable from the card; statuses persist to `server/feedback.json`
 - `POST /feedback/:id/status` updates the status via the API (body: `{"status": "accepted"}`)
+- With GitHub configured, each inbox card can create a GitHub Issue (see below)
 - Imports `.patchloop-feedback.json` files from the inbox UI
 - Returns the raw JSON at `GET /feedback.json`
 - Serves saved screenshots from `GET /screenshots/:file`
@@ -218,6 +219,25 @@ SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..." node server/receive.js
 ```
 
 If Slack forwarding fails, the receiver still stores the payload. The Slack result is visible in the saved payload under `integrations.slack` and in the inbox `Slack` row. Screenshot `dataUrl` values are saved as files by the receiver and replaced with `screenshot.url` in stored payloads.
+
+### Creating GitHub Issues
+
+Feedback in the inbox can be turned into GitHub Issues. Issue creation happens on the receiver; the token never reaches the browser.
+
+```sh
+GITHUB_TOKEN="github_pat_..." GITHUB_REPO="owner/repo" node server/receive.js
+```
+
+- `GITHUB_TOKEN` / `githubToken` — GitHub token. **A fine-grained PAT scoped to the target repository with Issues: write is recommended**
+- `GITHUB_REPO` / `githubRepo` — repository to create issues in (`owner/repo`)
+- `GITHUB_LABELS` / `githubLabels` — labels to apply (comma-separated in env, array in config)
+- `GITHUB_ASSIGNEES` / `githubAssignees` — assignees (same formats)
+- `GITHUB_API_BASE` / `githubApiBase` — API base URL (defaults to `https://api.github.com`; override for GHES or tests)
+- `GITHUB_TIMEOUT_MS` / `githubTimeoutMs` — timeout (defaults to `8000`)
+
+When configured, each inbox card shows a `Create GitHub Issue` button. Created issues include the comment, reviewer, page URL, selector, target position, viewport, screenshot link, and the raw payload. The result is persisted as `integrations.github` and the card shows the issue link (or the error on failure). Creating a second issue from the same feedback is rejected. The API equivalent is `POST /feedback/:id/github-issue`.
+
+The screenshot image only renders inside the issue if GitHub can reach your `publicBaseUrl`; with a local receiver the link still works locally.
 
 ## Slack Direct Mode
 
@@ -274,12 +294,11 @@ The receiver validates the bundle version and payload shape, saves the screensho
 
 ## Current Boundary
 
-This version does not send to GitHub directly yet. Slack support is currently a local-receiver Incoming Webhook prototype. Received feedback is stored by the local receiver. The widget feedback list can be persisted in browser `localStorage`, but there is still no shared long-term database. Use a receiver `endpoint` or download mode when you need to collect feedback outside the current browser.
+GitHub Issue creation is a manual action from the receiver inbox only; there is no automatic creation or two-way sync. Slack support is currently a local-receiver Incoming Webhook prototype. Received feedback is stored by the local receiver. The widget feedback list can be persisted in browser `localStorage`, but there is still no shared long-term database. Use a receiver `endpoint` or download mode when you need to collect feedback outside the current browser.
 
 Not included yet:
 
 - Slack App / OAuth integration
-- GitHub Issue creation
 - Persistent database
 - Pixel-perfect browser screenshot capture
 - Auth
