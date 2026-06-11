@@ -234,6 +234,29 @@ test("POST /feedback/:id/status rejects unknown statuses and ids", async (t) => 
   assert.equal(stored[0].status, undefined);
 });
 
+test("corrupt feedback store is backed up instead of overwritten", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
+  const storePath = path.join(tempDir, "feedback.json");
+  const corruptContent = '[{"id": "pl_old", "comment": "truncated...';
+  await fs.writeFile(storePath, corruptContent);
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+
+  const receiver = await startReceiver(t, { FEEDBACK_STORE_PATH: storePath });
+  const payload = feedbackPayload("pl_after_corruption");
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 201);
+
+  const stored = await readStoredFeedback(storePath);
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].id, payload.id);
+
+  const entries = await fs.readdir(tempDir);
+  const backup = entries.find((name) => name.startsWith("feedback.json.corrupt-"));
+  assert.ok(backup, `expected a corrupt backup file, found: ${entries.join(", ")}`);
+  assert.equal(await fs.readFile(path.join(tempDir, backup), "utf8"), corruptContent);
+  assert.ok(!entries.includes("feedback.json.tmp"), "temp file should not linger after persist");
+});
+
 async function startReceiver(t, extraEnv = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const port = await getFreePort();
