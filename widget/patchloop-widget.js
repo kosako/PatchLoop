@@ -509,7 +509,7 @@
     const background = bodyStyle.backgroundColor || "#ffffff";
     const color = bodyStyle.color || "#14211d";
     const font = bodyStyle.font || bodyStyle.fontFamily || "system-ui, sans-serif";
-    const styles = `${collectReadableStyles()}\n* { box-sizing: border-box; }\n`;
+    const styles = `${freezeViewportUnits(collectReadableStyles(), width, height)}\n* { box-sizing: border-box; }\n`;
     const overlayMarkup = renderScreenshotOverlay(overlay);
 
     return `<?xml version="1.0" encoding="UTF-8"?>
@@ -530,17 +530,64 @@
 </svg>`;
   }
 
+  // Media queries inside the snapshot re-evaluate against the SVG's rendered
+  // size (e.g. a scaled-down inbox preview), reflowing the clone away from the
+  // captured layout while overlay coordinates stay fixed. Resolve media
+  // conditions at capture time instead: inline the rules that match the
+  // current viewport and drop the rest, so the snapshot keeps the captured
+  // layout at any display size.
   function collectReadableStyles() {
     const chunks = [];
     Array.from(document.styleSheets).forEach((sheet) => {
       try {
         if (sheet.ownerNode?.dataset?.patchloopStyle) return;
-        chunks.push(Array.from(sheet.cssRules || []).map((rule) => rule.cssText).join("\n"));
+        if (sheet.media && sheet.media.mediaText && !window.matchMedia(sheet.media.mediaText).matches) return;
+        const flattened = flattenRulesForSnapshot(sheet.cssRules);
+        if (flattened) chunks.push(flattened);
       } catch (_) {
         // Cross-origin stylesheets cannot be read. The snapshot still includes DOM and overlay context.
       }
     });
     return chunks.join("\n");
+  }
+
+  // Viewport units re-resolve against the rendered size just like media
+  // queries do, so freeze them to the captured viewport in pixels.
+  function freezeViewportUnits(cssText, width, height) {
+    return cssText.replace(/(-?\d*\.?\d+)(?:[dsl])?v(w|h|min|max)\b/g, (match, number, axis) => {
+      const value = Number(number);
+      if (!Number.isFinite(value)) return match;
+      const base = axis === "w"
+        ? width
+        : axis === "h"
+          ? height
+          : axis === "min" ? Math.min(width, height) : Math.max(width, height);
+      return `${(value * base) / 100}px`;
+    });
+  }
+
+  function flattenRulesForSnapshot(rules) {
+    return Array.from(rules || [])
+      .map((rule) => {
+        if (rule.styleSheet) {
+          // @import: inline the imported sheet, honoring its media list.
+          const media = rule.media && rule.media.mediaText;
+          if (media && !window.matchMedia(media).matches) return "";
+          try {
+            return flattenRulesForSnapshot(rule.styleSheet.cssRules);
+          } catch (_) {
+            return "";
+          }
+        }
+        if (rule.media) {
+          return window.matchMedia(rule.media.mediaText).matches
+            ? flattenRulesForSnapshot(rule.cssRules)
+            : "";
+        }
+        return rule.cssText;
+      })
+      .filter(Boolean)
+      .join("\n");
   }
 
   function screenshotOverlayFor(target) {
