@@ -42,6 +42,8 @@ script-tag widget:
 - Comment mode toggle in the drawer header (active state colours the handle)
 - Click-to-pin location capture and drag-to-select area capture
 - Draft markers that take their final sequential number on submit
+- Comment mode stays active after submit so several spots can be annotated in a row
+- Cmd+Enter (Ctrl+Enter on Windows) submits the comment form
 - Target element outline while a draft is pending
 - Per-feedback comment list with reviewer, kind, comment, and delivery status
 - Hover tooltip on markers showing the comment (disabled in feedback mode)
@@ -107,7 +109,7 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 1. Click the right-edge handle to open the drawer
 2. Start comment mode
 3. Click a point or drag an area on the page
-4. Write a comment and reviewer name, then submit. Feedback cannot be submitted while the reviewer is blank
+4. Write a comment and reviewer name, then submit (Cmd+Enter / Ctrl+Enter also works). Feedback cannot be submitted while the reviewer is blank. Comment mode stays active after submit; end it with the mode button in the drawer header
 5. The comment appears in the drawer list and is also passed to `onSubmit(payload)`. Each item can be edited or deleted from the list
 
 The reviewer name is saved to `localStorage` after submit and restored the next time the widget starts. The feedback list is also saved to `localStorage` by default and restored after reloads on the same project / demo / page URL, including pins and area overlays. The drawer's clear action removes both visible markers and saved feedback. Set `persistFeedback: false` for memory-only behavior.
