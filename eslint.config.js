@@ -35,7 +35,8 @@ const browserGlobals = {
   navigator: "readonly",
   Node: "readonly",
   requestAnimationFrame: "readonly",
-  window: "readonly"
+  window: "readonly",
+  XMLSerializer: "readonly"
 };
 
 const nodeGlobals = {
