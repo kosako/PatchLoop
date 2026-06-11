@@ -118,6 +118,7 @@
     root.querySelector("[data-pl-clear]").addEventListener("click", clearPins);
     root.querySelector("[data-pl-cancel]").addEventListener("click", cancelPendingComment);
     root.querySelector("[data-pl-comment]").addEventListener("submit", submitComment);
+    root.querySelector("[data-pl-comment]").addEventListener("keydown", handleCommentKeydown);
     root.querySelector("[data-pl-reviewer]").addEventListener("input", () => clearFormError(root.querySelector("[data-pl-comment]")));
     root.querySelector("[data-pl-list]").addEventListener("click", handleListClick);
     root.querySelector("[data-pl-delivery-settings]")?.addEventListener("input", handleDeliverySettingsInput);
@@ -309,6 +310,12 @@
     state.pendingTarget = null;
   }
 
+  function handleCommentKeydown(event) {
+    if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) return;
+    event.preventDefault();
+    event.currentTarget.requestSubmit();
+  }
+
   function handleDeliverySettingsInput() {
     const root = getRoot();
     if (!root) return;
@@ -385,7 +392,6 @@
     renderFeedbackList();
     expandPanel();
     closeCommentForm();
-    setFeedbackMode(false);
 
     document.dispatchEvent(new CustomEvent("patchloop:feedback", { detail: payload }));
 

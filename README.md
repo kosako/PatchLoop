@@ -42,6 +42,8 @@ script-tag widget:
 - ドロワーヘッダーのコメントモード切り替え（モード ON 中はハンドルが赤くなる）
 - クリックで点キャプチャ、ドラッグで範囲キャプチャ
 - 送信前はドラフト表示、送信時に 1, 2, 3 と確定番号が振られる
+- 送信後もコメントモードは継続し、連続でコメントできる
+- コメント入力中は Cmd+Enter（Windows は Ctrl+Enter）で送信
 - ドラフト中、対象要素にダッシュドラインの outline
 - ドロワー内のコメント一覧（番号 / kind / reviewer / 本文 / 配送ステータス）
 - マーカーホバーでコメントのツールチップ表示（feedback モード中は無効）
@@ -107,7 +109,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 1. 右端のハンドルを押して drawer を開く
 2. 「コメントモード開始」を押す
 3. 画面上の場所をクリック、または範囲をドラッグする
-4. コメントと投稿者を書いて送信する。投稿者が空欄の場合は送信できません
+4. コメントと投稿者を書いて送信する。Cmd+Enter（Windows は Ctrl+Enter）でも送信できます。投稿者が空欄の場合は送信できません。コメントモードは送信後も継続するので、終了するには「コメントモード終了」を押します
 5. drawer の一覧に追加され、`onSubmit(payload)` でも payload を受け取る。送信済みの項目は drawer 内から個別に編集・削除できる
 
 投稿者名は送信後に `localStorage` へ保存され、次回以降の widget 起動時に復元されます。feedback list もデフォルトで `localStorage` に保存され、同じ project / demo / page URL の reload 後に drawer list と pin / area overlay が復元されます。drawer の「フィードバックを消す」は、表示中の marker と保存済み feedback の両方を削除します。永続化を使わず memory-only にしたい場合は `persistFeedback: false` を指定してください。
