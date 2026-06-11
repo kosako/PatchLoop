@@ -325,8 +325,9 @@ function gitHubIssueBody(item) {
   lines.push(...String(item.comment || "(empty comment)").split("\n").map((line) => `> ${line}`), "");
   lines.push("| | |");
   lines.push("|---|---|");
+  const pageLink = mdLinkUrl(page.url);
   lines.push(`| Reviewer | ${mdTableCell(item.reviewer || "(no name)")} |`);
-  lines.push(`| Page | ${page.url ? `[${mdTableCell(page.title || page.url)}](${page.url})` : mdTableCell(page.title || "(unknown)")} |`);
+  lines.push(`| Page | ${pageLink ? `[${mdTableCell(page.title || page.url)}](${pageLink})` : mdTableCell(page.title || page.url || "(unknown)")} |`);
   lines.push(`| Target | ${mdTableCell(formatTarget(target))} |`);
   lines.push(`| Selector | \`${String(target.selector || "(none)").replaceAll("\`", "'")}\` |`);
   lines.push(`| Viewport | ${mdTableCell(formatViewport(env.viewport))} |`);
@@ -621,6 +622,22 @@ function escapeHtml(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+// escapeHtml cannot stop a javascript: URL inside an href attribute; only
+// plain http(s) targets may become links. Returns "" for everything else.
+function safeLinkUrl(value) {
+  const url = String(value || "").trim();
+  return /^https?:\/\//i.test(url) ? url : "";
+}
+
+// Markdown link destinations are wrapped in <> so spaces and parentheses
+// cannot terminate the link; encode the characters that end the <> form so
+// user-controlled URLs cannot break out into raw markdown.
+function mdLinkUrl(value) {
+  const url = safeLinkUrl(value);
+  if (!url) return "";
+  return `<${url.replaceAll("<", "%3C").replaceAll(">", "%3E").replace(/\s/g, "%20")}>`;
 }
 
 async function deliverToSlack(item) {
@@ -1071,7 +1088,7 @@ function renderInbox(items) {
         <p class="comment">${comment}</p>
         ${renderScreenshotPreview(screenshot)}
         <dl>
-          <div><dt>URL</dt><dd><a href="${pageUrl}" target="_blank" rel="noopener">${pageUrl}</a></dd></div>
+          <div><dt>URL</dt><dd>${safeLinkUrl(page.url) ? `<a href="${escapeHtml(safeLinkUrl(page.url))}" target="_blank" rel="noopener">${pageUrl}</a>` : pageUrl}</dd></div>
           <div><dt>Title</dt><dd>${pageTitle}</dd></div>
           <div><dt>Selector</dt><dd><code>${selector}</code></dd></div>
           <div><dt>Viewport</dt><dd>${escapeHtml(viewport)}</dd></div>
@@ -1200,8 +1217,9 @@ function renderFilterPanel(items) {
 function renderGitHubCell(github, id) {
   if (github && github.status === "created") {
     const number = github.issueNumber != null ? `#${escapeHtml(String(github.issueNumber))}` : "issue";
-    return github.url
-      ? `<a href="${escapeHtml(github.url)}" target="_blank" rel="noopener">${number} created</a>`
+    const url = safeLinkUrl(github.url);
+    return url
+      ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${number} created</a>`
       : `${number} created`;
   }
 
@@ -1330,8 +1348,8 @@ function renderImportScript() {
 
 function renderScreenshotPreview(screenshot) {
   if (!screenshot) return "";
-  if (screenshot.status === "saved" && screenshot.url) {
-    const url = escapeHtml(screenshot.url);
+  if (screenshot.status === "saved" && safeLinkUrl(screenshot.url)) {
+    const url = escapeHtml(safeLinkUrl(screenshot.url));
     const size = screenshot.width && screenshot.height
       ? `${screenshot.width}×${screenshot.height}`
       : "";

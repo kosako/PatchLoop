@@ -217,6 +217,44 @@ function startMockGitHub(t, respond) {
   });
 }
 
+test("user-controlled URLs are linked only when they are http(s)", async (t) => {
+  const github = await startMockGitHub(t, (res) => {
+    res.writeHead(201, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ number: 1, html_url: "https://github.com/acme/demo/issues/1" }));
+  });
+  const receiver = await startReceiver(t, {
+    GITHUB_TOKEN: "test-token",
+    GITHUB_REPO: "acme/demo",
+    GITHUB_API_BASE: github.baseUrl
+  });
+
+  const evil = feedbackPayload("pl_xss_1");
+  evil.page.url = "javascript:alert(document.domain)";
+  await postJson(`${receiver.baseUrl}/feedback`, evil);
+
+  const tricky = feedbackPayload("pl_xss_2");
+  tricky.page.url = "https://example.test/a b) [evil](https://evil.test";
+  await postJson(`${receiver.baseUrl}/feedback`, tricky);
+
+  const normal = feedbackPayload("pl_xss_3");
+  await postJson(`${receiver.baseUrl}/feedback`, normal);
+
+  const inboxHtml = await fetch(`${receiver.baseUrl}/`).then((response) => response.text());
+  assert.ok(!inboxHtml.includes('href="javascript:'), "javascript: URL must not become a link");
+  assert.match(inboxHtml, /javascript:alert\(document\.domain\)/, "rejected URL is still shown as text");
+  assert.ok(inboxHtml.includes('href="http://example.test/demo"'), "http URLs stay linked");
+
+  // GitHub issue body: markdown link only for http(s), wrapped so it cannot break out
+  await postJson(`${receiver.baseUrl}/feedback/pl_xss_2/github-issue`, {});
+  const trickyBody = github.requests[0].body.body;
+  assert.match(trickyBody, /\| Page \| \[.*\]\(<https:\/\/example\.test\/a%20b\)/);
+  assert.ok(!trickyBody.includes("[evil](https://evil.test)"), "URL must not escape the link destination");
+
+  await postJson(`${receiver.baseUrl}/feedback/pl_xss_1/github-issue`, {});
+  const evilBody = github.requests[1].body.body;
+  assert.ok(!evilBody.includes("](javascript:"), "javascript: URL must not become a markdown link");
+});
+
 test("POST /feedback/:id/status rejects unknown statuses and ids", async (t) => {
   const receiver = await startReceiver(t);
   const payload = feedbackPayload("pl_status_2");
