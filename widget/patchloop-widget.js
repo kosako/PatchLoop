@@ -966,34 +966,22 @@
     return point ? addPin(point) : null;
   }
 
+  // Restore prefers stored document pixels over document-size percentages:
+  // the document height can differ between save and reload (dynamic content),
+  // which shifts every percentage-resolved position. Percentages remain as a
+  // fallback for stored feedback that lacks pixel values.
   function pointFromStoredTarget(target) {
-    const documentWidth = Math.max(document.documentElement.scrollWidth, window.innerWidth, 1);
-    const documentHeight = Math.max(document.documentElement.scrollHeight, window.innerHeight, 1);
-    const pageX = numberOrNull(target.documentX) != null
-      ? (numberOrNull(target.documentX) / 100) * documentWidth
-      : numberOrNull(target.pageX);
-    const pageY = numberOrNull(target.documentY) != null
-      ? (numberOrNull(target.documentY) / 100) * documentHeight
-      : numberOrNull(target.pageY);
+    const pageX = numberOrNull(target.pageX) ?? documentPercentToPxX(target.documentX);
+    const pageY = numberOrNull(target.pageY) ?? documentPercentToPxY(target.documentY);
     if (pageX == null || pageY == null) return null;
     return { pageX, pageY };
   }
 
   function rectFromStoredArea(area) {
-    const documentWidth = Math.max(document.documentElement.scrollWidth, window.innerWidth, 1);
-    const documentHeight = Math.max(document.documentElement.scrollHeight, window.innerHeight, 1);
-    const pageLeftPx = numberOrNull(area.documentX) != null
-      ? (numberOrNull(area.documentX) / 100) * documentWidth
-      : numberOrNull(area.pageX);
-    const pageTopPx = numberOrNull(area.documentY) != null
-      ? (numberOrNull(area.documentY) / 100) * documentHeight
-      : numberOrNull(area.pageY);
-    const widthPx = numberOrNull(area.documentWidth) != null
-      ? (numberOrNull(area.documentWidth) / 100) * documentWidth
-      : numberOrNull(area.clientWidth);
-    const heightPx = numberOrNull(area.documentHeight) != null
-      ? (numberOrNull(area.documentHeight) / 100) * documentHeight
-      : numberOrNull(area.clientHeight);
+    const pageLeftPx = numberOrNull(area.pageX) ?? documentPercentToPxX(area.documentX);
+    const pageTopPx = numberOrNull(area.pageY) ?? documentPercentToPxY(area.documentY);
+    const widthPx = numberOrNull(area.clientWidth) ?? documentPercentToPxX(area.documentWidth);
+    const heightPx = numberOrNull(area.clientHeight) ?? documentPercentToPxY(area.documentHeight);
 
     if (pageLeftPx == null || pageTopPx == null || widthPx == null || heightPx == null) return null;
     return {
@@ -1002,6 +990,18 @@
       widthPx: Math.max(1, widthPx),
       heightPx: Math.max(1, heightPx)
     };
+  }
+
+  function documentPercentToPxX(value) {
+    const percent = numberOrNull(value);
+    if (percent == null) return null;
+    return (percent / 100) * Math.max(document.documentElement.scrollWidth, window.innerWidth, 1);
+  }
+
+  function documentPercentToPxY(value) {
+    const percent = numberOrNull(value);
+    if (percent == null) return null;
+    return (percent / 100) * Math.max(document.documentElement.scrollHeight, window.innerHeight, 1);
   }
 
   function removeCommittedMarkers() {
