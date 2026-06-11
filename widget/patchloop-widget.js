@@ -525,6 +525,7 @@
     const font = bodyStyle.font || bodyStyle.fontFamily || "system-ui, sans-serif";
     const styles = `${freezeViewportUnits(collectReadableStyles(), width, height)}\n* { box-sizing: border-box; }\n`;
     const overlayMarkup = renderScreenshotOverlay(overlay);
+    const bodyMarkup = serializeAsXhtml(bodyClone);
 
     return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
@@ -535,13 +536,31 @@
         <style><![CDATA[${styles.replaceAll("]]>", "]]]]><![CDATA[>")}]]></style>
       </head>
       <body style="margin:0;width:${documentWidth}px;min-height:${documentHeight}px;background:${escapeHtml(background)};color:${escapeHtml(color)};font:${escapeHtml(font)};transform:translate(${-Math.round(scrollX)}px, ${-Math.round(scrollY)}px);transform-origin:top left;">
-        ${bodyClone.innerHTML}
+        ${bodyMarkup}
       </body>
     </html>
   </foreignObject>
   <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" fill="none" stroke="#d9e1dd"/>
   ${overlayMarkup}
 </svg>`;
+  }
+
+  // The SVG is parsed as XML, so the clone must be serialized as XHTML:
+  // innerHTML emits HTML syntax (unclosed void elements like <br>, named
+  // entities like &nbsp;) that breaks XML parsing and renders the whole
+  // snapshot as a broken image. XMLSerializer self-closes void elements and
+  // emits characters instead of HTML-only entities.
+  function serializeAsXhtml(root) {
+    const serializer = new XMLSerializer();
+    return Array.from(root.childNodes)
+      .map((node) => {
+        try {
+          return serializer.serializeToString(node);
+        } catch (_) {
+          return "";
+        }
+      })
+      .join("");
   }
 
   // Media queries inside the snapshot re-evaluate against the SVG's rendered
