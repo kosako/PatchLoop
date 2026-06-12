@@ -5,9 +5,10 @@
   "description": "Browser feedback widget and local receiver prototype.",
   "scripts": {
     "start": "node server/receive.js",
+    "build": "node scripts/build.js",
     "lint": "eslint .",
     "test": "node --test",
-    "check": "npm run lint && npm test"
+    "check": "npm run lint && node scripts/build.js --check && npm test"
   },
   "devDependencies": {
     "eslint": "^9.0.0"
