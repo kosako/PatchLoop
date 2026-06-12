@@ -18,6 +18,8 @@ http://localhost:4173/examples/plain-html/
 
 ## Development
 
+Node.js 22.12 or later is required (the receiver loads the shared ES module via `require()`).
+
 Install dependencies.
 
 ```sh
