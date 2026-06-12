@@ -455,6 +455,9 @@ function bindGlobalCapture() {
 
 function handleDocumentMouseDown(event) {
   if (!state.active) return;
+  // Secondary/middle buttons keep their native behavior (context menu,
+  // autoscroll); capturing them would drop a pin under the context menu.
+  if (event.button !== 0) return;
   if (event.target.closest("[data-patchloop-root]")) return;
 
   event.preventDefault();
@@ -471,6 +474,15 @@ function handleDocumentMouseDown(event) {
 
 function handleDocumentMouseMove(event) {
   if (!state.active || !state.drag) return;
+  // The mouseup can be missed entirely (button released outside the
+  // window); event.buttons reports what is actually held, so a move
+  // without the primary button cancels the drag instead of dragging
+  // a ghost selection box around.
+  if ((event.buttons & 1) === 0) {
+    removeSelectionBox();
+    state.drag = null;
+    return;
+  }
   if (event.target.closest("[data-patchloop-root]")) return;
 
   event.preventDefault();
@@ -487,7 +499,11 @@ function handleDocumentMouseMove(event) {
 
 function handleDocumentMouseUp(event) {
   if (!state.active || !state.drag) return;
-  if (event.target.closest("[data-patchloop-root]")) return;
+  if (event.target.closest("[data-patchloop-root]")) {
+    removeSelectionBox();
+    state.drag = null;
+    return;
+  }
 
   event.preventDefault();
   event.stopPropagation();
@@ -590,8 +606,8 @@ function openCommentForm(point, options = {}) {
   const form = getRoot().querySelector("[data-pl-comment]");
   form.hidden = false;
   clearFormError(form);
-  form.style.left = `${Math.min(point.clientX + 14, window.innerWidth - 340)}px`;
-  form.style.top = `${Math.min(point.clientY + 14, window.innerHeight - 250)}px`;
+  form.style.left = `${Math.max(8, Math.min(point.clientX + 14, window.innerWidth - 340))}px`;
+  form.style.top = `${Math.max(8, Math.min(point.clientY + 14, window.innerHeight - 250))}px`;
   const commentEl = form.querySelector("[data-pl-comment-text]");
   const reviewerEl = form.querySelector("[data-pl-reviewer]");
   commentEl.value = options.comment != null ? options.comment : "";
