@@ -309,6 +309,29 @@ test("GET /widget.js serves the built widget bundle", async (t) => {
   assert.match(body, /window\.PatchLoop = api;/);
 });
 
+test("GET /static serves the inbox assets and rejects traversal", async (t) => {
+  const receiver = await startReceiver(t);
+
+  const js = await fetch(`${receiver.baseUrl}/static/inbox.js`);
+  assert.equal(js.status, 200);
+  assert.match(js.headers.get("content-type"), /text\/javascript/);
+  assert.match(await js.text(), /data-status-select/);
+
+  const css = await fetch(`${receiver.baseUrl}/static/inbox.css`);
+  assert.equal(css.status, 200);
+  assert.match(css.headers.get("content-type"), /text\/css/);
+
+  const missing = await fetch(`${receiver.baseUrl}/static/nope.js`);
+  assert.equal(missing.status, 404);
+  const traversal = await fetch(`${receiver.baseUrl}/static/..%2Freceive.js`);
+  assert.equal(traversal.status, 404);
+
+  const inbox = await fetch(`${receiver.baseUrl}/`).then((response) => response.text());
+  assert.ok(inbox.includes('href="/static/inbox.css"'), "inbox links the stylesheet");
+  assert.ok(inbox.includes('src="/static/inbox.js"'), "inbox loads the static script");
+  assert.ok(!inbox.includes("<style>"), "no inline style block remains");
+});
+
 async function startReceiver(t, extraEnv = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const port = await getFreePort();

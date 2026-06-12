@@ -82,10 +82,21 @@ module.exports = [
   },
   {
     files: ["server/**/*.js", "scripts/**/*.js", "test/**/*.js", "eslint.config.js"],
+    ignores: ["server/static/**"],
     languageOptions: {
       ecmaVersion: 2024,
       sourceType: "commonjs",
       globals: nodeGlobals
+    },
+    rules: sharedRules
+  },
+  {
+    // Browser-side assets served by the receiver (inbox UI).
+    files: ["server/static/**/*.js"],
+    languageOptions: {
+      ecmaVersion: 2024,
+      sourceType: "script",
+      globals: browserGlobals
     },
     rules: sharedRules
   },
