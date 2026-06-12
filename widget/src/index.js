@@ -1,6 +1,7 @@
 import { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarget, rectFromStoredArea, round, numberOrNull } from "./geometry.js";
 import { pointAnchorOffsets, areaAnchorOffsets, roundedAnchor, geometryFromAnchor, viewportDiffersFromCreation } from "./anchoring.js";
 import { selectorFor, textFor } from "./selector.js";
+import { freezeViewportUnits, flattenRulesForSnapshot } from "./snapshot-css.js";
 import { truncateText, present, escapeHtml, escapeXml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } from "../../shared/format.js";
 
 const DEFAULTS = {
@@ -563,9 +564,19 @@ function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scro
   bodyClone.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
 
   const bodyStyle = window.getComputedStyle(document.body);
-  const background = bodyStyle.backgroundColor || "#ffffff";
+  // A transparent body paints the html (or default white) background; the
+  // snapshot must do the same instead of losing the page background.
+  const background = visibleBackground(bodyStyle.backgroundColor)
+    || visibleBackground(window.getComputedStyle(document.documentElement).backgroundColor)
+    || "#ffffff";
   const color = bodyStyle.color || "#14211d";
   const font = bodyStyle.font || bodyStyle.fontFamily || "system-ui, sans-serif";
+  const htmlClassAttr = snapshotClassAttr(document.documentElement);
+  const bodyClassAttr = snapshotClassAttr(document.body);
+  // The <body> tag is regenerated, so its inline style must be carried
+  // over; the snapshot's own layout overrides come after and win.
+  const bodyInlineStyle = String(document.body.getAttribute("style") || "").trim();
+  const bodyStylePrefix = bodyInlineStyle ? bodyInlineStyle.replace(/;?$/, ";") : "";
   const styles = `${freezeViewportUnits(collectReadableStyles(), width, height)}\n* { box-sizing: border-box; }\n`;
   const overlayMarkup = renderScreenshotOverlay(overlay);
   const bodyMarkup = serializeAsXhtml(bodyClone);
@@ -574,11 +585,11 @@ function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scro
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
 <rect width="100%" height="100%" fill="${escapeXml(background)}"/>
 <foreignObject x="0" y="0" width="${width}" height="${height}">
-  <html xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px;overflow:hidden;background:${escapeHtml(background)};">
+  <html xmlns="http://www.w3.org/1999/xhtml"${htmlClassAttr} style="width:${width}px;height:${height}px;overflow:hidden;background:${escapeHtml(background)};">
     <head>
       <style><![CDATA[${styles.replaceAll("]]>", "]]]]><![CDATA[>")}]]></style>
     </head>
-    <body style="margin:0;width:${documentWidth}px;min-height:${documentHeight}px;background:${escapeHtml(background)};color:${escapeHtml(color)};font:${escapeHtml(font)};transform:translate(${-Math.round(scrollX)}px, ${-Math.round(scrollY)}px);transform-origin:top left;">
+    <body${bodyClassAttr} style="${escapeHtml(bodyStylePrefix)}margin:0;width:${documentWidth}px;min-height:${documentHeight}px;background:${escapeHtml(background)};color:${escapeHtml(color)};font:${escapeHtml(font)};transform:translate(${-Math.round(scrollX)}px, ${-Math.round(scrollY)}px);transform-origin:top left;">
       ${bodyMarkup}
     </body>
   </html>
@@ -586,6 +597,21 @@ function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scro
 <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" fill="none" stroke="#d9e1dd"/>
 ${overlayMarkup}
 </svg>`;
+}
+
+function visibleBackground(value) {
+  if (!value || value === "transparent" || value === "rgba(0, 0, 0, 0)") return "";
+  return value;
+}
+
+function snapshotClassAttr(element) {
+  // The widget's own mode class (crosshair cursor) is capture-state, not
+  // page state, and must not leak into the snapshot.
+  const value = String(element.getAttribute("class") || "")
+    .split(/\s+/)
+    .filter((token) => token && token !== "pl-feedback-active")
+    .join(" ");
+  return value ? ` class="${escapeHtml(value)}"` : "";
 }
 
 // The SVG is parsed as XML, so the clone must be serialized as XHTML:
@@ -614,56 +640,20 @@ function serializeAsXhtml(root) {
 // layout at any display size.
 function collectReadableStyles() {
   const chunks = [];
-  Array.from(document.styleSheets).forEach((sheet) => {
+  const mediaMatches = (mediaText) => window.matchMedia(mediaText).matches;
+  const sheets = [...Array.from(document.styleSheets), ...Array.from(document.adoptedStyleSheets || [])];
+  sheets.forEach((sheet) => {
     try {
       if (sheet.ownerNode?.dataset?.patchloopStyle) return;
-      if (sheet.media && sheet.media.mediaText && !window.matchMedia(sheet.media.mediaText).matches) return;
-      const flattened = flattenRulesForSnapshot(sheet.cssRules);
+      if (sheet.disabled) return;
+      if (sheet.media && sheet.media.mediaText && !mediaMatches(sheet.media.mediaText)) return;
+      const flattened = flattenRulesForSnapshot(sheet.cssRules, mediaMatches);
       if (flattened) chunks.push(flattened);
     } catch (_) {
       // Cross-origin stylesheets cannot be read. The snapshot still includes DOM and overlay context.
     }
   });
   return chunks.join("\n");
-}
-
-// Viewport units re-resolve against the rendered size just like media
-// queries do, so freeze them to the captured viewport in pixels.
-function freezeViewportUnits(cssText, width, height) {
-  return cssText.replace(/(-?\d*\.?\d+)(?:[dsl])?v(w|h|min|max)\b/g, (match, number, axis) => {
-    const value = Number(number);
-    if (!Number.isFinite(value)) return match;
-    const base = axis === "w"
-      ? width
-      : axis === "h"
-        ? height
-        : axis === "min" ? Math.min(width, height) : Math.max(width, height);
-    return `${(value * base) / 100}px`;
-  });
-}
-
-function flattenRulesForSnapshot(rules) {
-  return Array.from(rules || [])
-    .map((rule) => {
-      if (rule.styleSheet) {
-        // @import: inline the imported sheet, honoring its media list.
-        const media = rule.media && rule.media.mediaText;
-        if (media && !window.matchMedia(media).matches) return "";
-        try {
-          return flattenRulesForSnapshot(rule.styleSheet.cssRules);
-        } catch (_) {
-          return "";
-        }
-      }
-      if (rule.media) {
-        return window.matchMedia(rule.media.mediaText).matches
-          ? flattenRulesForSnapshot(rule.cssRules)
-          : "";
-      }
-      return rule.cssText;
-    })
-    .filter(Boolean)
-    .join("\n");
 }
 
 // Overlay coordinates must be viewport-relative at capture time, so derive
