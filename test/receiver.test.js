@@ -295,6 +295,20 @@ test("corrupt feedback store is backed up instead of overwritten", async (t) => 
   assert.ok(!entries.includes("feedback.json.tmp"), "temp file should not linger after persist");
 });
 
+test("GET /widget.js serves the built widget bundle", async (t) => {
+  const receiver = await startReceiver(t);
+
+  const response = await fetch(`${receiver.baseUrl}/widget.js`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type"), /text\/javascript/);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+
+  const body = await response.text();
+  const dist = await fs.readFile(path.resolve(__dirname, "../dist/patchloop-widget.js"), "utf8");
+  assert.equal(body, dist);
+  assert.match(body, /window\.PatchLoop = api;/);
+});
+
 async function startReceiver(t, extraEnv = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const port = await getFreePort();
