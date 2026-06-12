@@ -28,6 +28,7 @@ const browserGlobals = {
   alert: "readonly",
   btoa: "readonly",
   CSS: "readonly",
+  globalThis: "readonly",
   document: "readonly",
   FileReader: "readonly",
   getComputedStyle: "readonly",
