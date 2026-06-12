@@ -1,0 +1,1825 @@
+const DEFAULTS = {
+  projectId: "local-demo",
+  demoId: "plain-html",
+  endpoint: "",
+  deliveryMode: "receiver",
+  slackWebhookUrl: "",
+  showDeliverySettings: false,
+  reviewer: "",
+  reviewerStorageKey: "patchloop:reviewer",
+  persistFeedback: true,
+  feedbackStorageKey: "patchloop:feedback",
+  position: "bottom-right",
+  captureScreenshot: true,
+  screenshotMaxBytes: 1_200_000,
+  onSubmit: null
+};
+
+const EXPORT_KIND = "patchloop-feedback-bundle";
+const EXPORT_VERSION = 1;
+const FEEDBACK_STORAGE_VERSION = 1;
+
+const state = {
+  options: { ...DEFAULTS },
+  active: false,
+  pendingTarget: null,
+  drag: null,
+  suppressNextClick: false,
+  feedback: [],
+  feedbackMarkers: new Map(),
+  approximateIds: new Set(),
+  resizeTimer: null,
+  editingId: null,
+  collapsed: true
+};
+
+function init(options = {}) {
+  state.options = { ...DEFAULTS, ...options };
+  state.options.reviewer = initialReviewer(state.options);
+  injectStyles();
+  renderShell();
+  bindGlobalCapture();
+  restorePersistedFeedback();
+  applyCollapseState();
+  renderFeedbackList();
+  return api;
+}
+
+function destroy() {
+  document.removeEventListener("mousedown", handleDocumentMouseDown, true);
+  document.removeEventListener("mousemove", handleDocumentMouseMove, true);
+  document.removeEventListener("mouseup", handleDocumentMouseUp, true);
+  document.removeEventListener("click", suppressDocumentClick, true);
+  window.removeEventListener("resize", handleWindowResize);
+  window.clearTimeout(state.resizeTimer);
+  state.approximateIds.clear();
+  document.querySelector("[data-patchloop-root]")?.remove();
+  document.querySelectorAll("[data-patchloop-pin]").forEach((node) => node.remove());
+  document.querySelectorAll("[data-patchloop-area]").forEach((node) => node.remove());
+  document.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
+  removeSelectionBox();
+  state.active = false;
+  state.pendingTarget = null;
+  state.drag = null;
+  state.feedbackMarkers.clear();
+  state.editingId = null;
+}
+
+function initialReviewer(options) {
+  const configured = String(options.reviewer || "").trim();
+  if (configured) return configured;
+  return loadStoredReviewer(options.reviewerStorageKey);
+}
+
+function renderShell() {
+  document.querySelector("[data-patchloop-root]")?.remove();
+
+  const root = document.createElement("div");
+  root.dataset.patchloopRoot = "true";
+  root.className = `pl-root pl-${state.options.position}`;
+  root.innerHTML = `
+    <section class="pl-panel pl-collapsed" data-pl-panel>
+      <header>
+        <button type="button" class="pl-handle" data-pl-collapse aria-expanded="false" title="展開">‹</button>
+        <strong class="pl-title">PatchLoop</strong>
+        <button type="button" class="pl-mode" data-pl-mode>コメントモード開始</button>
+      </header>
+      <div class="pl-panel-body" data-pl-body>
+        <p data-pl-help>コメントモードを開始して、画面上の気になる場所をクリックしてください。</p>
+        <div class="pl-actions">
+          <button type="button" data-pl-clear>フィードバックを消す</button>
+        </div>
+        ${renderDeliverySettings()}
+        <div class="pl-feedback-list" data-pl-list>
+          <p class="pl-feedback-list-empty">まだフィードバックはありません。</p>
+        </div>
+      </div>
+    </section>
+    <div class="pl-tooltip" data-pl-tooltip hidden></div>
+    <form class="pl-comment" data-pl-comment hidden>
+      <label>
+        コメント
+        <textarea data-pl-comment-text rows="4" placeholder="ここで何を直したいですか？"></textarea>
+      </label>
+      <label>
+        投稿者
+        <input data-pl-reviewer value="${escapeHtml(state.options.reviewer)}" placeholder="名前" aria-describedby="pl-reviewer-error" />
+      </label>
+      <p class="pl-form-error" id="pl-reviewer-error" data-pl-form-error hidden></p>
+      <div class="pl-form-actions">
+        <button type="button" data-pl-cancel>キャンセル</button>
+        <button type="submit">送信</button>
+      </div>
+    </form>
+  `;
+
+  document.body.append(root);
+
+  root.querySelector("[data-pl-collapse]").addEventListener("click", toggleCollapse);
+  root.querySelector("[data-pl-mode]").addEventListener("click", toggleFeedbackMode);
+  root.querySelector("[data-pl-clear]").addEventListener("click", clearPins);
+  root.querySelector("[data-pl-cancel]").addEventListener("click", cancelPendingComment);
+  root.querySelector("[data-pl-comment]").addEventListener("submit", submitComment);
+  root.querySelector("[data-pl-comment]").addEventListener("keydown", handleCommentKeydown);
+  root.querySelector("[data-pl-reviewer]").addEventListener("input", () => clearFormError(root.querySelector("[data-pl-comment]")));
+  root.querySelector("[data-pl-list]").addEventListener("click", handleListClick);
+  root.querySelector("[data-pl-delivery-settings]")?.addEventListener("input", handleDeliverySettingsInput);
+  root.querySelector("[data-pl-delivery-settings]")?.addEventListener("change", handleDeliverySettingsInput);
+  syncDeliverySettingsVisibility();
+}
+
+function renderDeliverySettings() {
+  if (!state.options.showDeliverySettings) return "";
+
+  return `
+        <details class="pl-delivery-settings" data-pl-delivery-settings>
+          <summary>送信設定</summary>
+          <label>
+            送信先
+            <select data-pl-delivery-mode>
+              <option value="receiver"${state.options.deliveryMode === "receiver" ? " selected" : ""}>Receiver</option>
+              <option value="slack-webhook"${state.options.deliveryMode === "slack-webhook" ? " selected" : ""}>Slack direct</option>
+              <option value="download"${state.options.deliveryMode === "download" ? " selected" : ""}>Download</option>
+              <option value="none"${state.options.deliveryMode === "none" ? " selected" : ""}>送信なし</option>
+            </select>
+          </label>
+          <label data-pl-endpoint-field>
+            Receiver endpoint
+            <input data-pl-endpoint value="${escapeHtml(state.options.endpoint)}" placeholder="http://localhost:4000/feedback" />
+          </label>
+          <label data-pl-slack-field>
+            Slack webhook URL
+            <input type="password" data-pl-slack-webhook value="${escapeHtml(state.options.slackWebhookUrl)}" placeholder="https://hooks.slack.com/services/..." />
+          </label>
+        </details>
+  `;
+}
+
+function bindGlobalCapture() {
+  document.removeEventListener("mousedown", handleDocumentMouseDown, true);
+  document.removeEventListener("mousemove", handleDocumentMouseMove, true);
+  document.removeEventListener("mouseup", handleDocumentMouseUp, true);
+  document.removeEventListener("click", suppressDocumentClick, true);
+  document.addEventListener("mousedown", handleDocumentMouseDown, true);
+  document.addEventListener("mousemove", handleDocumentMouseMove, true);
+  document.addEventListener("mouseup", handleDocumentMouseUp, true);
+  document.addEventListener("click", suppressDocumentClick, true);
+  window.removeEventListener("resize", handleWindowResize);
+  window.addEventListener("resize", handleWindowResize);
+}
+
+function handleDocumentMouseDown(event) {
+  if (!state.active) return;
+  if (event.target.closest("[data-patchloop-root]")) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  state.drag = {
+    startedAt: pointFromEvent(event),
+    latest: pointFromEvent(event),
+    target: event.target,
+    isDragging: false
+  };
+  state.suppressNextClick = true;
+}
+
+function handleDocumentMouseMove(event) {
+  if (!state.active || !state.drag) return;
+  if (event.target.closest("[data-patchloop-root]")) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  state.drag.latest = pointFromEvent(event);
+  const rect = rectFromPoints(state.drag.startedAt, state.drag.latest);
+  state.drag.isDragging = rect.widthPx > 8 || rect.heightPx > 8;
+
+  if (state.drag.isDragging) {
+    renderSelectionBox(rect);
+  }
+}
+
+function handleDocumentMouseUp(event) {
+  if (!state.active || !state.drag) return;
+  if (event.target.closest("[data-patchloop-root]")) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const start = state.drag.startedAt;
+  const end = pointFromEvent(event);
+  const rect = rectFromPoints(start, end);
+  const target = document.elementFromPoint(start.clientX, start.clientY) || state.drag.target;
+
+  discardPendingMarker();
+  // A new capture supersedes an interrupted edit; a stale editingId would
+  // route the submit into the edit branch and silently overwrite that item.
+  state.editingId = null;
+
+  let marker;
+  if (state.drag.isDragging) {
+    marker = addArea(rect);
+    const areaAnchor = buildAreaAnchor(target, rect);
+    state.pendingTarget = {
+      kind: "area",
+      ...pointFromClient(rect.leftPx, rect.topPx),
+      area: {
+        x: round(rect.x),
+        y: round(rect.y),
+        width: round(rect.width),
+        height: round(rect.height),
+        clientX: Math.round(rect.leftPx),
+        clientY: Math.round(rect.topPx),
+        clientWidth: Math.round(rect.widthPx),
+        clientHeight: Math.round(rect.heightPx),
+        pageX: Math.round(rect.pageLeftPx),
+        pageY: Math.round(rect.pageTopPx),
+        documentX: round(rect.documentX),
+        documentY: round(rect.documentY),
+        documentWidth: round(rect.documentWidth),
+        documentHeight: round(rect.documentHeight)
+      },
+      selector: selectorFor(target),
+      elementText: textFor(target),
+      anchor: areaAnchor.anchor,
+      anchorElement: areaAnchor.anchorElement,
+      markerNode: marker.node,
+      markerLabelNode: marker.label,
+      targetElement: target
+    };
+    openCommentForm({ clientX: rect.rightPx, clientY: rect.bottomPx });
+  } else {
+    const point = pointFromEvent(event);
+    marker = addPin(point);
+    const pointAnchor = buildPointAnchor(target, point);
+    state.pendingTarget = {
+      kind: "point",
+      ...point,
+      selector: selectorFor(target),
+      elementText: textFor(target),
+      anchor: pointAnchor.anchor,
+      anchorElement: pointAnchor.anchorElement,
+      markerNode: marker.node,
+      markerLabelNode: marker.label,
+      targetElement: target
+    };
+    openCommentForm(point);
+  }
+
+  highlightTarget(target);
+
+  removeSelectionBox();
+  state.drag = null;
+}
+
+function suppressDocumentClick(event) {
+  if (!state.suppressNextClick) return;
+  state.suppressNextClick = false;
+  if (event.target.closest("[data-patchloop-root]")) return;
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+function toggleFeedbackMode() {
+  setFeedbackMode(!state.active);
+}
+
+function setFeedbackMode(nextValue) {
+  state.active = nextValue;
+  document.documentElement.classList.toggle("pl-feedback-active", state.active);
+  const root = getRoot();
+  const handleBtn = root.querySelector("[data-pl-collapse]");
+  if (handleBtn) handleBtn.classList.toggle("pl-mode-on", state.active);
+  const modeBtn = root.querySelector("[data-pl-mode]");
+  modeBtn.textContent = state.active ? "コメントモード終了" : "コメントモード開始";
+  modeBtn.setAttribute("aria-pressed", String(state.active));
+  root.querySelector("[data-pl-help]").textContent = state.active ? "点をクリック、または範囲をドラッグしてコメントできます。" : "コメントモードを開始して、画面上の気になる場所をクリックしてください。";
+  if (!state.active) {
+    removeSelectionBox();
+    state.drag = null;
+  }
+}
+
+function openCommentForm(point, options = {}) {
+  const form = getRoot().querySelector("[data-pl-comment]");
+  form.hidden = false;
+  clearFormError(form);
+  form.style.left = `${Math.min(point.clientX + 14, window.innerWidth - 340)}px`;
+  form.style.top = `${Math.min(point.clientY + 14, window.innerHeight - 250)}px`;
+  const commentEl = form.querySelector("[data-pl-comment-text]");
+  const reviewerEl = form.querySelector("[data-pl-reviewer]");
+  commentEl.value = options.comment != null ? options.comment : "";
+  if (options.reviewer != null) {
+    reviewerEl.value = options.reviewer;
+  }
+  commentEl.focus();
+}
+
+function closeCommentForm() {
+  const form = getRoot().querySelector("[data-pl-comment]");
+  clearFormError(form);
+  form.hidden = true;
+  state.pendingTarget = null;
+}
+
+function handleCommentKeydown(event) {
+  if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) return;
+  event.preventDefault();
+  event.currentTarget.requestSubmit();
+}
+
+function handleDeliverySettingsInput() {
+  const root = getRoot();
+  if (!root) return;
+  const mode = root.querySelector("[data-pl-delivery-mode]")?.value;
+  const endpoint = root.querySelector("[data-pl-endpoint]")?.value;
+  const slackWebhookUrl = root.querySelector("[data-pl-slack-webhook]")?.value;
+
+  if (mode) state.options.deliveryMode = mode;
+  if (endpoint != null) state.options.endpoint = endpoint.trim();
+  if (slackWebhookUrl != null) state.options.slackWebhookUrl = slackWebhookUrl.trim();
+  syncDeliverySettingsVisibility();
+}
+
+function syncDeliverySettingsVisibility() {
+  const root = getRoot();
+  if (!root) return;
+  const mode = state.options.deliveryMode || "receiver";
+  const endpointField = root.querySelector("[data-pl-endpoint-field]");
+  const slackField = root.querySelector("[data-pl-slack-field]");
+  if (endpointField) endpointField.hidden = mode !== "receiver";
+  if (slackField) slackField.hidden = mode !== "slack-webhook";
+}
+
+function showFormError(form, message) {
+  const errorEl = form?.querySelector("[data-pl-form-error]");
+  if (!errorEl) return;
+  errorEl.textContent = message;
+  errorEl.hidden = false;
+}
+
+function clearFormError(form) {
+  const errorEl = form?.querySelector("[data-pl-form-error]");
+  if (!errorEl) return;
+  errorEl.textContent = "";
+  errorEl.hidden = true;
+}
+
+async function submitComment(event) {
+  event.preventDefault();
+
+  const root = getRoot();
+  const form = root.querySelector("[data-pl-comment]");
+  const comment = root.querySelector("[data-pl-comment-text]").value.trim();
+  const reviewer = root.querySelector("[data-pl-reviewer]").value.trim();
+  if (!comment) return;
+  if (!reviewer) {
+    showFormError(form, "投稿者名を入力してください。");
+    root.querySelector("[data-pl-reviewer]").focus();
+    return;
+  }
+  clearFormError(form);
+
+  if (state.editingId) {
+    const target = state.feedback.find((item) => item.id === state.editingId);
+    if (target) {
+      target.comment = comment;
+      target.reviewer = reviewer;
+      saveReviewer(reviewer);
+      persistFeedbackList();
+      renderFeedbackList();
+    }
+    state.editingId = null;
+    closeCommentForm();
+    return;
+  }
+
+  if (!state.pendingTarget) return;
+
+  saveReviewer(reviewer);
+  const payload = buildPayload(comment, reviewer, state.pendingTarget);
+  state.feedback.unshift(payload);
+  finalizePendingMarker(payload.id);
+  persistFeedbackList();
+  renderFeedbackList();
+  expandPanel();
+  closeCommentForm();
+
+  document.dispatchEvent(new CustomEvent("patchloop:feedback", { detail: payload }));
+
+  if (typeof state.options.onSubmit === "function") {
+    state.options.onSubmit(payload);
+  }
+
+  if (shouldDeliverFeedback()) {
+    await deliverFeedback(payload);
+    persistFeedbackList();
+    renderFeedbackList();
+  }
+}
+
+function buildPayload(comment, reviewer, target) {
+  return {
+    id: `pl_${Date.now()}`,
+    projectId: state.options.projectId,
+    demoId: state.options.demoId,
+    comment,
+    reviewer,
+    page: {
+      url: window.location.href,
+      title: document.title
+    },
+    target: {
+      kind: target.kind || "point",
+      x: round(target.x),
+      y: round(target.y),
+      clientX: Math.round(target.clientX),
+      clientY: Math.round(target.clientY),
+      pageX: Math.round(target.pageX),
+      pageY: Math.round(target.pageY),
+      documentX: round(target.documentX),
+      documentY: round(target.documentY),
+      area: target.area || null,
+      selector: target.selector,
+      text: target.elementText,
+      anchor: roundedAnchor(target.anchor)
+    },
+    environment: {
+      viewport: {
+        width: window.innerWidth,
+        height: window.innerHeight
+      },
+      browser: navigator.userAgent,
+      language: navigator.language
+    },
+    screenshot: captureScreenshot(target),
+    createdAt: new Date().toISOString()
+  };
+}
+
+function captureScreenshot(target) {
+  if (!state.options.captureScreenshot) return null;
+
+  try {
+    const width = Math.max(document.documentElement.clientWidth, window.innerWidth, 1);
+    const height = Math.max(document.documentElement.clientHeight, window.innerHeight, 1);
+    const documentWidth = Math.max(document.documentElement.scrollWidth, width);
+    const documentHeight = Math.max(document.documentElement.scrollHeight, height);
+    const overlay = screenshotOverlayFor(target);
+    const svg = buildScreenshotSvg({
+      width,
+      height,
+      documentWidth,
+      documentHeight,
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+      overlay
+    });
+    const bytes = byteLength(svg);
+    const maxBytes = Number(state.options.screenshotMaxBytes || 0);
+
+    if (maxBytes > 0 && bytes > maxBytes) {
+      return {
+        status: "omitted",
+        reason: "too-large",
+        kind: "viewport-svg",
+        mimeType: "image/svg+xml",
+        width,
+        height,
+        bytes,
+        maxBytes,
+        targetOverlay: overlay
+      };
+    }
+
+    return {
+      status: "captured",
+      kind: "viewport-svg",
+      mimeType: "image/svg+xml",
+      width,
+      height,
+      scrollX: Math.round(window.scrollX),
+      scrollY: Math.round(window.scrollY),
+      devicePixelRatio: window.devicePixelRatio || 1,
+      bytes,
+      targetOverlay: overlay,
+      dataUrl: `data:image/svg+xml;base64,${base64Encode(svg)}`
+    };
+  } catch (error) {
+    return {
+      status: "failed",
+      error: error.message
+    };
+  }
+}
+
+function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scrollX, scrollY, overlay }) {
+  const bodyClone = document.body.cloneNode(true);
+  bodyClone.querySelectorAll("[data-patchloop-root], [data-patchloop-pin], [data-patchloop-area], [data-patchloop-selection], script").forEach((node) => node.remove());
+  bodyClone.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
+
+  const bodyStyle = window.getComputedStyle(document.body);
+  const background = bodyStyle.backgroundColor || "#ffffff";
+  const color = bodyStyle.color || "#14211d";
+  const font = bodyStyle.font || bodyStyle.fontFamily || "system-ui, sans-serif";
+  const styles = `${freezeViewportUnits(collectReadableStyles(), width, height)}\n* { box-sizing: border-box; }\n`;
+  const overlayMarkup = renderScreenshotOverlay(overlay);
+  const bodyMarkup = serializeAsXhtml(bodyClone);
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+<rect width="100%" height="100%" fill="${escapeXml(background)}"/>
+<foreignObject x="0" y="0" width="${width}" height="${height}">
+  <html xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px;overflow:hidden;background:${escapeHtml(background)};">
+    <head>
+      <style><![CDATA[${styles.replaceAll("]]>", "]]]]><![CDATA[>")}]]></style>
+    </head>
+    <body style="margin:0;width:${documentWidth}px;min-height:${documentHeight}px;background:${escapeHtml(background)};color:${escapeHtml(color)};font:${escapeHtml(font)};transform:translate(${-Math.round(scrollX)}px, ${-Math.round(scrollY)}px);transform-origin:top left;">
+      ${bodyMarkup}
+    </body>
+  </html>
+</foreignObject>
+<rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" fill="none" stroke="#d9e1dd"/>
+${overlayMarkup}
+</svg>`;
+}
+
+// The SVG is parsed as XML, so the clone must be serialized as XHTML:
+// innerHTML emits HTML syntax (unclosed void elements like <br>, named
+// entities like &nbsp;) that breaks XML parsing and renders the whole
+// snapshot as a broken image. XMLSerializer self-closes void elements and
+// emits characters instead of HTML-only entities.
+function serializeAsXhtml(root) {
+  const serializer = new XMLSerializer();
+  return Array.from(root.childNodes)
+    .map((node) => {
+      try {
+        return serializer.serializeToString(node);
+      } catch (_) {
+        return "";
+      }
+    })
+    .join("");
+}
+
+// Media queries inside the snapshot re-evaluate against the SVG's rendered
+// size (e.g. a scaled-down inbox preview), reflowing the clone away from the
+// captured layout while overlay coordinates stay fixed. Resolve media
+// conditions at capture time instead: inline the rules that match the
+// current viewport and drop the rest, so the snapshot keeps the captured
+// layout at any display size.
+function collectReadableStyles() {
+  const chunks = [];
+  Array.from(document.styleSheets).forEach((sheet) => {
+    try {
+      if (sheet.ownerNode?.dataset?.patchloopStyle) return;
+      if (sheet.media && sheet.media.mediaText && !window.matchMedia(sheet.media.mediaText).matches) return;
+      const flattened = flattenRulesForSnapshot(sheet.cssRules);
+      if (flattened) chunks.push(flattened);
+    } catch (_) {
+      // Cross-origin stylesheets cannot be read. The snapshot still includes DOM and overlay context.
+    }
+  });
+  return chunks.join("\n");
+}
+
+// Viewport units re-resolve against the rendered size just like media
+// queries do, so freeze them to the captured viewport in pixels.
+function freezeViewportUnits(cssText, width, height) {
+  return cssText.replace(/(-?\d*\.?\d+)(?:[dsl])?v(w|h|min|max)\b/g, (match, number, axis) => {
+    const value = Number(number);
+    if (!Number.isFinite(value)) return match;
+    const base = axis === "w"
+      ? width
+      : axis === "h"
+        ? height
+        : axis === "min" ? Math.min(width, height) : Math.max(width, height);
+    return `${(value * base) / 100}px`;
+  });
+}
+
+function flattenRulesForSnapshot(rules) {
+  return Array.from(rules || [])
+    .map((rule) => {
+      if (rule.styleSheet) {
+        // @import: inline the imported sheet, honoring its media list.
+        const media = rule.media && rule.media.mediaText;
+        if (media && !window.matchMedia(media).matches) return "";
+        try {
+          return flattenRulesForSnapshot(rule.styleSheet.cssRules);
+        } catch (_) {
+          return "";
+        }
+      }
+      if (rule.media) {
+        return window.matchMedia(rule.media.mediaText).matches
+          ? flattenRulesForSnapshot(rule.cssRules)
+          : "";
+      }
+      return rule.cssText;
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+// Overlay coordinates must be viewport-relative at capture time, so derive
+// them from the page-pixel position (kept fresh by re-anchoring) and the
+// current scroll instead of the click-time client coordinates.
+function screenshotOverlayFor(target) {
+  if (target.kind === "area" && target.area) {
+    return {
+      kind: "area",
+      x: Math.round(target.area.pageX - window.scrollX),
+      y: Math.round(target.area.pageY - window.scrollY),
+      width: Math.round(target.area.clientWidth),
+      height: Math.round(target.area.clientHeight)
+    };
+  }
+
+  return {
+    kind: "point",
+    x: Math.round(target.pageX - window.scrollX),
+    y: Math.round(target.pageY - window.scrollY)
+  };
+}
+
+function renderScreenshotOverlay(overlay) {
+  if (!overlay) return "";
+  if (overlay.kind === "area") {
+    const x = Math.max(0, overlay.x);
+    const y = Math.max(0, overlay.y);
+    const width = Math.max(1, overlay.width);
+    const height = Math.max(1, overlay.height);
+    return `
+<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="6" fill="rgba(209, 73, 91, 0.16)" stroke="#d1495b" stroke-width="3"/>
+<circle cx="${x + 18}" cy="${y + 18}" r="14" fill="#d1495b" stroke="#ffffff" stroke-width="3"/>
+<text x="${x + 18}" y="${y + 23}" text-anchor="middle" fill="#ffffff" font-family="system-ui, sans-serif" font-size="13" font-weight="900">!</text>`;
+  }
+
+  return `
+<circle cx="${overlay.x}" cy="${overlay.y}" r="18" fill="#d1495b" stroke="#ffffff" stroke-width="4"/>
+<circle cx="${overlay.x}" cy="${overlay.y}" r="30" fill="none" stroke="#d1495b" stroke-width="3" opacity="0.35"/>`;
+}
+
+function byteLength(value) {
+  if (window.Blob) return new Blob([value]).size;
+  return base64Encode(value).length;
+}
+
+function base64Encode(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 8192) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  }
+  return btoa(binary);
+}
+
+async function postFeedback(payload) {
+  try {
+    const response = await fetch(state.options.endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    payload.delivery = { ok: response.ok, status: response.status };
+  } catch (error) {
+    payload.delivery = { ok: false, error: error.message };
+  }
+  console.info("[PatchLoop] delivery", payload.id, payload.delivery);
+}
+
+function loadStoredReviewer(storageKey) {
+  if (!storageKey) return "";
+  try {
+    return String(window.localStorage.getItem(storageKey) || "").trim();
+  } catch (_) {
+    return "";
+  }
+}
+
+function saveReviewer(reviewer) {
+  state.options.reviewer = reviewer;
+  if (!state.options.reviewerStorageKey) return;
+  try {
+    window.localStorage.setItem(state.options.reviewerStorageKey, reviewer);
+  } catch (_) {
+    // Storage can be unavailable in privacy-restricted contexts.
+  }
+}
+
+function restorePersistedFeedback() {
+  removeCommittedMarkers();
+  state.feedbackMarkers.clear();
+  state.feedback = [];
+
+  if (!state.options.persistFeedback) return;
+
+  const stored = loadPersistedFeedback();
+  if (!stored.length) return;
+
+  state.feedback = stored;
+  restoreFeedbackMarkers();
+  persistFeedbackList();
+}
+
+function loadPersistedFeedback() {
+  if (!state.options.feedbackStorageKey) return [];
+
+  try {
+    const raw = window.localStorage.getItem(state.options.feedbackStorageKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!isMatchingFeedbackEnvelope(parsed)) return [];
+    return Array.isArray(parsed.feedback)
+      ? parsed.feedback.map(normalizePersistedFeedback).filter(Boolean)
+      : [];
+  } catch (error) {
+    console.warn("[PatchLoop] persisted feedback ignored", error);
+    return [];
+  }
+}
+
+function persistFeedbackList() {
+  if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return;
+
+  const envelope = feedbackStorageEnvelope(state.feedback);
+  try {
+    window.localStorage.setItem(state.options.feedbackStorageKey, JSON.stringify(envelope));
+  } catch (error) {
+    const compactEnvelope = feedbackStorageEnvelope(state.feedback, { omitScreenshotDataUrl: true });
+    try {
+      window.localStorage.setItem(state.options.feedbackStorageKey, JSON.stringify(compactEnvelope));
+      console.warn("[PatchLoop] persisted feedback without screenshot dataUrl", error);
+    } catch (retryError) {
+      console.warn("[PatchLoop] unable to persist feedback", retryError);
+    }
+  }
+}
+
+function clearPersistedFeedback() {
+  if (!state.options.feedbackStorageKey) return;
+
+  try {
+    window.localStorage.removeItem(state.options.feedbackStorageKey);
+  } catch (_) {
+    // Storage can be unavailable in privacy-restricted contexts.
+  }
+}
+
+function feedbackStorageEnvelope(feedback, options = {}) {
+  return {
+    version: FEEDBACK_STORAGE_VERSION,
+    projectId: state.options.projectId,
+    demoId: state.options.demoId,
+    pageUrl: window.location.href,
+    savedAt: new Date().toISOString(),
+    feedback: feedback.map((item) => serializeFeedbackForStorage(item, options)).filter(Boolean)
+  };
+}
+
+function serializeFeedbackForStorage(item, options = {}) {
+  try {
+    const copy = JSON.parse(JSON.stringify(item));
+    if (options.omitScreenshotDataUrl && copy.screenshot) {
+      delete copy.screenshot.dataUrl;
+      copy.screenshot.persistedWithoutDataUrl = true;
+    }
+    return copy;
+  } catch (_) {
+    return null;
+  }
+}
+
+function normalizePersistedFeedback(item) {
+  if (!item || typeof item !== "object") return null;
+  if (!item.id || !item.target || typeof item.target !== "object") return null;
+  return item;
+}
+
+function isMatchingFeedbackEnvelope(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (value.version !== FEEDBACK_STORAGE_VERSION) return false;
+  if (value.projectId !== state.options.projectId) return false;
+  if (value.demoId !== state.options.demoId) return false;
+  if (value.pageUrl !== window.location.href) return false;
+  return Array.isArray(value.feedback);
+}
+
+function shouldDeliverFeedback() {
+  if (state.options.deliveryMode === "none") return false;
+  if (state.options.deliveryMode === "download") return true;
+  if (state.options.deliveryMode === "slack-webhook") return Boolean(state.options.slackWebhookUrl);
+  return Boolean(state.options.endpoint);
+}
+
+async function deliverFeedback(payload) {
+  if (state.options.deliveryMode === "download") {
+    downloadFeedbackBundle(payload);
+    return;
+  }
+
+  if (state.options.deliveryMode === "slack-webhook") {
+    await postSlackWebhook(payload);
+    return;
+  }
+
+  await postFeedback(payload);
+}
+
+function downloadFeedbackBundle(payload) {
+  try {
+    const bundle = buildFeedbackBundle(payload);
+    const json = JSON.stringify(bundle, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = feedbackBundleFileName(payload);
+    link.style.display = "none";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    payload.delivery = {
+      ok: true,
+      status: "downloaded",
+      target: "download",
+      fileName: link.download
+    };
+  } catch (error) {
+    payload.delivery = {
+      ok: false,
+      target: "download",
+      error: error.message
+    };
+  }
+  console.info("[PatchLoop] delivery", payload.id, payload.delivery);
+}
+
+function buildFeedbackBundle(payload) {
+  return {
+    kind: EXPORT_KIND,
+    version: EXPORT_VERSION,
+    exportedAt: new Date().toISOString(),
+    projectId: payload.projectId || "",
+    demoId: payload.demoId || "",
+    feedback: payload
+  };
+}
+
+function feedbackBundleFileName(payload) {
+  const project = safeFilePart(payload.projectId || "patchloop");
+  const demo = safeFilePart(payload.demoId || "feedback");
+  const id = safeFilePart(payload.id || Date.now());
+  return `${project}-${demo}-${id}.patchloop-feedback.json`;
+}
+
+function safeFilePart(value) {
+  return String(value || "feedback")
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "feedback";
+}
+
+async function postSlackWebhook(payload) {
+  try {
+    await fetch(state.options.slackWebhookUrl, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "text/plain;charset=UTF-8" },
+      body: JSON.stringify(buildSlackWebhookPayload(payload))
+    });
+    payload.delivery = { ok: true, status: "opaque", target: "slack-webhook" };
+  } catch (error) {
+    payload.delivery = { ok: false, target: "slack-webhook", error: error.message };
+  }
+  console.info("[PatchLoop] delivery", payload.id, payload.delivery);
+}
+
+function buildSlackWebhookPayload(payload) {
+  const target = payload.target || {};
+  const env = payload.environment || {};
+  const page = payload.page || {};
+  const blocks = [
+    {
+      type: "header",
+      text: {
+        type: "plain_text",
+        text: "PatchLoop feedback",
+        emoji: false
+      }
+    },
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: slackEscape(truncateText(payload.comment || "(empty comment)", 1400))
+      }
+    },
+    {
+      type: "section",
+      fields: [
+        { type: "mrkdwn", text: `*Reviewer*\n${slackEscape(payload.reviewer || "(no name)")}` },
+        { type: "mrkdwn", text: `*Page*\n${formatSlackLink(page.url, page.title || page.url || "(unknown page)")}` },
+        { type: "mrkdwn", text: `*Target*\n${slackEscape(formatTargetForSlack(target))}` },
+        { type: "mrkdwn", text: `*Viewport*\n${slackEscape(formatViewportForSlack(env.viewport))}` },
+        { type: "mrkdwn", text: `*Selector*\n${formatSlackCode(target.selector || "(none)")}` },
+        { type: "mrkdwn", text: `*Created*\n${slackEscape(payload.createdAt || "(unknown)")}` }
+      ]
+    }
+  ];
+
+  if (target.text) {
+    blocks.push({
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*Element text*\n>${slackEscape(truncateText(target.text, 500)).replaceAll("\n", "\n>")}`
+      }
+    });
+  }
+
+  if (payload.screenshot && payload.screenshot.status) {
+    blocks.push({
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `screenshot: ${formatSlackCode(formatDirectScreenshotStatus(payload.screenshot))}`
+        }
+      ]
+    });
+  }
+
+  blocks.push({
+    type: "context",
+    elements: [
+      {
+        type: "mrkdwn",
+        text: `project: ${formatSlackCode(payload.projectId || "-")} · demo: ${formatSlackCode(payload.demoId || "-")} · id: ${formatSlackCode(payload.id || "-")}`
+      }
+    ]
+  });
+
+  return {
+    text: `PatchLoop feedback: ${truncateText(payload.comment || "", 120)}`,
+    blocks
+  };
+}
+
+function slackEscape(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function formatSlackCode(value) {
+  return `\`${slackEscape(truncateText(String(value ?? "").replaceAll("`", "'"), 180))}\``;
+}
+
+function formatSlackLink(url, label) {
+  if (!/^https?:\/\//.test(url || "")) {
+    return slackEscape(label || url || "(unknown)");
+  }
+  return `<${slackEscape(url)}|${slackEscape(truncateText(String(label || url).replaceAll("|", "/"), 120))}>`;
+}
+
+function formatViewportForSlack(viewport) {
+  if (!viewport) return "(unknown)";
+  return `${present(viewport.width)}x${present(viewport.height)}`;
+}
+
+function formatTargetForSlack(target) {
+  if (target.kind === "area" && target.area) {
+    return `area ${present(target.area.clientWidth)}x${present(target.area.clientHeight)} at ${present(target.area.clientX)},${present(target.area.clientY)}`;
+  }
+  return `${target.kind || "point"} at ${present(target.clientX)},${present(target.clientY)}`;
+}
+
+function formatDirectScreenshotStatus(screenshot) {
+  if (screenshot.status === "captured") {
+    return "captured locally; direct Slack mode needs a public image URL";
+  }
+  if (screenshot.status === "omitted" && screenshot.reason === "too-large") {
+    return `omitted: ${present(screenshot.bytes)} bytes exceeds ${present(screenshot.maxBytes)}`;
+  }
+  return screenshot.status || "unknown";
+}
+
+function truncateText(value, max) {
+  const text = String(value ?? "");
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function present(value) {
+  return value === undefined || value === null || value === "" ? "?" : value;
+}
+
+function addPin(point) {
+  const pin = document.createElement("button");
+  pin.type = "button";
+  pin.dataset.patchloopPin = "true";
+  pin.className = "pl-pin";
+  pin.style.left = `${point.pageX}px`;
+  pin.style.top = `${point.pageY}px`;
+  pin.textContent = "…";
+  document.body.append(pin);
+  return { node: pin, label: pin };
+}
+
+function restoreFeedbackMarkers() {
+  removeCommittedMarkers();
+  state.feedbackMarkers.clear();
+
+  state.feedback.slice().reverse().forEach((item, index) => {
+    const marker = markerFromFeedback(item);
+    if (!marker) return;
+    marker.label.textContent = String(index + 1);
+    marker.node.dataset.patchloopFeedbackId = item.id;
+    state.feedbackMarkers.set(item.id, marker);
+    bindMarkerHover(marker, item.id);
+    setMarkerApproximate(marker, state.approximateIds.has(item.id));
+  });
+}
+
+function markerFromFeedback(item) {
+  const target = item?.target || {};
+  const geometry = reanchorGeometry(target);
+  if (geometry) {
+    refreshTargetCoordinates(target, geometry);
+    state.approximateIds.delete(item.id);
+  } else if (viewportDiffersFromCreation(item)) {
+    state.approximateIds.add(item.id);
+  }
+
+  if (target.kind === "area" && target.area) {
+    const rect = rectFromStoredArea(target.area);
+    if (!rect) return null;
+    return addArea(rect);
+  }
+
+  const point = pointFromStoredTarget(target);
+  return point ? addPin(point) : null;
+}
+
+// --- Re-anchoring (issue #41) -------------------------------------------
+// Markers are anchored to their target element via selector + the position
+// inside the element rect (percent), so they can follow layout reflows
+// (window resize, restore at a different viewport). Absolute page pixels
+// remain the fallback when the element cannot be resolved.
+
+function pointAnchorFor(element, point) {
+  const rect = elementRectOrNull(element);
+  if (!rect) return null;
+  return {
+    x: ((point.clientX - rect.left) / rect.width) * 100,
+    y: ((point.clientY - rect.top) / rect.height) * 100
+  };
+}
+
+function areaAnchorFor(element, rect) {
+  const elementRect = elementRectOrNull(element);
+  if (!elementRect) return null;
+  return {
+    x: ((rect.leftPx - elementRect.left) / elementRect.width) * 100,
+    y: ((rect.topPx - elementRect.top) / elementRect.height) * 100,
+    width: (rect.widthPx / elementRect.width) * 100,
+    height: (rect.heightPx / elementRect.height) * 100
+  };
+}
+
+// Anchoring to oversized containers (body, main, …) is unstable: a few
+// percent of an element taller than the viewport translates to hundreds of
+// pixels whenever the container grows or reflows. Only elements that fit
+// inside one viewport qualify; markers without a qualifying element stay on
+// their page pixels and report an approximate position instead.
+function anchorableElement(element) {
+  if (!element) return null;
+  if (element === document.body || element === document.documentElement) return null;
+  if (element.closest && element.closest("[data-patchloop-root]")) return null;
+  const rect = elementRectOrNull(element);
+  if (!rect) return null;
+  if (rect.width > window.innerWidth || rect.height > window.innerHeight) return null;
+  return element;
+}
+
+function buildPointAnchor(element, point) {
+  const anchorElement = anchorableElement(element);
+  const offsets = anchorElement && pointAnchorFor(anchorElement, point);
+  if (!offsets) return { anchor: null, anchorElement: null };
+  return { anchor: { ...offsets, selector: selectorFor(anchorElement) }, anchorElement };
+}
+
+// Drags often start in the gap between elements; the element under the
+// area's center is the better anchor candidate for what the area covers.
+// From there, climb to the nearest anchorable ancestor that contains the
+// dragged rect: a tiny element under the center produces huge relative
+// offsets that blow up whenever its own size changes (e.g. text wrapping).
+function buildAreaAnchor(startElement, rect) {
+  const centerElement = document.elementFromPoint(
+    Math.min(Math.max(rect.leftPx + rect.widthPx / 2, 0), window.innerWidth - 1),
+    Math.min(Math.max(rect.topPx + rect.heightPx / 2, 0), window.innerHeight - 1)
+  );
+  let anchorElement = anchorableElement(centerElement) || anchorableElement(startElement);
+
+  let cursor = anchorElement;
+  for (let depth = 0; cursor && depth < 6; depth++) {
+    if (rectContainsArea(cursor.getBoundingClientRect(), rect)) {
+      anchorElement = cursor;
+      break;
+    }
+    const parent = anchorableElement(cursor.parentElement);
+    if (!parent) break;
+    cursor = parent;
+    anchorElement = parent;
+  }
+
+  const offsets = anchorElement && areaAnchorFor(anchorElement, rect);
+  if (!offsets) return { anchor: null, anchorElement: null };
+  return { anchor: { ...offsets, selector: selectorFor(anchorElement) }, anchorElement };
+}
+
+function rectContainsArea(elementRect, rect) {
+  return elementRect.left <= rect.leftPx + 1
+    && elementRect.top <= rect.topPx + 1
+    && elementRect.right >= rect.rightPx - 1
+    && elementRect.bottom >= rect.bottomPx - 1;
+}
+
+function roundedAnchor(anchor) {
+  if (!anchor) return null;
+  const rounded = { x: round(anchor.x), y: round(anchor.y) };
+  if (anchor.width != null) rounded.width = round(anchor.width);
+  if (anchor.height != null) rounded.height = round(anchor.height);
+  if (anchor.selector) rounded.selector = anchor.selector;
+  return rounded;
+}
+
+function elementRectOrNull(element) {
+  if (!element || typeof element.getBoundingClientRect !== "function") return null;
+  if (!element.isConnected) return null;
+  const rect = element.getBoundingClientRect();
+  if (!(rect.width > 0) || !(rect.height > 0)) return null;
+  return rect;
+}
+
+function elementForSelector(selector) {
+  if (!selector) return null;
+  try {
+    return document.querySelector(selector);
+  } catch (_) {
+    return null;
+  }
+}
+
+function reanchorGeometry(target, element) {
+  const anchor = target && target.anchor;
+  if (!anchor || numberOrNull(anchor.x) == null || numberOrNull(anchor.y) == null) return null;
+  const rect = elementRectOrNull(element)
+    || elementRectOrNull(elementForSelector(anchor.selector || target.selector));
+  if (!rect) return null;
+
+  if (target.kind === "area") {
+    if (numberOrNull(anchor.width) == null || numberOrNull(anchor.height) == null) return null;
+    return {
+      kind: "area",
+      pageLeftPx: window.scrollX + rect.left + (anchor.x / 100) * rect.width,
+      pageTopPx: window.scrollY + rect.top + (anchor.y / 100) * rect.height,
+      widthPx: Math.max(1, (anchor.width / 100) * rect.width),
+      heightPx: Math.max(1, (anchor.height / 100) * rect.height)
+    };
+  }
+
+  return {
+    kind: "point",
+    pageX: window.scrollX + rect.left + (anchor.x / 100) * rect.width,
+    pageY: window.scrollY + rect.top + (anchor.y / 100) * rect.height
+  };
+}
+
+function refreshTargetCoordinates(target, geometry) {
+  if (geometry.kind === "area" && target.area) {
+    const topLeft = pointFromClient(geometry.pageLeftPx - window.scrollX, geometry.pageTopPx - window.scrollY);
+    const viewportWidth = Math.max(document.documentElement.clientWidth, 1);
+    const viewportHeight = Math.max(document.documentElement.clientHeight, 1);
+    const documentWidth = Math.max(document.documentElement.scrollWidth, 1);
+    const documentHeight = Math.max(document.documentElement.scrollHeight, 1);
+
+    assignPointFields(target, topLeft);
+    Object.assign(target.area, {
+      x: round(topLeft.x),
+      y: round(topLeft.y),
+      width: round((geometry.widthPx / viewportWidth) * 100),
+      height: round((geometry.heightPx / viewportHeight) * 100),
+      clientX: Math.round(topLeft.clientX),
+      clientY: Math.round(topLeft.clientY),
+      clientWidth: Math.round(geometry.widthPx),
+      clientHeight: Math.round(geometry.heightPx),
+      pageX: Math.round(topLeft.pageX),
+      pageY: Math.round(topLeft.pageY),
+      documentX: round(topLeft.documentX),
+      documentY: round(topLeft.documentY),
+      documentWidth: round((geometry.widthPx / documentWidth) * 100),
+      documentHeight: round((geometry.heightPx / documentHeight) * 100)
+    });
+    return;
+  }
+
+  const point = pointFromClient(geometry.pageX - window.scrollX, geometry.pageY - window.scrollY);
+  assignPointFields(target, point);
+}
+
+function assignPointFields(target, point) {
+  target.x = round(point.x);
+  target.y = round(point.y);
+  target.clientX = Math.round(point.clientX);
+  target.clientY = Math.round(point.clientY);
+  target.pageX = Math.round(point.pageX);
+  target.pageY = Math.round(point.pageY);
+  target.documentX = round(point.documentX);
+  target.documentY = round(point.documentY);
+}
+
+function repositionMarker(marker, target) {
+  if (!marker || !marker.node) return;
+  if (target.kind === "area" && target.area) {
+    Object.assign(marker.node.style, {
+      left: `${target.area.pageX}px`,
+      top: `${target.area.pageY}px`,
+      width: `${target.area.clientWidth}px`,
+      height: `${target.area.clientHeight}px`
+    });
+    return;
+  }
+  marker.node.style.left = `${target.pageX}px`;
+  marker.node.style.top = `${target.pageY}px`;
+}
+
+function setMarkerApproximate(marker, isApproximate) {
+  if (!marker || !marker.node) return;
+  marker.node.classList.toggle("pl-marker-approx", Boolean(isApproximate));
+  if (isApproximate) {
+    marker.node.title = "ウィンドウサイズが変わったため、位置が近似になっています";
+  } else {
+    marker.node.removeAttribute("title");
+  }
+}
+
+function viewportDiffersFromCreation(item) {
+  const viewport = item?.environment?.viewport;
+  if (!viewport) return true;
+  return Math.abs(viewport.width - window.innerWidth) > 1
+    || Math.abs(viewport.height - window.innerHeight) > 1;
+}
+
+function handleWindowResize() {
+  window.clearTimeout(state.resizeTimer);
+  state.resizeTimer = window.setTimeout(reanchorAllMarkers, 200);
+}
+
+function reanchorAllMarkers() {
+  let changed = false;
+
+  state.feedback.forEach((item) => {
+    const marker = state.feedbackMarkers.get(item.id);
+    const geometry = reanchorGeometry(item.target);
+    if (geometry) {
+      refreshTargetCoordinates(item.target, geometry);
+      repositionMarker(marker, item.target);
+      state.approximateIds.delete(item.id);
+      setMarkerApproximate(marker, false);
+      changed = true;
+    } else {
+      const isApproximate = viewportDiffersFromCreation(item);
+      if (isApproximate) state.approximateIds.add(item.id);
+      else state.approximateIds.delete(item.id);
+      setMarkerApproximate(marker, isApproximate);
+    }
+  });
+
+  if (state.pendingTarget) {
+    const pending = state.pendingTarget;
+    const geometry = reanchorGeometry(pending, pending.anchorElement);
+    if (geometry) {
+      refreshTargetCoordinates(pending, geometry);
+      repositionMarker({ node: pending.markerNode }, pending);
+    }
+  }
+
+  if (changed) persistFeedbackList();
+  renderFeedbackList();
+}
+
+// Restore prefers stored document pixels over document-size percentages:
+// the document height can differ between save and reload (dynamic content),
+// which shifts every percentage-resolved position. Percentages remain as a
+// fallback for stored feedback that lacks pixel values.
+function pointFromStoredTarget(target) {
+  const pageX = numberOrNull(target.pageX) ?? documentPercentToPxX(target.documentX);
+  const pageY = numberOrNull(target.pageY) ?? documentPercentToPxY(target.documentY);
+  if (pageX == null || pageY == null) return null;
+  return { pageX, pageY };
+}
+
+function rectFromStoredArea(area) {
+  const pageLeftPx = numberOrNull(area.pageX) ?? documentPercentToPxX(area.documentX);
+  const pageTopPx = numberOrNull(area.pageY) ?? documentPercentToPxY(area.documentY);
+  const widthPx = numberOrNull(area.clientWidth) ?? documentPercentToPxX(area.documentWidth);
+  const heightPx = numberOrNull(area.clientHeight) ?? documentPercentToPxY(area.documentHeight);
+
+  if (pageLeftPx == null || pageTopPx == null || widthPx == null || heightPx == null) return null;
+  return {
+    pageLeftPx,
+    pageTopPx,
+    widthPx: Math.max(1, widthPx),
+    heightPx: Math.max(1, heightPx)
+  };
+}
+
+function documentPercentToPxX(value) {
+  const percent = numberOrNull(value);
+  if (percent == null) return null;
+  return (percent / 100) * Math.max(document.documentElement.scrollWidth, window.innerWidth, 1);
+}
+
+function documentPercentToPxY(value) {
+  const percent = numberOrNull(value);
+  if (percent == null) return null;
+  return (percent / 100) * Math.max(document.documentElement.scrollHeight, window.innerHeight, 1);
+}
+
+function removeCommittedMarkers() {
+  document.querySelectorAll("[data-patchloop-pin]").forEach((node) => node.remove());
+  document.querySelectorAll("[data-patchloop-area]").forEach((node) => node.remove());
+}
+
+function clearPins() {
+  discardPendingMarker();
+  state.editingId = null;
+  closeCommentForm();
+  removeCommittedMarkers();
+  document.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
+  state.feedbackMarkers.clear();
+  state.approximateIds.clear();
+  removeSelectionBox();
+  state.feedback = [];
+  clearPersistedFeedback();
+  hideTooltip();
+  renderFeedbackList();
+}
+
+function finalizePendingMarker(feedbackId) {
+  if (!state.pendingTarget) return;
+  if (state.pendingTarget.markerLabelNode) {
+    state.pendingTarget.markerLabelNode.textContent = String(state.feedback.length);
+  }
+  if (state.pendingTarget.targetElement) {
+    unhighlightTarget(state.pendingTarget.targetElement);
+  }
+  if (feedbackId && state.pendingTarget.markerNode) {
+    state.pendingTarget.markerNode.dataset.patchloopFeedbackId = feedbackId;
+    const marker = {
+      node: state.pendingTarget.markerNode,
+      label: state.pendingTarget.markerLabelNode
+    };
+    state.feedbackMarkers.set(feedbackId, marker);
+    bindMarkerHover(marker, feedbackId);
+  }
+}
+
+function discardPendingMarker() {
+  if (!state.pendingTarget) return;
+  if (state.pendingTarget.markerNode) {
+    state.pendingTarget.markerNode.remove();
+  }
+  if (state.pendingTarget.targetElement) {
+    unhighlightTarget(state.pendingTarget.targetElement);
+  }
+  state.pendingTarget = null;
+}
+
+function cancelPendingComment() {
+  if (state.editingId) {
+    state.editingId = null;
+    closeCommentForm();
+    return;
+  }
+  discardPendingMarker();
+  closeCommentForm();
+}
+
+function highlightTarget(element) {
+  if (!element || !element.classList) return;
+  if (element === document.body || element === document.documentElement) return;
+  if (element.closest && element.closest("[data-patchloop-root]")) return;
+  element.classList.add("pl-target-highlight");
+}
+
+function unhighlightTarget(element) {
+  if (!element || !element.classList) return;
+  element.classList.remove("pl-target-highlight");
+}
+
+function toggleCollapse() {
+  state.collapsed = !state.collapsed;
+  applyCollapseState();
+}
+
+function applyCollapseState() {
+  const root = getRoot();
+  if (!root) return;
+  const panel = root.querySelector("[data-pl-panel]");
+  if (panel) panel.classList.toggle("pl-collapsed", state.collapsed);
+  const button = root.querySelector("[data-pl-collapse]");
+  if (button) {
+    button.setAttribute("aria-expanded", String(!state.collapsed));
+    button.textContent = state.collapsed ? "‹" : "›";
+    button.setAttribute("title", state.collapsed ? "展開" : "折りたたみ");
+  }
+}
+
+function expandPanel() {
+  const root = getRoot();
+  if (root) root.querySelector("[data-pl-panel]").hidden = false;
+  state.collapsed = false;
+  applyCollapseState();
+}
+
+function renderFeedbackList() {
+  const root = getRoot();
+  if (!root) return;
+  const list = root.querySelector("[data-pl-list]");
+  if (!list) return;
+  if (state.feedback.length === 0) {
+    list.innerHTML = '<p class="pl-feedback-list-empty">まだフィードバックはありません。</p>';
+    return;
+  }
+  list.innerHTML = state.feedback
+    .map((item, i) => {
+      const num = state.feedback.length - i;
+      const kind = (item.target && item.target.kind) || "point";
+      const delivery = item.delivery
+        ? item.delivery.ok
+          ? `<span class="pl-feedback-status pl-feedback-status-ok" title="${escapeHtml(deliveryStatusText(item.delivery))}">✓</span>`
+          : `<span class="pl-feedback-status pl-feedback-status-fail" title="${escapeHtml(deliveryStatusText(item.delivery))}">✗</span>`
+        : "";
+      const approximate = state.approximateIds.has(item.id)
+        ? '<span class="pl-feedback-approx" title="ウィンドウサイズが変わったため、位置が近似になっています">≈</span>'
+        : "";
+      return `
+        <article class="pl-feedback-item" data-feedback-id="${escapeHtml(item.id)}">
+          <span class="pl-feedback-num kind-${escapeHtml(kind)}">${num}</span>
+          <div class="pl-feedback-body">
+            <div class="pl-feedback-meta">${escapeHtml(item.reviewer || "(no name)")} ${delivery}${approximate}</div>
+            <div class="pl-feedback-text">${escapeHtml(item.comment || "")}</div>
+          </div>
+          <div class="pl-feedback-actions">
+            <button type="button" data-pl-edit title="編集">編集</button>
+            <button type="button" data-pl-delete title="削除">削除</button>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function deliveryStatusText(delivery) {
+  if (!delivery) return "";
+  if (delivery.target === "download") {
+    if (delivery.ok) return `downloaded ${delivery.fileName || ""}`.trim();
+    return `download failed: ${delivery.error || "unknown error"}`;
+  }
+  if (delivery.target === "slack-webhook") {
+    if (delivery.ok) return "sent to Slack direct";
+    return `Slack direct failed: ${delivery.error || "unknown error"}`;
+  }
+  if (delivery.ok) return `delivered ${delivery.status || ""}`.trim();
+  return `delivery failed: ${delivery.error || delivery.status || "unknown error"}`;
+}
+
+function renumberMarkers() {
+  const ordered = state.feedback.slice().reverse();
+  ordered.forEach((item, i) => {
+    const marker = state.feedbackMarkers.get(item.id);
+    if (marker && marker.label) {
+      marker.label.textContent = String(i + 1);
+    }
+  });
+}
+
+function handleListClick(event) {
+  const itemEl = event.target.closest("[data-feedback-id]");
+  if (!itemEl) return;
+  const id = itemEl.dataset.feedbackId;
+  if (event.target.closest("[data-pl-edit]")) {
+    startEditFeedback(id);
+    return;
+  }
+  if (event.target.closest("[data-pl-delete]")) {
+    deleteFeedback(id);
+  }
+}
+
+function startEditFeedback(id) {
+  const item = state.feedback.find((f) => f.id === id);
+  if (!item) return;
+  if (state.active) setFeedbackMode(false);
+  discardPendingMarker();
+  hideTooltip();
+  state.editingId = id;
+  const marker = state.feedbackMarkers.get(id);
+  const rect = marker && marker.node ? marker.node.getBoundingClientRect() : null;
+  const point = rect
+    ? { clientX: rect.left + rect.width / 2, clientY: rect.bottom }
+    : { clientX: Math.max(window.innerWidth - 360, 16), clientY: 80 };
+  openCommentForm(point, { comment: item.comment, reviewer: item.reviewer });
+}
+
+function deleteFeedback(id) {
+  const marker = state.feedbackMarkers.get(id);
+  if (marker) {
+    if (marker.node) marker.node.remove();
+    state.feedbackMarkers.delete(id);
+  }
+  state.feedback = state.feedback.filter((f) => f.id !== id);
+  state.approximateIds.delete(id);
+  if (state.editingId === id) {
+    state.editingId = null;
+    closeCommentForm();
+  }
+  persistFeedbackList();
+  renumberMarkers();
+  renderFeedbackList();
+  hideTooltip();
+}
+
+function bindMarkerHover(marker, feedbackId) {
+  const targets = marker.node === marker.label
+    ? [marker.node]
+    : [marker.node, marker.label].filter(Boolean);
+  targets.forEach((el) => {
+    el.addEventListener("mouseenter", (event) => {
+      if (state.active) return;
+      const item = state.feedback.find((f) => f.id === feedbackId);
+      if (!item) return;
+      showTooltip(event, item);
+    });
+    el.addEventListener("mousemove", (event) => {
+      if (state.active) return;
+      positionTooltip(event);
+    });
+    el.addEventListener("mouseleave", () => {
+      hideTooltip();
+    });
+  });
+}
+
+function showTooltip(event, item) {
+  const tooltip = getTooltip();
+  if (!tooltip) return;
+  const reviewer = item.reviewer || "(no name)";
+  tooltip.textContent = `${reviewer}\n${item.comment || ""}`;
+  tooltip.hidden = false;
+  positionTooltip(event);
+}
+
+function positionTooltip(event) {
+  const tooltip = getTooltip();
+  if (!tooltip || tooltip.hidden) return;
+  const padding = 14;
+  const tipWidth = tooltip.offsetWidth || 240;
+  const tipHeight = tooltip.offsetHeight || 60;
+  const x = Math.min(event.clientX + padding, window.innerWidth - tipWidth - 8);
+  const y = Math.min(event.clientY + padding, window.innerHeight - tipHeight - 8);
+  tooltip.style.left = `${Math.max(8, x)}px`;
+  tooltip.style.top = `${Math.max(8, y)}px`;
+}
+
+function hideTooltip() {
+  const tooltip = getTooltip();
+  if (!tooltip) return;
+  tooltip.hidden = true;
+}
+
+function getTooltip() {
+  return document.querySelector("[data-pl-tooltip]");
+}
+
+function pointFromEvent(event) {
+  return pointFromClient(event.clientX, event.clientY);
+}
+
+function pointFromClient(clientX, clientY) {
+  const pageX = clientX + window.scrollX;
+  const pageY = clientY + window.scrollY;
+  return {
+    x: (clientX / Math.max(document.documentElement.clientWidth, 1)) * 100,
+    y: (clientY / Math.max(document.documentElement.clientHeight, 1)) * 100,
+    documentX: (pageX / Math.max(document.documentElement.scrollWidth, 1)) * 100,
+    documentY: (pageY / Math.max(document.documentElement.scrollHeight, 1)) * 100,
+    clientX,
+    clientY,
+    pageX,
+    pageY
+  };
+}
+
+function rectFromPoints(start, end) {
+  const leftPx = Math.min(start.clientX, end.clientX);
+  const topPx = Math.min(start.clientY, end.clientY);
+  const rightPx = Math.max(start.clientX, end.clientX);
+  const bottomPx = Math.max(start.clientY, end.clientY);
+  const viewportWidth = Math.max(document.documentElement.clientWidth, 1);
+  const viewportHeight = Math.max(document.documentElement.clientHeight, 1);
+  const pageLeftPx = leftPx + window.scrollX;
+  const pageTopPx = topPx + window.scrollY;
+  const documentWidth = Math.max(document.documentElement.scrollWidth, 1);
+  const documentHeight = Math.max(document.documentElement.scrollHeight, 1);
+
+  return {
+    leftPx,
+    topPx,
+    rightPx,
+    bottomPx,
+    pageLeftPx,
+    pageTopPx,
+    widthPx: rightPx - leftPx,
+    heightPx: bottomPx - topPx,
+    x: (leftPx / viewportWidth) * 100,
+    y: (topPx / viewportHeight) * 100,
+    width: ((rightPx - leftPx) / viewportWidth) * 100,
+    height: ((bottomPx - topPx) / viewportHeight) * 100,
+    documentX: (pageLeftPx / documentWidth) * 100,
+    documentY: (pageTopPx / documentHeight) * 100,
+    documentWidth: ((rightPx - leftPx) / documentWidth) * 100,
+    documentHeight: ((bottomPx - topPx) / documentHeight) * 100
+  };
+}
+
+function renderSelectionBox(rect) {
+  let box = document.querySelector("[data-patchloop-selection]");
+  if (!box) {
+    box = document.createElement("div");
+    box.dataset.patchloopSelection = "true";
+    box.className = "pl-selection";
+    document.body.append(box);
+  }
+  Object.assign(box.style, {
+    left: `${rect.leftPx}px`,
+    top: `${rect.topPx}px`,
+    width: `${rect.widthPx}px`,
+    height: `${rect.heightPx}px`
+  });
+}
+
+function removeSelectionBox() {
+  document.querySelector("[data-patchloop-selection]")?.remove();
+}
+
+function addArea(rect) {
+  const area = document.createElement("div");
+  area.dataset.patchloopArea = "true";
+  area.className = "pl-area";
+  Object.assign(area.style, {
+    left: `${rect.pageLeftPx}px`,
+    top: `${rect.pageTopPx}px`,
+    width: `${rect.widthPx}px`,
+    height: `${rect.heightPx}px`
+  });
+  const label = document.createElement("span");
+  label.textContent = "…";
+  area.append(label);
+  document.body.append(area);
+  return { node: area, label };
+}
+
+function selectorFor(element) {
+  if (!element || element === document.body) return "body";
+  if (element.id) return `#${cssEscape(element.id)}`;
+
+  const parts = [];
+  let current = element;
+  while (current && current !== document.body && parts.length < 4) {
+    let part = current.tagName.toLowerCase();
+    const classes = Array.from(current.classList || []).slice(0, 2);
+    if (classes.length) part += `.${classes.map(cssEscape).join(".")}`;
+    const parent = current.parentElement;
+    if (parent) {
+      const sameTag = Array.from(parent.children).filter((child) => child.tagName === current.tagName);
+      if (sameTag.length > 1) part += `:nth-of-type(${sameTag.indexOf(current) + 1})`;
+    }
+    parts.unshift(part);
+    current = parent;
+  }
+  return parts.join(" > ");
+}
+
+function textFor(element) {
+  return (element?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 140);
+}
+
+function getRoot() {
+  return document.querySelector("[data-patchloop-root]");
+}
+
+function round(value) {
+  return Math.round(value * 10) / 10;
+}
+
+function numberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function cssEscape(value) {
+  if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(value);
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function escapeXml(value) {
+  return escapeHtml(value).replaceAll("'", "&apos;");
+}
+
+function injectStyles() {
+  if (document.querySelector("[data-patchloop-style]")) return;
+  const style = document.createElement("style");
+  style.dataset.patchloopStyle = "true";
+  style.textContent = `
+    .pl-root, .pl-root * { box-sizing: border-box; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .pl-root [hidden], .pl-comment[hidden], .pl-tooltip[hidden] { display: none !important; }
+    .pl-root { position: fixed; z-index: 2147483000; color: #14211d; right: 0; bottom: 20px; }
+    .pl-panel { position: absolute; right: 0; bottom: 0; width: min(390px, calc(100vw - 32px)); background: #fff; border: 1px solid #d9e1dd; border-radius: 8px 0 0 8px; box-shadow: 0 22px 70px rgba(20, 33, 29, 0.22); overflow: hidden; transition: transform 250ms ease; }
+    .pl-panel header { min-height: 44px; padding: 0 8px 0 6px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #d9e1dd; }
+    .pl-title { flex: 1; min-width: 0; }
+    .pl-handle { min-width: 32px; height: 32px; padding: 0; border: 0; background: transparent; cursor: pointer; font-size: 20px; color: #14211d; border-radius: 6px; font-weight: 700; transition: background 150ms ease, color 150ms ease; }
+    .pl-handle:hover { background: #f0f3ef; }
+    .pl-handle.pl-mode-on { background: #d1495b; color: #fff; }
+    .pl-handle.pl-mode-on:hover { background: #b83d4d; }
+    .pl-mode { min-height: 30px; padding: 0 12px; border-radius: 999px; border: 1px solid #0f7b63; background: #0f7b63; color: #fff; font-weight: 800; font-size: 12px; cursor: pointer; }
+    .pl-mode[aria-pressed="true"] { background: #d1495b; border-color: #d1495b; }
+    .pl-panel.pl-collapsed { transform: translateX(calc(100% - 44px)); }
+    .pl-panel.pl-collapsed header { border-bottom: 0; }
+    .pl-panel.pl-collapsed .pl-title,
+    .pl-panel.pl-collapsed .pl-mode { display: none; }
+    .pl-panel.pl-collapsed .pl-panel-body { display: none; }
+    .pl-panel p { margin: 0; padding: 14px; color: #65716d; font-size: 13px; }
+    .pl-actions { display: flex; gap: 8px; padding: 0 14px 14px; }
+    .pl-actions button, .pl-form-actions button { min-height: 36px; border-radius: 8px; border: 1px solid #d9e1dd; background: #fff; color: #14211d; padding: 0 12px; cursor: pointer; }
+    .pl-form-actions button[type="submit"] { background: #0f7b63; border-color: #0f7b63; color: #fff; font-weight: 800; }
+    .pl-delivery-settings { margin: 0 14px 14px; border: 1px solid #d9e1dd; border-radius: 8px; padding: 8px 10px 10px; background: #f7f8f5; }
+    .pl-delivery-settings summary { cursor: pointer; color: #14211d; font-weight: 800; font-size: 12px; }
+    .pl-delivery-settings label { display: grid; gap: 5px; margin-top: 8px; color: #65716d; font-size: 11px; font-weight: 800; }
+    .pl-delivery-settings input, .pl-delivery-settings select { width: 100%; min-height: 32px; border: 1px solid #d9e1dd; border-radius: 6px; background: #fff; color: #14211d; padding: 6px 8px; font: inherit; }
+    .pl-feedback-list { max-height: 280px; overflow-y: auto; padding: 0 14px 14px; display: grid; gap: 8px; }
+    .pl-feedback-list-empty { margin: 0; color: #65716d; font-size: 13px; padding: 0; }
+    .pl-feedback-item { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; padding: 10px; border: 1px solid #d9e1dd; border-radius: 8px; background: #fff; align-items: start; }
+    .pl-feedback-num { width: 24px; height: 24px; min-width: 24px; min-height: 24px; box-sizing: border-box; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 900; font-size: 11px; line-height: 1; }
+    .pl-feedback-num.kind-point { background: #0f7b63; }
+    .pl-feedback-num.kind-area { background: #d1495b; }
+    .pl-feedback-body { display: grid; gap: 4px; min-width: 0; }
+    .pl-feedback-meta { color: #65716d; font-weight: 700; font-size: 11px; }
+    .pl-feedback-text { color: #14211d; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+    .pl-feedback-actions { display: flex; gap: 4px; }
+    .pl-feedback-actions button { min-height: 24px; padding: 0 8px; font-size: 11px; border-radius: 6px; border: 1px solid #d9e1dd; background: #fff; color: #14211d; cursor: pointer; font-weight: 700; }
+    .pl-feedback-actions [data-pl-delete] { border-color: #d1495b; color: #d1495b; }
+    .pl-feedback-status { font-weight: 900; }
+    .pl-feedback-status-ok { color: #0f7b63; }
+    .pl-feedback-status-fail { color: #d1495b; }
+    .pl-tooltip { position: fixed; max-width: 280px; background: #14211d; color: #fff; padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.4; pointer-events: none; z-index: 2147483002; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.32); white-space: pre-wrap; word-break: break-word; }
+    .pl-comment { position: fixed; z-index: 2147483001; width: min(320px, calc(100vw - 24px)); display: grid; gap: 10px; padding: 14px; background: #fff; border: 1px solid #d9e1dd; border-radius: 8px; box-shadow: 0 22px 70px rgba(20, 33, 29, 0.24); }
+    .pl-comment label { display: grid; gap: 6px; color: #65716d; font-size: 12px; font-weight: 800; }
+    .pl-comment textarea, .pl-comment input { width: 100%; border: 1px solid #d9e1dd; border-radius: 8px; padding: 9px 10px; color: #14211d; font: inherit; resize: vertical; }
+    .pl-form-error { margin: -2px 0 0; padding: 0; color: #b83d4d; font-size: 12px; font-weight: 800; }
+    .pl-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .pl-pin { position: absolute; z-index: 2147482999; transform: translate(-50%, -50%); width: 30px; height: 30px; min-width: 30px; min-height: 30px; max-width: 30px; max-height: 30px; box-sizing: border-box; display: grid; place-items: center; padding: 0; line-height: 1; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font: 900 13px/1 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); cursor: pointer; }
+    .pl-selection { position: fixed; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; }
+    .pl-area { position: absolute; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.16); }
+    .pl-area span { position: absolute; top: 6px; left: 6px; width: 30px; height: 30px; box-sizing: border-box; display: grid; place-items: center; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font-weight: 900; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); pointer-events: auto; cursor: pointer; }
+    .pl-feedback-active [data-patchloop-pin], .pl-feedback-active .pl-area span { pointer-events: none; }
+    .pl-target-highlight { outline: 2px dashed #d1495b; outline-offset: 2px; }
+    .pl-marker-approx { outline: 3px dashed #f2a33c !important; outline-offset: 2px; }
+    .pl-feedback-approx { color: #f2a33c; font-weight: 900; cursor: help; margin-left: 2px; }
+    .pl-feedback-active, .pl-feedback-active * { cursor: crosshair !important; }
+  `;
+  document.head.append(style);
+}
+
+const api = {
+  init,
+  destroy,
+  setFeedbackMode,
+  getFeedback: () => [...state.feedback]
+};
+
+window.PatchLoop = api;

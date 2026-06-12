@@ -73,13 +73,14 @@ module.exports = [
     ignores: [
       "node_modules/**",
       "coverage/**",
+      "dist/**",
       "server/feedback.json",
       "server/screenshots/**",
       "server/receiver.config.json"
     ]
   },
   {
-    files: ["server/**/*.js", "test/**/*.js", "eslint.config.js"],
+    files: ["server/**/*.js", "scripts/**/*.js", "test/**/*.js", "eslint.config.js"],
     languageOptions: {
       ecmaVersion: 2024,
       sourceType: "commonjs",
@@ -91,7 +92,7 @@ module.exports = [
     files: ["widget/**/*.js"],
     languageOptions: {
       ecmaVersion: 2024,
-      sourceType: "script",
+      sourceType: "module",
       globals: browserGlobals
     },
     rules: sharedRules

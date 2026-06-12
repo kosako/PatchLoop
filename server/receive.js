@@ -15,6 +15,7 @@ const STORE_PATH = process.env.FEEDBACK_STORE_PATH || pathFromConfig(config.feed
 const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || config.maxBodyBytes || 3_000_000);
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || pathFromConfig(config.screenshotDir, path.join(__dirname, "screenshots"));
 const SCREENSHOT_MAX_BYTES = Number(process.env.SCREENSHOT_MAX_BYTES || config.screenshotMaxBytes || 1_500_000);
+const WIDGET_DIST_PATH = path.join(__dirname, "..", "dist", "patchloop-widget.js");
 const PUBLIC_BASE_URL = trimTrailingSlash(process.env.PUBLIC_BASE_URL || config.publicBaseUrl || `http://${HOST}:${PORT}`);
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || config.slackWebhookUrl || "";
 const SLACK_TIMEOUT_MS = Number(process.env.SLACK_TIMEOUT_MS || config.slackTimeoutMs || 5000);
@@ -72,6 +73,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "GET" && req.url === "/feedback.json") {
     respondJson(res, 200, feedback);
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/widget.js") {
+    handleGetWidgetScript(req, res);
     return;
   }
 
@@ -477,6 +483,21 @@ function requireNonEmptyString(value, label) {
 function handleGetInbox(req, res) {
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(renderInbox(feedback));
+}
+
+function handleGetWidgetScript(req, res) {
+  fs.readFile(WIDGET_DIST_PATH, (error, buffer) => {
+    if (error) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Widget bundle not found. Run `npm run build` first.");
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/javascript; charset=utf-8",
+      "Cache-Control": "no-store"
+    });
+    res.end(buffer);
+  });
 }
 
 function handleGetScreenshot(req, res) {
