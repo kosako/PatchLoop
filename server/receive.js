@@ -18,6 +18,7 @@ const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || config.maxBodyBytes 
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || pathFromConfig(config.screenshotDir, path.join(__dirname, "screenshots"));
 const SCREENSHOT_MAX_BYTES = Number(process.env.SCREENSHOT_MAX_BYTES || config.screenshotMaxBytes || 1_500_000);
 const WIDGET_DIST_PATH = path.join(__dirname, "..", "dist", "patchloop-widget.js");
+const STATIC_DIR = path.join(__dirname, "static");
 const PUBLIC_BASE_URL = trimTrailingSlash(process.env.PUBLIC_BASE_URL || config.publicBaseUrl || `http://${HOST}:${PORT}`);
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || config.slackWebhookUrl || "";
 const SLACK_TIMEOUT_MS = Number(process.env.SLACK_TIMEOUT_MS || config.slackTimeoutMs || 5000);
@@ -80,6 +81,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "GET" && req.url === "/widget.js") {
     handleGetWidgetScript(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && req.url.startsWith("/static/")) {
+    handleGetStaticAsset(req, res);
     return;
   }
 
@@ -502,6 +508,39 @@ function handleGetWidgetScript(req, res) {
   });
 }
 
+function handleGetStaticAsset(req, res) {
+  let filename;
+  try {
+    const url = new URL(req.url, "http://localhost");
+    filename = path.basename(decodeURIComponent(url.pathname));
+  } catch (_) {
+    res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Invalid asset path");
+    return;
+  }
+
+  const assetPath = path.resolve(STATIC_DIR, filename);
+  const staticRoot = path.resolve(STATIC_DIR);
+  if (!assetPath.startsWith(`${staticRoot}${path.sep}`)) {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Not Found");
+    return;
+  }
+
+  fs.readFile(assetPath, (error, buffer) => {
+    if (error) {
+      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end("Not Found");
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": contentTypeForPath(assetPath),
+      "Cache-Control": "no-store"
+    });
+    res.end(buffer);
+  });
+}
+
 function handleGetScreenshot(req, res) {
   let filename;
   try {
@@ -638,6 +677,8 @@ function contentTypeForPath(filePath) {
   if (ext === ".svg") return "image/svg+xml; charset=utf-8";
   if (ext === ".png") return "image/png";
   if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".css") return "text/css; charset=utf-8";
+  if (ext === ".js") return "text/javascript; charset=utf-8";
   return "application/octet-stream";
 }
 
@@ -1113,56 +1154,7 @@ function renderInbox(items) {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PatchLoop Inbox</title>
-  <style>
-    :root { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #14211d; }
-    body { margin: 0; padding: 24px; background: #f7f8f5; }
-    h1 { margin: 0 0 8px; font-size: 20px; }
-    .meta { color: #65716d; margin-bottom: 24px; font-size: 13px; }
-    .meta a { color: #0f7b63; }
-    .empty { color: #65716d; }
-    .import-panel { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin: 0 0 18px; padding: 14px 16px; border: 1px solid #d9e1dd; border-radius: 8px; background: #fff; }
-    .import-panel h2 { margin: 0; font-size: 15px; }
-    .import-panel p { margin: 4px 0 0; color: #65716d; font-size: 12px; }
-    .import-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .import-form input { max-width: min(360px, 100%); }
-    .import-form button { min-height: 34px; border: 1px solid #0f7b63; border-radius: 6px; background: #0f7b63; color: #fff; padding: 0 12px; font: inherit; font-size: 13px; font-weight: 800; cursor: pointer; }
-    .import-status { min-width: 160px; color: #65716d; font-size: 12px; }
-    .import-status[data-state="error"] { color: #b83d4d; font-weight: 800; }
-    .filter-panel { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 18px; padding: 12px 16px; border: 1px solid #d9e1dd; border-radius: 8px; background: #fff; }
-    .filter-panel input[type="search"] { flex: 1; min-width: 220px; min-height: 32px; border: 1px solid #d9e1dd; border-radius: 6px; padding: 4px 10px; font: inherit; font-size: 13px; }
-    .filter-panel select { min-height: 32px; border: 1px solid #d9e1dd; border-radius: 6px; background: #fff; padding: 4px 6px; font: inherit; font-size: 12px; color: #14211d; }
-    .filter-count { color: #65716d; font-size: 12px; min-width: 70px; text-align: right; margin-left: auto; }
-    .card { background: #fff; border: 1px solid #d9e1dd; border-left: 4px solid #8a9590; border-radius: 8px; padding: 16px 18px; margin-bottom: 14px; box-shadow: 0 4px 12px rgba(20, 33, 29, 0.05); }
-    .card[data-status="new"] { border-left-color: #8a9590; }
-    .card[data-status="accepted"] { border-left-color: #0f7b63; }
-    .card[data-status="fixed"] { border-left-color: #2c6fb0; }
-    .card[data-status="ignored"] { border-left-color: #c2c9c5; opacity: 0.72; }
-    .card header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; color: #65716d; }
-    .status-control select { min-height: 26px; border: 1px solid #d9e1dd; border-radius: 999px; background: #f7f8f5; padding: 2px 8px; font: inherit; font-size: 11px; font-weight: 800; color: #14211d; cursor: pointer; }
-    .github-create { min-height: 24px; border: 1px solid #0f7b63; border-radius: 6px; background: #fff; color: #0f7b63; padding: 1px 8px; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
-    .github-create:disabled { opacity: 0.6; cursor: default; }
-    .github-error { color: #b83d4d; }
-    .kind { padding: 2px 8px; border-radius: 999px; font-weight: 800; color: #fff; font-size: 11px; text-transform: uppercase; }
-    .kind-point { background: #0f7b63; }
-    .kind-area { background: #d1495b; }
-    .reviewer { font-weight: 700; color: #14211d; }
-    time { margin-left: auto; }
-    .comment { font-size: 15px; margin: 0 0 12px; white-space: pre-wrap; }
-    .screenshot { margin: 0 0 12px; border: 1px solid #d9e1dd; border-radius: 8px; overflow: hidden; background: #f7f8f5; }
-    .screenshot a { display: block; }
-    .screenshot img { display: block; width: 100%; max-height: 360px; object-fit: contain; background: #fff; }
-    .screenshot figcaption, .screenshot-note { margin: 0 0 12px; color: #65716d; font-size: 12px; }
-    .screenshot figcaption { padding: 8px 10px; border-top: 1px solid #d9e1dd; margin: 0; }
-    dl { display: grid; grid-template-columns: 100px 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
-    dl > div { display: contents; }
-    dt { color: #65716d; }
-    dd { margin: 0; word-break: break-all; }
-    dd a { color: #0f7b63; }
-    code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #f7f8f5; padding: 1px 4px; border-radius: 4px; }
-    details { margin-top: 10px; }
-    summary { cursor: pointer; font-size: 12px; color: #65716d; }
-    pre { background: #14211d; color: #c8d4cf; padding: 12px; border-radius: 6px; overflow-x: auto; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  </style>
+  <link rel="stylesheet" href="/static/inbox.css" />
 </head>
 <body>
   <h1>PatchLoop Inbox</h1>
@@ -1171,8 +1163,7 @@ function renderInbox(items) {
   ${items.length === 0 ? "" : renderFilterPanel(items)}
   ${items.length === 0 ? '<p class="empty">まだフィードバックはありません。widget からコメントを送ると、ここに表示されます。</p>' : cards.join("")}
   <p class="empty" data-filter-empty hidden>絞り込みに一致する feedback はありません。</p>
-  ${renderImportScript()}
-  ${renderTriageScript()}
+  <script src="/static/inbox.js"></script>
 </body>
 </html>`;
 }
@@ -1232,119 +1223,6 @@ function renderGitHubCell(github, id) {
     return `<span class="github-error">failed${code}: ${escapeHtml(github.error || "unknown error")}</span> ${button}`;
   }
   return button;
-}
-
-function renderTriageScript() {
-  return `<script>
-(() => {
-  const cards = Array.from(document.querySelectorAll("[data-card]"));
-
-  const panel = document.querySelector("[data-filter-panel]");
-  if (panel) {
-    const textInput = panel.querySelector("[data-filter-text]");
-    const selects = Array.from(panel.querySelectorAll("[data-filter-key]"));
-    const count = panel.querySelector("[data-filter-count]");
-    const emptyNote = document.querySelector("[data-filter-empty]");
-
-    const applyFilters = () => {
-      const text = textInput.value.trim().toLowerCase();
-      let visible = 0;
-      cards.forEach((card) => {
-        const matchesText = !text || card.dataset.search.includes(text);
-        const matchesSelects = selects.every((select) => !select.value || card.dataset[select.dataset.filterKey] === select.value);
-        const show = matchesText && matchesSelects;
-        card.hidden = !show;
-        if (show) visible += 1;
-      });
-      count.textContent = visible === cards.length ? cards.length + " 件" : visible + " / " + cards.length + " 件";
-      if (emptyNote) emptyNote.hidden = visible > 0;
-    };
-
-    textInput.addEventListener("input", applyFilters);
-    selects.forEach((select) => select.addEventListener("change", applyFilters));
-    applyFilters();
-  }
-
-  document.querySelectorAll("[data-github-create]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      button.disabled = true;
-      button.textContent = "Creating...";
-      try {
-        const response = await fetch("/feedback/" + encodeURIComponent(button.dataset.feedbackId) + "/github-issue", { method: "POST" });
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(result.error || "GitHub issue creation failed");
-      } catch (error) {
-        window.alert(error.message);
-      }
-      window.location.reload();
-    });
-  });
-
-  document.querySelectorAll("[data-status-select]").forEach((select) => {
-    select.addEventListener("change", async () => {
-      const card = select.closest("[data-card]");
-      const previous = card.dataset.status;
-      select.disabled = true;
-      try {
-        const response = await fetch("/feedback/" + encodeURIComponent(select.dataset.feedbackId) + "/status", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: select.value })
-        });
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(result.error || "Status update failed");
-        card.dataset.status = select.value;
-      } catch (error) {
-        select.value = previous;
-        window.alert(error.message);
-      } finally {
-        select.disabled = false;
-      }
-    });
-  });
-})();
-</script>`;
-}
-
-function renderImportScript() {
-  return `<script>
-(() => {
-  const form = document.querySelector("[data-import-form]");
-  if (!form) return;
-  const input = form.querySelector("[data-import-file]");
-  const status = form.querySelector("[data-import-status]");
-
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    status.dataset.state = "";
-    const file = input.files && input.files[0];
-    if (!file) {
-      status.dataset.state = "error";
-      status.textContent = "Choose a JSON bundle first.";
-      return;
-    }
-
-    status.textContent = "Importing...";
-    try {
-      const text = await file.text();
-      const response = await fetch("/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: text
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(result.error || "Import failed");
-      }
-      status.textContent = "Imported " + (result.id || "feedback") + ". Reloading...";
-      window.location.reload();
-    } catch (error) {
-      status.dataset.state = "error";
-      status.textContent = error.message;
-    }
-  });
-})();
-</script>`;
 }
 
 function renderScreenshotPreview(screenshot) {
