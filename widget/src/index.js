@@ -1,6 +1,7 @@
 import { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarget, rectFromStoredArea, round, numberOrNull } from "./geometry.js";
 import { pointAnchorOffsets, areaAnchorOffsets, roundedAnchor, geometryFromAnchor, viewportDiffersFromCreation } from "./anchoring.js";
 import { selectorFor, textFor } from "./selector.js";
+import { truncateText, present, escapeHtml, escapeXml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } from "../../shared/format.js";
 
 const DEFAULTS = {
   projectId: "local-demo",
@@ -927,8 +928,8 @@ function buildSlackWebhookPayload(payload) {
       fields: [
         { type: "mrkdwn", text: `*Reviewer*\n${slackEscape(payload.reviewer || "(no name)")}` },
         { type: "mrkdwn", text: `*Page*\n${formatSlackLink(page.url, page.title || page.url || "(unknown page)")}` },
-        { type: "mrkdwn", text: `*Target*\n${slackEscape(formatTargetForSlack(target))}` },
-        { type: "mrkdwn", text: `*Viewport*\n${slackEscape(formatViewportForSlack(env.viewport))}` },
+        { type: "mrkdwn", text: `*Target*\n${slackEscape(formatTarget(target))}` },
+        { type: "mrkdwn", text: `*Viewport*\n${slackEscape(formatViewport(env.viewport))}` },
         { type: "mrkdwn", text: `*Selector*\n${formatSlackCode(target.selector || "(none)")}` },
         { type: "mrkdwn", text: `*Created*\n${slackEscape(payload.createdAt || "(unknown)")}` }
       ]
@@ -973,36 +974,6 @@ function buildSlackWebhookPayload(payload) {
   };
 }
 
-function slackEscape(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
-function formatSlackCode(value) {
-  return `\`${slackEscape(truncateText(String(value ?? "").replaceAll("`", "'"), 180))}\``;
-}
-
-function formatSlackLink(url, label) {
-  if (!/^https?:\/\//.test(url || "")) {
-    return slackEscape(label || url || "(unknown)");
-  }
-  return `<${slackEscape(url)}|${slackEscape(truncateText(String(label || url).replaceAll("|", "/"), 120))}>`;
-}
-
-function formatViewportForSlack(viewport) {
-  if (!viewport) return "(unknown)";
-  return `${present(viewport.width)}x${present(viewport.height)}`;
-}
-
-function formatTargetForSlack(target) {
-  if (target.kind === "area" && target.area) {
-    return `area ${present(target.area.clientWidth)}x${present(target.area.clientHeight)} at ${present(target.area.clientX)},${present(target.area.clientY)}`;
-  }
-  return `${target.kind || "point"} at ${present(target.clientX)},${present(target.clientY)}`;
-}
-
 function formatDirectScreenshotStatus(screenshot) {
   if (screenshot.status === "captured") {
     return "captured locally; direct Slack mode needs a public image URL";
@@ -1011,15 +982,6 @@ function formatDirectScreenshotStatus(screenshot) {
     return `omitted: ${present(screenshot.bytes)} bytes exceeds ${present(screenshot.maxBytes)}`;
   }
   return screenshot.status || "unknown";
-}
-
-function truncateText(value, max) {
-  const text = String(value ?? "");
-  return text.length > max ? `${text.slice(0, max)}…` : text;
-}
-
-function present(value) {
-  return value === undefined || value === null || value === "" ? "?" : value;
 }
 
 function addPin(point) {
@@ -1582,18 +1544,6 @@ function addArea(rect) {
 
 function getRoot() {
   return document.querySelector("[data-patchloop-root]");
-}
-
-function escapeHtml(value) {
-  return String(value || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-function escapeXml(value) {
-  return escapeHtml(value).replaceAll("'", "&apos;");
 }
 
 function injectStyles() {

@@ -90,6 +90,17 @@ module.exports = [
     rules: sharedRules
   },
   {
+    // Shared by widget (browser) and receiver (Node): environment-free code
+    // only, so no host globals are provided on purpose.
+    files: ["shared/**/*.js"],
+    languageOptions: {
+      ecmaVersion: 2024,
+      sourceType: "module",
+      globals: {}
+    },
+    rules: sharedRules
+  },
+  {
     files: ["widget/**/*.js"],
     languageOptions: {
       ecmaVersion: 2024,

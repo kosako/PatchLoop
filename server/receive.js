@@ -5,6 +5,8 @@ const https = require("https");
 const fs = require("fs");
 const path = require("path");
 
+const { truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } = require("../shared/format.js");
+
 const CONFIG_PATH = process.env.PATCHLOOP_RECEIVER_CONFIG || path.join(__dirname, "receiver.config.json");
 const config = loadConfig(CONFIG_PATH);
 const configDir = path.dirname(CONFIG_PATH);
@@ -168,7 +170,7 @@ function handlePostFeedback(req, res) {
     const slackLog = stored.integrations.slack.status === "disabled"
       ? ""
       : ` slack=${stored.integrations.slack.status}`;
-    console.log(`[PatchLoop receiver] received feedback id=${payload?.id || "?"} comment="${truncate(payload?.comment || "", 60)}"${slackLog}`);
+    console.log(`[PatchLoop receiver] received feedback id=${payload?.id || "?"} comment="${truncateText(payload?.comment || "", 60)}"${slackLog}`);
     respondJson(res, 201, {
       ok: true,
       id: payload?.id,
@@ -204,7 +206,7 @@ function handlePostImport(req, res) {
 
     feedback.unshift(stored);
     persist();
-    console.log(`[PatchLoop receiver] imported feedback id=${stored.id || "?"} comment="${truncate(stored.comment || "", 60)}"`);
+    console.log(`[PatchLoop receiver] imported feedback id=${stored.id || "?"} comment="${truncateText(stored.comment || "", 60)}"`);
     respondJson(res, 201, {
       ok: true,
       id: stored.id,
@@ -300,7 +302,7 @@ async function createGitHubIssue(item) {
     return {
       status: "failed",
       statusCode: response.statusCode,
-      error: truncate(gitHubErrorMessage(response.body) || "GitHub API returned a non-201 response", 240),
+      error: truncateText(gitHubErrorMessage(response.body) || "GitHub API returned a non-201 response", 240),
       failedAt: new Date().toISOString()
     };
   } catch (error) {
@@ -318,7 +320,7 @@ function gitHubErrorMessage(raw) {
 
 function gitHubIssueTitle(item) {
   const firstLine = String(item.comment || "").split("\n")[0].trim() || "(no comment)";
-  return `[PatchLoop] ${truncate(firstLine, 80)}`;
+  return `[PatchLoop] ${truncateText(firstLine, 80)}`;
 }
 
 function gitHubIssueBody(item) {
@@ -343,7 +345,7 @@ function gitHubIssueBody(item) {
 
   if (target.text) {
     lines.push("### Element text", "");
-    lines.push(...truncate(String(target.text), 500).split("\n").map((line) => `> ${line}`), "");
+    lines.push(...truncateText(String(target.text), 500).split("\n").map((line) => `> ${line}`), "");
   }
 
   const screenshotUrl = screenshotUrlFor(item.screenshot);
@@ -657,18 +659,6 @@ function respondJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-function truncate(value, max) {
-  return value.length > max ? `${value.slice(0, max)}…` : value;
-}
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
 // escapeHtml cannot stop a javascript: URL inside an href attribute; only
 // plain http(s) targets may become links. Returns "" for everything else.
 function safeLinkUrl(value) {
@@ -704,7 +694,7 @@ async function deliverToSlack(item) {
       : {
           status: "failed",
           statusCode: response.statusCode,
-          error: truncate(response.body || "Slack webhook returned a non-2xx response", 240)
+          error: truncateText(response.body || "Slack webhook returned a non-2xx response", 240)
         };
 
     if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -808,7 +798,7 @@ async function maybeUploadScreenshotToSlack(item) {
       return {
         status: "failed",
         statusCode: uploadResponse.statusCode,
-        error: truncate(uploadResponse.body || "upload_url returned a non-2xx response", 240)
+        error: truncateText(uploadResponse.body || "upload_url returned a non-2xx response", 240)
       };
     }
 
@@ -924,7 +914,7 @@ function buildSlackMessage(item) {
   const target = item.target || {};
   const env = item.environment || {};
   const page = item.page || {};
-  const comment = slackEscape(truncate(item.comment || "(empty comment)", 1400));
+  const comment = slackEscape(truncateText(item.comment || "(empty comment)", 1400));
   const screenshotUrl = screenshotUrlFor(item.screenshot);
   const pageText = page.url
     ? formatSlackLink(page.url, page.title || page.url)
@@ -963,7 +953,7 @@ function buildSlackMessage(item) {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*Element text*\n>${slackEscape(truncate(target.text, 500)).replaceAll("\n", "\n>")}`
+        text: `*Element text*\n>${slackEscape(truncateText(target.text, 500)).replaceAll("\n", "\n>")}`
       }
     });
   }
@@ -1008,27 +998,9 @@ function buildSlackMessage(item) {
   });
 
   return {
-    text: `PatchLoop feedback: ${truncate(item.comment || "", 120)}`,
+    text: `PatchLoop feedback: ${truncateText(item.comment || "", 120)}`,
     blocks
   };
-}
-
-function slackEscape(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
-function formatSlackCode(value) {
-  return `\`${slackEscape(truncate(String(value ?? "").replaceAll("`", "'"), 180))}\``;
-}
-
-function formatSlackLink(url, label) {
-  if (!/^https?:\/\//.test(url)) {
-    return slackEscape(url);
-  }
-  return `<${slackEscape(url)}|${slackEscape(truncate(String(label).replaceAll("|", "/"), 120))}>`;
 }
 
 function screenshotUrlFor(screenshot) {
@@ -1069,22 +1041,6 @@ function shouldSendSlackImageBlock(screenshotUrl) {
   }
   if (SLACK_IMAGE_MODE === "block") return /^https?:\/\//.test(screenshotUrl);
   return isLikelyPublicHttpUrl(screenshotUrl);
-}
-
-function formatViewport(viewport) {
-  if (!viewport) return "(unknown)";
-  return `${present(viewport.width)}x${present(viewport.height)}`;
-}
-
-function formatTarget(target) {
-  if (target.kind === "area" && target.area) {
-    return `area ${present(target.area.clientWidth)}x${present(target.area.clientHeight)} at ${present(target.area.clientX)},${present(target.area.clientY)}`;
-  }
-  return `${target.kind || "point"} at ${present(target.clientX)},${present(target.clientY)}`;
-}
-
-function present(value) {
-  return value === undefined || value === null || value === "" ? "?" : value;
 }
 
 function feedbackStatusOf(item) {

@@ -18,6 +18,8 @@ http://localhost:4173/examples/plain-html/
 
 ## 開発
 
+Node.js 22.12 以上が必要です（receiver が共有 ES module を `require()` で読み込むため）。
+
 依存を入れます。
 
 ```sh
