@@ -511,19 +511,43 @@ function handleGetScreenshot(req, res) {
   });
 }
 
+// An unreadable store must never be silently replaced: persist() rewrites the
+// whole file, so starting from [] would destroy all previous feedback on the
+// next write. Move the broken file aside and start fresh instead.
 function loadFeedback() {
+  let raw;
   try {
-    const raw = fs.readFileSync(STORE_PATH, "utf8");
+    raw = fs.readFileSync(STORE_PATH, "utf8");
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      console.warn(`[PatchLoop receiver] feedback store unreadable: ${error.message}`);
+    }
+    return [];
+  }
+
+  try {
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (_) {
+    if (!Array.isArray(parsed)) throw new Error("store content is not an array");
+    return parsed;
+  } catch (error) {
+    const backupPath = `${STORE_PATH}.corrupt-${Date.now()}`;
+    try {
+      fs.renameSync(STORE_PATH, backupPath);
+      console.warn(`[PatchLoop receiver] feedback store corrupt (${error.message}); backed up to ${backupPath}`);
+    } catch (backupError) {
+      console.warn(`[PatchLoop receiver] feedback store corrupt and backup failed: ${backupError.message}`);
+    }
     return [];
   }
 }
 
+// Write-then-rename keeps the store readable even if the process dies
+// mid-write; a torn direct write would corrupt the only copy.
 function persist() {
   fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
-  fs.writeFileSync(STORE_PATH, JSON.stringify(feedback, null, 2));
+  const tempPath = `${STORE_PATH}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(feedback, null, 2));
+  fs.renameSync(tempPath, STORE_PATH);
 }
 
 function saveScreenshot(screenshot, id) {
