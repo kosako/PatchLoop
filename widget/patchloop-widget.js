@@ -216,6 +216,9 @@
     const target = document.elementFromPoint(start.clientX, start.clientY) || state.drag.target;
 
     discardPendingMarker();
+    // A new capture supersedes an interrupted edit; a stale editingId would
+    // route the submit into the edit branch and silently overwrite that item.
+    state.editingId = null;
 
     let marker;
     if (state.drag.isDragging) {
