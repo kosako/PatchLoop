@@ -332,6 +332,59 @@ test("GET /static serves the inbox assets and rejects traversal", async (t) => {
   assert.ok(!inbox.includes("<style>"), "no inline style block remains");
 });
 
+test("routes accept query strings on GET endpoints", async (t) => {
+  const receiver = await startReceiver(t);
+  const payload = feedbackPayload("pl_query_1");
+  await postJson(`${receiver.baseUrl}/feedback`, payload);
+
+  const json = await fetch(`${receiver.baseUrl}/feedback.json?v=2`);
+  assert.equal(json.status, 200);
+  assert.equal((await json.json())[0].id, payload.id);
+
+  const inbox = await fetch(`${receiver.baseUrl}/?filter=new`);
+  assert.equal(inbox.status, 200);
+});
+
+test("oversized bodies get a clean 413 instead of a reset connection", async (t) => {
+  const receiver = await startReceiver(t, { MAX_BODY_BYTES: "1000" });
+  const payload = feedbackPayload("pl_too_big");
+  payload.comment = "x".repeat(5000);
+
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 413);
+  assert.match(response.body.error, /too large/i);
+
+  // The connection survives for the next request.
+  const ok = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_after_413"));
+  assert.equal(ok.status, 201);
+});
+
+test("non-numeric size limits fall back instead of disabling the limit", async (t) => {
+  const receiver = await startReceiver(t, { MAX_BODY_BYTES: "abc" });
+  const response = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_nan_env"));
+  assert.equal(response.status, 201);
+
+  const big = feedbackPayload("pl_nan_env_big");
+  big.comment = "x".repeat(4_000_000);
+  const rejected = await postJson(`${receiver.baseUrl}/feedback`, big);
+  assert.equal(rejected.status, 413);
+});
+
+test("upload-only Slack config reports skipped, not failed, without a screenshot", async (t) => {
+  const receiver = await startReceiver(t, {
+    SLACK_IMAGE_MODE: "auto",
+    SLACK_BOT_TOKEN: "xoxb-test",
+    SLACK_UPLOAD_CHANNEL_ID: "C123"
+  });
+  const payload = feedbackPayload("pl_slack_skip");
+  delete payload.screenshot;
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 201);
+
+  const stored = await readStoredFeedback(receiver.storePath);
+  assert.equal(stored[0].integrations.slack.status, "skipped");
+});
+
 async function startReceiver(t, extraEnv = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const port = await getFreePort();

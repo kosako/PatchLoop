@@ -11,26 +11,26 @@ const CONFIG_PATH = process.env.PATCHLOOP_RECEIVER_CONFIG || path.join(__dirname
 const config = loadConfig(CONFIG_PATH);
 const configDir = path.dirname(CONFIG_PATH);
 
-const PORT = Number(process.env.PORT || config.port || 4000);
+const PORT = numberSetting(process.env.PORT, numberSetting(config.port, 4000));
 const HOST = process.env.HOST || config.host || "127.0.0.1";
 const STORE_PATH = process.env.FEEDBACK_STORE_PATH || pathFromConfig(config.feedbackStorePath, path.join(__dirname, "feedback.json"));
-const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || config.maxBodyBytes || 3_000_000);
+const MAX_BODY_BYTES = numberSetting(process.env.MAX_BODY_BYTES, numberSetting(config.maxBodyBytes, 3_000_000));
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || pathFromConfig(config.screenshotDir, path.join(__dirname, "screenshots"));
-const SCREENSHOT_MAX_BYTES = Number(process.env.SCREENSHOT_MAX_BYTES || config.screenshotMaxBytes || 1_500_000);
+const SCREENSHOT_MAX_BYTES = numberSetting(process.env.SCREENSHOT_MAX_BYTES, numberSetting(config.screenshotMaxBytes, 1_500_000));
 const WIDGET_DIST_PATH = path.join(__dirname, "..", "dist", "patchloop-widget.js");
 const STATIC_DIR = path.join(__dirname, "static");
 const PUBLIC_BASE_URL = trimTrailingSlash(process.env.PUBLIC_BASE_URL || config.publicBaseUrl || `http://${HOST}:${PORT}`);
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || config.slackWebhookUrl || "";
-const SLACK_TIMEOUT_MS = Number(process.env.SLACK_TIMEOUT_MS || config.slackTimeoutMs || 5000);
+const SLACK_TIMEOUT_MS = numberSetting(process.env.SLACK_TIMEOUT_MS, numberSetting(config.slackTimeoutMs, 5000));
 const SLACK_IMAGE_MODE = normalizeSlackImageMode(process.env.SLACK_IMAGE_MODE || config.slackImageMode || "auto");
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || config.slackBotToken || "";
 const SLACK_UPLOAD_CHANNEL_ID = process.env.SLACK_UPLOAD_CHANNEL_ID || config.slackUploadChannelId || "";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || config.githubToken || "";
 const GITHUB_REPO = normalizeGitHubRepo(process.env.GITHUB_REPO || config.githubRepo || "");
-const GITHUB_LABELS = normalizeStringList(process.env.GITHUB_LABELS ?? config.githubLabels);
-const GITHUB_ASSIGNEES = normalizeStringList(process.env.GITHUB_ASSIGNEES ?? config.githubAssignees);
+const GITHUB_LABELS = normalizeStringList(process.env.GITHUB_LABELS || config.githubLabels);
+const GITHUB_ASSIGNEES = normalizeStringList(process.env.GITHUB_ASSIGNEES || config.githubAssignees);
 const GITHUB_API_BASE = trimTrailingSlash(process.env.GITHUB_API_BASE || config.githubApiBase || "https://api.github.com");
-const GITHUB_TIMEOUT_MS = Number(process.env.GITHUB_TIMEOUT_MS || config.githubTimeoutMs || 8000);
+const GITHUB_TIMEOUT_MS = numberSetting(process.env.GITHUB_TIMEOUT_MS, numberSetting(config.githubTimeoutMs, 8000));
 const GITHUB_CONFIGURED = Boolean(GITHUB_TOKEN && GITHUB_REPO);
 const IMPORT_BUNDLE_KIND = "patchloop-feedback-bundle";
 const IMPORT_BUNDLE_VERSION = 1;
@@ -41,55 +41,64 @@ let feedback = loadFeedback();
 const server = http.createServer((req, res) => {
   setCors(res);
 
+  // Routes match the pathname so query strings (e.g. /feedback.json?v=2)
+  // cannot turn a valid endpoint into a 404.
+  let pathname;
+  try {
+    pathname = new URL(req.url, "http://localhost").pathname;
+  } catch (_) {
+    pathname = req.url;
+  }
+
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     res.end();
     return;
   }
 
-  if (req.method === "POST" && req.url === "/feedback") {
+  if (req.method === "POST" && pathname === "/feedback") {
     handlePostFeedback(req, res);
     return;
   }
 
-  if (req.method === "POST" && req.url === "/import") {
+  if (req.method === "POST" && pathname === "/import") {
     handlePostImport(req, res);
     return;
   }
 
-  const statusMatch = req.method === "POST" && /^\/feedback\/([^/]+)\/status$/.exec(req.url);
+  const statusMatch = req.method === "POST" && /^\/feedback\/([^/]+)\/status$/.exec(pathname);
   if (statusMatch) {
     handlePostStatus(req, res, decodeURIComponent(statusMatch[1]));
     return;
   }
 
-  const githubMatch = req.method === "POST" && /^\/feedback\/([^/]+)\/github-issue$/.exec(req.url);
+  const githubMatch = req.method === "POST" && /^\/feedback\/([^/]+)\/github-issue$/.exec(pathname);
   if (githubMatch) {
     handlePostGitHubIssue(req, res, decodeURIComponent(githubMatch[1]));
     return;
   }
 
-  if (req.method === "GET" && (req.url === "/" || req.url === "/index.html")) {
+  if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {
     handleGetInbox(req, res);
     return;
   }
 
-  if (req.method === "GET" && req.url === "/feedback.json") {
+  if (req.method === "GET" && pathname === "/feedback.json") {
     respondJson(res, 200, feedback);
     return;
   }
 
-  if (req.method === "GET" && req.url === "/widget.js") {
+  if (req.method === "GET" && pathname === "/widget.js") {
     handleGetWidgetScript(req, res);
     return;
   }
 
-  if (req.method === "GET" && req.url.startsWith("/static/")) {
+  if (req.method === "GET" && pathname.startsWith("/static/")) {
     handleGetStaticAsset(req, res);
     return;
   }
 
-  if (req.method === "GET" && req.url.startsWith("/screenshots/")) {
+  if (req.method === "GET" && pathname.startsWith("/screenshots/")) {
     handleGetScreenshot(req, res);
     return;
   }
@@ -113,6 +122,14 @@ function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+// Number("") is 0 and Number("abc") is NaN; both would silently disable or
+// corrupt a limit, so blank and non-numeric settings fall back instead.
+function numberSetting(value, fallback) {
+  if (value === undefined || value === null || String(value).trim() === "") return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
 }
 
 function loadConfig(configPath) {
@@ -388,8 +405,10 @@ function readJsonBody(req, res, onJson) {
     received += chunk.length;
     if (received > MAX_BODY_BYTES) {
       aborted = true;
+      // Respond and drain the rest instead of destroying the socket:
+      // an immediate destroy races the 413 and clients see ECONNRESET.
+      chunks.length = 0;
       respondJson(res, 413, { ok: false, error: "Payload too large" });
-      req.destroy();
       return;
     }
     chunks.push(chunk);
@@ -415,7 +434,7 @@ function readJsonBody(req, res, onJson) {
   });
 
   req.on("error", (error) => {
-    if (aborted) return;
+    if (aborted || res.headersSent) return;
     respondJson(res, 500, { ok: false, error: error.message });
   });
 }
@@ -725,7 +744,10 @@ async function deliverToSlack(item) {
     if (image.status === "disabled") {
       return { status: "disabled" };
     }
-    return { status: "failed", image, error: image.error || image.reason || "Slack webhook is disabled" };
+    if (image.status === "skipped") {
+      return { status: "skipped", reason: image.reason };
+    }
+    return { status: "failed", image, error: image.error || "Slack file upload failed" };
   }
 
   try {
