@@ -39,6 +39,19 @@ const state = {
 };
 
 function init(options = {}) {
+  // From <head> there is no body yet to mount into; retry once the DOM is ready.
+  if (!document.body) {
+    document.addEventListener("DOMContentLoaded", () => init(options), { once: true });
+    return api;
+  }
+  // Re-init while comment mode is on must not leave stale mode state
+  // (crosshair cursor, active drag) behind the freshly rendered UI.
+  state.active = false;
+  document.documentElement.classList.remove("pl-feedback-active");
+  state.drag = null;
+  state.pendingTarget = null;
+  state.editingId = null;
+  removeSelectionBox();
   state.options = { ...DEFAULTS, ...options };
   state.options.reviewer = initialReviewer(state.options);
   injectStyles();
@@ -51,6 +64,8 @@ function init(options = {}) {
 }
 
 function destroy() {
+  document.documentElement.classList.remove("pl-feedback-active");
+  document.querySelector("[data-patchloop-style]")?.remove();
   document.removeEventListener("mousedown", handleDocumentMouseDown, true);
   document.removeEventListener("mousemove", handleDocumentMouseMove, true);
   document.removeEventListener("mouseup", handleDocumentMouseUp, true);
@@ -347,7 +362,14 @@ function closeCommentForm() {
 function handleCommentKeydown(event) {
   if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) return;
   event.preventDefault();
-  event.currentTarget.requestSubmit();
+  const form = event.currentTarget;
+  if (typeof form.requestSubmit === "function") {
+    form.requestSubmit();
+  } else {
+    // Safari 15 has no requestSubmit; clicking the submit button keeps
+    // the submit event (and its validation) on the same path.
+    form.querySelector('button[type="submit"]')?.click();
+  }
 }
 
 function handleDeliverySettingsInput() {
@@ -442,7 +464,7 @@ async function submitComment(event) {
 
 function buildPayload(comment, reviewer, target) {
   return {
-    id: `pl_${Date.now()}`,
+    id: generateFeedbackId(),
     projectId: state.options.projectId,
     demoId: state.options.demoId,
     comment,
@@ -912,7 +934,9 @@ async function postSlackWebhook(payload) {
       headers: { "Content-Type": "text/plain;charset=UTF-8" },
       body: JSON.stringify(buildSlackWebhookPayload(payload))
     });
-    payload.delivery = { ok: true, status: "opaque", target: "slack-webhook" };
+    // no-cors gives an opaque response: we know nothing about the outcome,
+    // so report "unknown" instead of pretending it succeeded.
+    payload.delivery = { ok: null, status: "unknown", target: "slack-webhook" };
   } catch (error) {
     payload.delivery = { ok: false, target: "slack-webhook", error: error.message };
   }
@@ -936,7 +960,7 @@ function buildSlackWebhookPayload(payload) {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: slackEscape(truncateText(payload.comment || "(empty comment)", 1400))
+        text: truncateText(slackEscape(payload.comment || "(empty comment)"), 1400)
       }
     },
     {
@@ -957,7 +981,7 @@ function buildSlackWebhookPayload(payload) {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*Element text*\n>${slackEscape(truncateText(target.text, 500)).replaceAll("\n", "\n>")}`
+        text: `*Element text*\n>${truncateText(slackEscape(target.text), 500).replaceAll("\n", "\n>")}`
       }
     });
   }
@@ -1357,9 +1381,11 @@ function renderFeedbackList() {
       const num = state.feedback.length - i;
       const kind = (item.target && item.target.kind) || "point";
       const delivery = item.delivery
-        ? item.delivery.ok
-          ? `<span class="pl-feedback-status pl-feedback-status-ok" title="${escapeHtml(deliveryStatusText(item.delivery))}">✓</span>`
-          : `<span class="pl-feedback-status pl-feedback-status-fail" title="${escapeHtml(deliveryStatusText(item.delivery))}">✗</span>`
+        ? item.delivery.ok === null
+          ? `<span class="pl-feedback-status pl-feedback-status-unknown" title="${escapeHtml(deliveryStatusText(item.delivery))}">?</span>`
+          : item.delivery.ok
+            ? `<span class="pl-feedback-status pl-feedback-status-ok" title="${escapeHtml(deliveryStatusText(item.delivery))}">✓</span>`
+            : `<span class="pl-feedback-status pl-feedback-status-fail" title="${escapeHtml(deliveryStatusText(item.delivery))}">✗</span>`
         : "";
       const approximate = state.approximateIds.has(item.id)
         ? '<span class="pl-feedback-approx" title="ウィンドウサイズが変わったため、位置が近似になっています">≈</span>'
@@ -1388,6 +1414,7 @@ function deliveryStatusText(delivery) {
     return `download failed: ${delivery.error || "unknown error"}`;
   }
   if (delivery.target === "slack-webhook") {
+    if (delivery.ok === null) return "posted to Slack direct (result unknown: no-cors)";
     if (delivery.ok) return "sent to Slack direct";
     return `Slack direct failed: ${delivery.error || "unknown error"}`;
   }
@@ -1558,6 +1585,15 @@ function addArea(rect) {
   return { node: area, label };
 }
 
+// Date.now() alone collides across tabs/reviewers within the same
+// millisecond, which also collides marker Map keys and orphans nodes.
+function generateFeedbackId() {
+  const random = globalThis.crypto && typeof globalThis.crypto.randomUUID === "function"
+    ? globalThis.crypto.randomUUID().slice(0, 8)
+    : Math.random().toString(36).slice(2, 10);
+  return `pl_${Date.now()}_${random}`;
+}
+
 function getRoot() {
   return document.querySelector("[data-patchloop-root]");
 }
@@ -1607,6 +1643,7 @@ function injectStyles() {
     .pl-feedback-status { font-weight: 900; }
     .pl-feedback-status-ok { color: #0f7b63; }
     .pl-feedback-status-fail { color: #d1495b; }
+    .pl-feedback-status-unknown { color: #8a9590; }
     .pl-tooltip { position: fixed; max-width: 280px; background: #14211d; color: #fff; padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.4; pointer-events: none; z-index: 2147483002; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.32); white-space: pre-wrap; word-break: break-word; }
     .pl-comment { position: fixed; z-index: 2147483001; width: min(320px, calc(100vw - 24px)); display: grid; gap: 10px; padding: 14px; background: #fff; border: 1px solid #d9e1dd; border-radius: 8px; box-shadow: 0 22px 70px rgba(20, 33, 29, 0.24); }
     .pl-comment label { display: grid; gap: 6px; color: #65716d; font-size: 12px; font-weight: 800; }
