@@ -4,6 +4,7 @@ const http = require("http");
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 const { truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } = require("../shared/format.js");
 
@@ -657,7 +658,8 @@ function saveScreenshot(screenshot, id) {
   }
 
   fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
-  const fileName = `${safeFilePart(id || "feedback")}-${Date.now()}.${extension}`;
+  const random = crypto.randomUUID().slice(0, 8);
+  const fileName = `${safeFilePart(id || "feedback")}-${Date.now()}-${random}.${extension}`;
   const filePath = path.join(SCREENSHOT_DIR, fileName);
   fs.writeFileSync(filePath, parsed.buffer);
 
