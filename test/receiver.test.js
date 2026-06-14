@@ -411,6 +411,50 @@ test("schemaVersion is stored, defaulted for legacy payloads, and validated", as
   assert.match(rejected.body.error, /schemaVersion must be an integer/);
 });
 
+test("GET /feedback.json filters by projectId, demoId, and status", async (t) => {
+  const receiver = await startReceiver(t);
+
+  const a = feedbackPayload("pl_filter_a");
+  a.projectId = "alpha";
+  a.demoId = "home";
+  const b = feedbackPayload("pl_filter_b");
+  b.projectId = "alpha";
+  b.demoId = "checkout";
+  const c = feedbackPayload("pl_filter_c");
+  c.projectId = "beta";
+  c.demoId = "home";
+  for (const p of [a, b, c]) await postJson(`${receiver.baseUrl}/feedback`, p);
+  await postJson(`${receiver.baseUrl}/feedback/pl_filter_b/status`, { status: "fixed" });
+
+  const ids = async (query) => {
+    const items = await fetch(`${receiver.baseUrl}/feedback.json${query}`).then((r) => r.json());
+    return items.map((item) => item.id).sort();
+  };
+
+  assert.deepEqual(await ids("?projectId=alpha"), ["pl_filter_a", "pl_filter_b"]);
+  assert.deepEqual(await ids("?demoId=home"), ["pl_filter_a", "pl_filter_c"]);
+  assert.deepEqual(await ids("?projectId=alpha&demoId=checkout"), ["pl_filter_b"]);
+  assert.deepEqual(await ids("?status=fixed"), ["pl_filter_b"]);
+  assert.deepEqual(await ids("?projectId=beta&demoId=checkout"), []);
+
+  const badStatus = await fetch(`${receiver.baseUrl}/feedback.json?status=wontfix`);
+  assert.equal(badStatus.status, 400);
+});
+
+test("inbox exposes project and demo filters with the data attributes", async (t) => {
+  const receiver = await startReceiver(t);
+  const item = feedbackPayload("pl_inbox_filter");
+  item.projectId = "alpha";
+  item.demoId = "home";
+  await postJson(`${receiver.baseUrl}/feedback`, item);
+
+  const html = await fetch(`${receiver.baseUrl}/`).then((r) => r.text());
+  assert.match(html, /data-filter-key="project"/);
+  assert.match(html, /data-filter-key="demo"/);
+  assert.match(html, /data-project="alpha"/);
+  assert.match(html, /data-demo="home"/);
+});
+
 async function startReceiver(t, extraEnv = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const port = await getFreePort();
