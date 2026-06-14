@@ -26,6 +26,9 @@ h1 { margin: 0 0 8px; font-size: 20px; }
 .github-create { min-height: 24px; border: 1px solid #0f7b63; border-radius: 6px; background: #fff; color: #0f7b63; padding: 1px 8px; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
 .github-create:disabled { opacity: 0.6; cursor: default; }
 .github-error { color: #b83d4d; }
+.delete-feedback { min-height: 26px; border: 1px solid #d9e1dd; border-radius: 6px; background: #fff; color: #b83d4d; padding: 2px 8px; font: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
+.delete-feedback:hover { border-color: #b83d4d; background: #fdf0f2; }
+.delete-feedback:disabled { opacity: 0.6; cursor: default; }
 .kind { padding: 2px 8px; border-radius: 999px; font-weight: 800; color: #fff; font-size: 11px; text-transform: uppercase; }
 .kind-point { background: #0f7b63; }
 .kind-area { background: #d1495b; }

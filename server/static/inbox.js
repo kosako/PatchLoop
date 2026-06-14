@@ -106,4 +106,22 @@
       }
     });
   });
+
+  document.querySelectorAll("[data-delete-feedback]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!window.confirm("この feedback を削除します。元に戻せません。よろしいですか？")) return;
+      button.disabled = true;
+      button.textContent = "削除中...";
+      try {
+        const response = await fetch("/feedback/" + encodeURIComponent(button.dataset.feedbackId), { method: "DELETE" });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || "Delete failed");
+        button.closest("[data-card]").remove();
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = "削除";
+        window.alert(error.message);
+      }
+    });
+  });
 })();
