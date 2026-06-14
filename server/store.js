@@ -22,9 +22,9 @@
 const fs = require("fs");
 const path = require("path");
 
-// node:sqlite is still flagged experimental and prints a warning on load.
-// Swallow only that one line so the receiver console stays clean; everything
-// else keeps its default handler.
+// node:sqlite is still flagged experimental and prints a warning when it
+// loads. Swallow only that one line, and restore the original handler right
+// after the require so the override does not stay in effect process-wide.
 const originalEmitWarning = process.emitWarning;
 process.emitWarning = function (warning, ...rest) {
   const text = typeof warning === "string" ? warning : warning && warning.message;
@@ -32,6 +32,11 @@ process.emitWarning = function (warning, ...rest) {
   return originalEmitWarning.call(process, warning, ...rest);
 };
 const { DatabaseSync } = require("node:sqlite");
+process.emitWarning = originalEmitWarning;
+
+function isUniqueViolation(error) {
+  return /UNIQUE constraint failed/i.test(error && error.message);
+}
 
 const VALID_STATUSES = ["new", "accepted", "fixed", "ignored"];
 
@@ -76,11 +81,25 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
       return;
     }
 
-    // The JSON array is newest-first; insert oldest-first so seq order (and
-    // therefore newest-first reads) matches what the array represented.
-    for (const item of items.slice().reverse()) {
-      if (item && item.id != null) insertRow(item);
+    // All-or-nothing: a migration interrupted partway would leave rows behind,
+    // and the next startup (seeing a non-empty table) would skip migration and
+    // strand the remaining legacy items. A transaction rolls back on failure so
+    // the legacy file stays intact and the next startup retries.
+    db.exec("BEGIN");
+    try {
+      // The JSON array is newest-first; insert oldest-first so seq order (and
+      // therefore newest-first reads) matches what the array represented.
+      // OR IGNORE keeps the first of any duplicate legacy ids instead of
+      // aborting the whole migration.
+      for (const item of items.slice().reverse()) {
+        if (item && item.id != null) insertRow(item, { ignoreConflict: true });
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
     }
+
     const archived = `${legacyJsonPath}.migrated-${Date.now()}`;
     try {
       fs.renameSync(legacyJsonPath, archived);
@@ -90,10 +109,11 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
     }
   }
 
-  function insertRow(item) {
+  function insertRow(item, { ignoreConflict = false } = {}) {
     const cols = extractColumns(item);
+    const verb = ignoreConflict ? "INSERT OR IGNORE" : "INSERT";
     db.prepare(
-      "INSERT OR REPLACE INTO feedback (id, project_id, demo_id, status, received_at, data) VALUES (?, ?, ?, ?, ?, ?)"
+      `${verb} INTO feedback (id, project_id, demo_id, status, received_at, data) VALUES (?, ?, ?, ?, ?, ?)`
     ).run(cols.id, cols.project_id, cols.demo_id, cols.status, cols.received_at, JSON.stringify(item));
   }
 
@@ -117,7 +137,19 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
     },
 
     async insert(item) {
-      insertRow(item);
+      // A duplicate id is anomalous (ids are unique by construction). Reject it
+      // with a 409 instead of silently overwriting the existing row (data loss)
+      // or silently appending a second row that breaks id-based triage.
+      try {
+        insertRow(item);
+      } catch (error) {
+        if (isUniqueViolation(error)) {
+          const conflict = new Error(`feedback id already exists: ${item.id}`);
+          conflict.statusCode = 409;
+          throw conflict;
+        }
+        throw error;
+      }
     },
 
     async get(id) {
@@ -145,10 +177,13 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
       return rows.map((row) => JSON.parse(row.data));
     },
 
+    // Read and write happen without an await in between, so the whole
+    // read-modify-write runs synchronously on the single thread and cannot lose
+    // a concurrent update. A networked backend would wrap this in a transaction.
     async update(id, patch) {
-      const current = await this.get(id);
-      if (!current) return null;
-      const updated = { ...current, ...patch };
+      const row = db.prepare("SELECT data FROM feedback WHERE id = ?").get(String(id));
+      if (!row) return null;
+      const updated = { ...JSON.parse(row.data), ...patch };
       const cols = extractColumns(updated);
       db.prepare(
         "UPDATE feedback SET project_id = ?, demo_id = ?, status = ?, received_at = ?, data = ? WHERE id = ?"
@@ -157,10 +192,10 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
     },
 
     async delete(id) {
-      const current = await this.get(id);
-      if (!current) return null;
+      const row = db.prepare("SELECT data FROM feedback WHERE id = ?").get(String(id));
+      if (!row) return null;
       db.prepare("DELETE FROM feedback WHERE id = ?").run(String(id));
-      return current;
+      return JSON.parse(row.data);
     },
 
     async count() {

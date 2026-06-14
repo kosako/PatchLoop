@@ -592,9 +592,11 @@ async function handleGetFeedbackJson(req, res) {
     return;
   }
 
-  const projectId = params.get("projectId");
-  const demoId = params.get("demoId");
-  const status = params.get("status");
+  // Empty query values mean "no filter" (matching the inbox's "all" option),
+  // not "items whose field equals the empty string".
+  const projectId = params.get("projectId") || null;
+  const demoId = params.get("demoId") || null;
+  const status = params.get("status") || null;
 
   if (status != null && !FEEDBACK_STATUSES.includes(status)) {
     respondJson(res, 400, { ok: false, error: `status must be one of: ${FEEDBACK_STATUSES.join(", ")}` });

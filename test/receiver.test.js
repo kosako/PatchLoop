@@ -523,6 +523,23 @@ test("inbox renders a delete button per card", async (t) => {
   assert.match(html, /data-delete-feedback data-feedback-id="pl_delete_ui"/);
 });
 
+test("POST /feedback rejects a duplicate id instead of overwriting", async (t) => {
+  const receiver = await startReceiver(t);
+  const first = feedbackPayload("pl_dup");
+  first.comment = "original";
+  await postJson(`${receiver.baseUrl}/feedback`, first);
+
+  const second = feedbackPayload("pl_dup");
+  second.comment = "should not overwrite";
+  const response = await postJson(`${receiver.baseUrl}/feedback`, second);
+  assert.equal(response.status, 409);
+  assert.match(response.body.error, /already exists/);
+
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].comment, "original");
+});
+
 async function startReceiver(t, extraEnv = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const port = await getFreePort();
