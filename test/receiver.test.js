@@ -385,6 +385,32 @@ test("upload-only Slack config reports skipped, not failed, without a screenshot
   assert.equal(stored[0].integrations.slack.status, "skipped");
 });
 
+test("schemaVersion is stored, defaulted for legacy payloads, and validated", async (t) => {
+  const receiver = await startReceiver(t);
+
+  // explicit version is kept
+  const versioned = feedbackPayload("pl_schema_1");
+  versioned.schemaVersion = 1;
+  await postJson(`${receiver.baseUrl}/feedback`, versioned);
+
+  // legacy payload without a version gets the default
+  const legacy = feedbackPayload("pl_schema_legacy");
+  delete legacy.schemaVersion;
+  await postJson(`${receiver.baseUrl}/feedback`, legacy);
+
+  const stored = await readStoredFeedback(receiver.storePath);
+  const byId = Object.fromEntries(stored.map((item) => [item.id, item]));
+  assert.equal(byId.pl_schema_1.schemaVersion, 1);
+  assert.equal(byId.pl_schema_legacy.schemaVersion, 1);
+
+  // a non-integer version is rejected
+  const bad = feedbackPayload("pl_schema_bad");
+  bad.schemaVersion = "v1";
+  const rejected = await postJson(`${receiver.baseUrl}/feedback`, bad);
+  assert.equal(rejected.status, 400);
+  assert.match(rejected.body.error, /schemaVersion must be an integer/);
+});
+
 async function startReceiver(t, extraEnv = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const port = await getFreePort();
@@ -520,6 +546,7 @@ async function readStoredFeedback(storePath) {
 
 function feedbackPayload(id) {
   return {
+    schemaVersion: 1,
     id,
     projectId: "patchloop",
     demoId: "receiver-test",
