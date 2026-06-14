@@ -36,6 +36,9 @@ const GITHUB_CONFIGURED = Boolean(GITHUB_TOKEN && GITHUB_REPO);
 const IMPORT_BUNDLE_KIND = "patchloop-feedback-bundle";
 const IMPORT_BUNDLE_VERSION = 1;
 const FEEDBACK_STATUSES = ["new", "accepted", "fixed", "ignored"];
+// Default applied to payloads received before the widget sent schemaVersion,
+// so every stored item carries a version going forward.
+const DEFAULT_SCHEMA_VERSION = 1;
 
 let feedback = loadFeedback();
 
@@ -184,7 +187,12 @@ function handlePostFeedback(req, res) {
       return;
     }
 
-    const stored = { receivedAt: new Date().toISOString(), ...payload, screenshot };
+    const stored = {
+      receivedAt: new Date().toISOString(),
+      schemaVersion: DEFAULT_SCHEMA_VERSION,
+      ...payload,
+      screenshot
+    };
     stored.integrations = {
       ...(stored.integrations || {}),
       slack: await deliverToSlack(stored)
@@ -218,6 +226,7 @@ function handlePostImport(req, res) {
 
     const now = new Date().toISOString();
     const stored = {
+      schemaVersion: DEFAULT_SCHEMA_VERSION,
       ...imported,
       receivedAt: now,
       importedAt: now,
@@ -474,6 +483,9 @@ function validateFeedbackPayload(payload) {
   requirePlainObject(payload.target, "feedback.target");
   requirePlainObject(payload.environment, "feedback.environment");
 
+  if (payload.schemaVersion != null && !Number.isInteger(payload.schemaVersion)) {
+    throw httpError("feedback.schemaVersion must be an integer", 400);
+  }
   if (payload.projectId != null) requireString(payload.projectId, "feedback.projectId");
   if (payload.demoId != null) requireString(payload.demoId, "feedback.demoId");
   if (payload.createdAt != null) requireString(payload.createdAt, "feedback.createdAt");

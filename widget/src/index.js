@@ -24,6 +24,10 @@ const DEFAULTS = {
 const EXPORT_KIND = "patchloop-feedback-bundle";
 const EXPORT_VERSION = 1;
 const FEEDBACK_STORAGE_VERSION = 1;
+// Version of the feedback payload schema itself (distinct from the storage
+// envelope and export bundle versions). Bump when the payload shape changes
+// so the receiver can branch on it as the schema grows for team use.
+const PAYLOAD_SCHEMA_VERSION = 1;
 
 const state = {
   options: { ...DEFAULTS },
@@ -465,6 +469,7 @@ async function submitComment(event) {
 
 function buildPayload(comment, reviewer, target) {
   return {
+    schemaVersion: PAYLOAD_SCHEMA_VERSION,
     id: generateFeedbackId(),
     projectId: state.options.projectId,
     demoId: state.options.demoId,
