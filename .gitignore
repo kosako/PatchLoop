@@ -1,4 +1,10 @@
 server/feedback.json
+server/feedback.json.migrated-*
+server/feedback.json.corrupt-*
+server/feedback.db
+server/feedback.db-journal
+server/feedback.db-wal
+server/feedback.db-shm
 server/screenshots/
 server/receiver.config.json
 node_modules/

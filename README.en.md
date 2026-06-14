@@ -169,16 +169,23 @@ When `endpoint` is set, the widget POSTs the payload to that URL. A local receiv
 node server/receive.js
 ```
 
-- Accepts payload at `POST /feedback`, appending to `server/feedback.json` by default
+- Accepts payload at `POST /feedback`, storing it in `server/feedback.db` (sqlite) by default
 - Imports download-mode JSON bundles at `POST /import`, storing them in the same inbox format
 - Renders an inbox of received feedback at `GET /`
-- The inbox has text search plus status / kind / reviewer / source / Slack filters
-- Each feedback has a triage status (`new` / `accepted` / `fixed` / `ignored`) editable from the card; statuses persist to `server/feedback.json`
+- The inbox has text search plus status / kind / project / demo / reviewer / source / Slack filters
+- Each feedback has a triage status (`new` / `accepted` / `fixed` / `ignored`) editable from the card; statuses persist to sqlite
 - `POST /feedback/:id/status` updates the status via the API (body: `{"status": "accepted"}`)
+- `DELETE /feedback/:id` removes a feedback and its screenshot (also from the card's delete button)
 - With GitHub configured, each inbox card can create a GitHub Issue (see below)
 - Imports `.patchloop-feedback.json` files from the inbox UI
-- Returns the raw JSON at `GET /feedback.json`
+- Returns the raw JSON at `GET /feedback.json` (filterable via `?projectId=` / `?demoId=` / `?status=`)
 - Serves saved screenshots from `GET /screenshots/:file`
+
+### Storage
+
+Feedback is stored in the built-in `node:sqlite` (`server/feedback.db`). The backend sits behind a small async interface in `server/store.js` (`init` / `insert` / `get` / `list` / `update` / `delete` / `count`), so it can be swapped for another backend (e.g. MySQL) later without changing the receiver.
+
+On startup, an existing legacy `server/feedback.json` is migrated into sqlite once and archived to `feedback.json.migrated-<timestamp>` (or `feedback.json.corrupt-<timestamp>` if unreadable, starting empty). The db path is set via `FEEDBACK_DB_PATH` and the migration source via `FEEDBACK_STORE_PATH`.
 - Configurable via `PORT` / `HOST` env (default `127.0.0.1:4000`)
 - Configurable storage path via `FEEDBACK_STORE_PATH`
 - Configurable screenshot directory via `SCREENSHOT_DIR`

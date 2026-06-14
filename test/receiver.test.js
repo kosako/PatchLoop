@@ -8,6 +8,7 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const { DatabaseSync } = require("node:sqlite");
 
 const RECEIVER_PATH = path.resolve(__dirname, "../server/receive.js");
 
@@ -23,7 +24,7 @@ test("POST /feedback stores valid feedback and saves screenshot data URLs", asyn
   assert.equal(response.body.count, 1);
   assert.deepEqual(response.body.slack, { status: "disabled" });
 
-  const stored = await readStoredFeedback(receiver.storePath);
+  const stored = await readStoredFeedback(receiver.dbPath);
   assert.equal(stored.length, 1);
   assert.equal(stored[0].id, payload.id);
   assert.equal(stored[0].screenshot.status, "saved");
@@ -50,7 +51,7 @@ test("POST /feedback rejects malformed feedback payloads", async (t) => {
   assert.equal(response.status, 400);
   assert.equal(response.body.ok, false);
   assert.match(response.body.error, /feedback\.reviewer must not be empty/);
-  assert.deepEqual(await readStoredFeedback(receiver.storePath), []);
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
 });
 
 test("POST /import stores bundle feedback and strips delivery metadata", async (t) => {
@@ -76,7 +77,7 @@ test("POST /import stores bundle feedback and strips delivery metadata", async (
   assert.equal(response.body.id, payload.id);
   assert.equal(response.body.source, "import");
 
-  const stored = await readStoredFeedback(receiver.storePath);
+  const stored = await readStoredFeedback(receiver.dbPath);
   assert.equal(stored.length, 1);
   assert.equal(stored[0].id, payload.id);
   assert.equal(stored[0].source, "import");
@@ -100,7 +101,7 @@ test("POST /import rejects unsupported bundle versions", async (t) => {
   assert.equal(response.status, 400);
   assert.equal(response.body.ok, false);
   assert.match(response.body.error, /Unsupported PatchLoop bundle version: 999/);
-  assert.deepEqual(await readStoredFeedback(receiver.storePath), []);
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
 });
 
 test("POST /feedback/:id/status updates triage status and persists it", async (t) => {
@@ -113,7 +114,7 @@ test("POST /feedback/:id/status updates triage status and persists it", async (t
   assert.equal(response.status, 200);
   assert.deepEqual(response.body, { ok: true, id: payload.id, status: "accepted" });
 
-  const stored = await readStoredFeedback(receiver.storePath);
+  const stored = await readStoredFeedback(receiver.dbPath);
   assert.equal(stored[0].status, "accepted");
   assert.match(stored[0].statusUpdatedAt, /^\d{4}-\d{2}-\d{2}T/);
 });
@@ -151,7 +152,7 @@ test("POST /feedback/:id/github-issue creates an issue via the GitHub API", asyn
   assert.deepEqual(request.body.labels, ["feedback", "patchloop"]);
   assert.deepEqual(request.body.assignees, ["kosako"]);
 
-  const stored = await readStoredFeedback(receiver.storePath);
+  const stored = await readStoredFeedback(receiver.dbPath);
   assert.equal(stored[0].integrations.github.status, "created");
   assert.equal(stored[0].integrations.github.issueNumber, 7);
 
@@ -184,7 +185,7 @@ test("POST /feedback/:id/github-issue persists failures and requires configurati
   assert.equal(failed.status, 502);
   assert.match(failed.body.error, /Validation Failed/);
 
-  const stored = await readStoredFeedback(receiver.storePath);
+  const stored = await readStoredFeedback(receiver.dbPath);
   assert.equal(stored[0].integrations.github.status, "failed");
   assert.equal(stored[0].integrations.github.statusCode, 422);
 });
@@ -268,23 +269,28 @@ test("POST /feedback/:id/status rejects unknown statuses and ids", async (t) => 
   assert.equal(missing.status, 404);
   assert.match(missing.body.error, /Unknown feedback id/);
 
-  const stored = await readStoredFeedback(receiver.storePath);
+  const stored = await readStoredFeedback(receiver.dbPath);
   assert.equal(stored[0].status, undefined);
 });
 
-test("corrupt feedback store is backed up instead of overwritten", async (t) => {
+test("corrupt legacy feedback store is backed up, not migrated, during startup", async (t) => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const storePath = path.join(tempDir, "feedback.json");
   const corruptContent = '[{"id": "pl_old", "comment": "truncated...';
   await fs.writeFile(storePath, corruptContent);
   t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
 
-  const receiver = await startReceiver(t, { FEEDBACK_STORE_PATH: storePath });
+  // The db lives in the same dir so we can confirm migration started empty.
+  const receiver = await startReceiver(t, {
+    FEEDBACK_STORE_PATH: storePath,
+    FEEDBACK_DB_PATH: path.join(tempDir, "feedback.db")
+  });
   const payload = feedbackPayload("pl_after_corruption");
   const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
   assert.equal(response.status, 201);
 
-  const stored = await readStoredFeedback(storePath);
+  // Only the new item exists; the corrupt legacy rows were not imported.
+  const stored = await readStoredFeedback(path.join(tempDir, "feedback.db"));
   assert.equal(stored.length, 1);
   assert.equal(stored[0].id, payload.id);
 
@@ -292,7 +298,30 @@ test("corrupt feedback store is backed up instead of overwritten", async (t) => 
   const backup = entries.find((name) => name.startsWith("feedback.json.corrupt-"));
   assert.ok(backup, `expected a corrupt backup file, found: ${entries.join(", ")}`);
   assert.equal(await fs.readFile(path.join(tempDir, backup), "utf8"), corruptContent);
-  assert.ok(!entries.includes("feedback.json.tmp"), "temp file should not linger after persist");
+});
+
+test("a valid legacy feedback.json is migrated into sqlite on startup", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
+  const storePath = path.join(tempDir, "feedback.json");
+  const dbPath = path.join(tempDir, "feedback.db");
+  // newest-first on disk, as the JSON store was written
+  const legacy = [feedbackPayload("pl_legacy_new"), feedbackPayload("pl_legacy_old")];
+  await fs.writeFile(storePath, JSON.stringify(legacy, null, 2));
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+
+  const receiver = await startReceiver(t, { FEEDBACK_STORE_PATH: storePath, FEEDBACK_DB_PATH: dbPath });
+
+  const stored = await readStoredFeedback(dbPath);
+  assert.deepEqual(stored.map((item) => item.id), ["pl_legacy_new", "pl_legacy_old"]);
+
+  // the original is archived, not left in place to re-import
+  const entries = await fs.readdir(tempDir);
+  assert.ok(!entries.includes("feedback.json"), "legacy store should be archived after migration");
+  assert.ok(entries.some((name) => name.startsWith("feedback.json.migrated-")), `expected a migrated archive, found: ${entries.join(", ")}`);
+
+  // the API serves the migrated rows
+  const served = await fetch(`${receiver.baseUrl}/feedback.json`).then((r) => r.json());
+  assert.deepEqual(served.map((item) => item.id), ["pl_legacy_new", "pl_legacy_old"]);
 });
 
 test("GET /widget.js serves the built widget bundle", async (t) => {
@@ -381,7 +410,7 @@ test("upload-only Slack config reports skipped, not failed, without a screenshot
   const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
   assert.equal(response.status, 201);
 
-  const stored = await readStoredFeedback(receiver.storePath);
+  const stored = await readStoredFeedback(receiver.dbPath);
   assert.equal(stored[0].integrations.slack.status, "skipped");
 });
 
@@ -398,7 +427,7 @@ test("schemaVersion is stored, defaulted for legacy payloads, and validated", as
   delete legacy.schemaVersion;
   await postJson(`${receiver.baseUrl}/feedback`, legacy);
 
-  const stored = await readStoredFeedback(receiver.storePath);
+  const stored = await readStoredFeedback(receiver.dbPath);
   const byId = Object.fromEntries(stored.map((item) => [item.id, item]));
   assert.equal(byId.pl_schema_1.schemaVersion, 1);
   assert.equal(byId.pl_schema_legacy.schemaVersion, 1);
@@ -461,7 +490,7 @@ test("DELETE /feedback/:id removes the item and its screenshot file", async (t) 
   await postJson(`${receiver.baseUrl}/feedback`, payload);
   await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_delete_keep"));
 
-  const before = await readStoredFeedback(receiver.storePath);
+  const before = await readStoredFeedback(receiver.dbPath);
   const screenshotPath = before.find((item) => item.id === "pl_delete_1").screenshot.path;
   await fs.access(screenshotPath); // exists before delete
 
@@ -470,7 +499,7 @@ test("DELETE /feedback/:id removes the item and its screenshot file", async (t) 
   const body = await response.json();
   assert.deepEqual(body, { ok: true, id: "pl_delete_1", count: 1 });
 
-  const after = await readStoredFeedback(receiver.storePath);
+  const after = await readStoredFeedback(receiver.dbPath);
   assert.deepEqual(after.map((item) => item.id), ["pl_delete_keep"]);
   await assert.rejects(fs.access(screenshotPath), /ENOENT/);
 });
@@ -483,7 +512,7 @@ test("DELETE /feedback/:id returns 404 for an unknown id", async (t) => {
   assert.equal(response.status, 404);
   assert.match((await response.json()).error, /Unknown feedback id/);
 
-  const stored = await readStoredFeedback(receiver.storePath);
+  const stored = await readStoredFeedback(receiver.dbPath);
   assert.equal(stored.length, 1);
 });
 
@@ -499,6 +528,7 @@ async function startReceiver(t, extraEnv = {}) {
   const port = await getFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const storePath = path.join(tempDir, "feedback.json");
+  const dbPath = path.join(tempDir, "feedback.db");
   const screenshotDir = path.join(tempDir, "screenshots");
 
   const child = spawn(process.execPath, [RECEIVER_PATH], {
@@ -507,6 +537,7 @@ async function startReceiver(t, extraEnv = {}) {
       HOST: "127.0.0.1",
       PORT: String(port),
       FEEDBACK_STORE_PATH: storePath,
+      FEEDBACK_DB_PATH: dbPath,
       SCREENSHOT_DIR: screenshotDir,
       PUBLIC_BASE_URL: baseUrl,
       SLACK_WEBHOOK_URL: "",
@@ -534,6 +565,7 @@ async function startReceiver(t, extraEnv = {}) {
     logs,
     screenshotDir,
     storePath,
+    dbPath,
     tempDir
   };
 }
@@ -618,12 +650,20 @@ async function postJson(url, body) {
   };
 }
 
-async function readStoredFeedback(storePath) {
+// Reads the sqlite store directly (newest first, matching store.list) so the
+// tests can assert persisted state without going through the HTTP API.
+async function readStoredFeedback(dbPath) {
   try {
-    return JSON.parse(await fs.readFile(storePath, "utf8"));
+    await fs.access(dbPath);
   } catch (error) {
     if (error.code === "ENOENT") return [];
     throw error;
+  }
+  const db = new DatabaseSync(dbPath);
+  try {
+    return db.prepare("SELECT data FROM feedback ORDER BY seq DESC").all().map((row) => JSON.parse(row.data));
+  } finally {
+    db.close();
   }
 }
 
