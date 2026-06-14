@@ -88,7 +88,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === "GET" && pathname === "/feedback.json") {
-    respondJson(res, 200, feedback);
+    handleGetFeedbackJson(req, res);
     return;
   }
 
@@ -523,6 +523,34 @@ function requireNonEmptyString(value, label) {
 function handleGetInbox(req, res) {
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(renderInbox(feedback));
+}
+
+// GET /feedback.json supports ?projectId=&demoId=&status= to narrow the
+// export, so a shared receiver can hand each project just its own feedback.
+function handleGetFeedbackJson(req, res) {
+  let params;
+  try {
+    params = new URL(req.url, "http://localhost").searchParams;
+  } catch (_) {
+    respondJson(res, 400, { ok: false, error: "Invalid query" });
+    return;
+  }
+
+  const projectId = params.get("projectId");
+  const demoId = params.get("demoId");
+  const status = params.get("status");
+
+  if (status != null && !FEEDBACK_STATUSES.includes(status)) {
+    respondJson(res, 400, { ok: false, error: `status must be one of: ${FEEDBACK_STATUSES.join(", ")}` });
+    return;
+  }
+
+  const filtered = feedback.filter((item) =>
+    (projectId == null || (item.projectId || "") === projectId)
+    && (demoId == null || (item.demoId || "") === demoId)
+    && (status == null || feedbackStatusOf(item) === status));
+
+  respondJson(res, 200, filtered);
 }
 
 function handleGetWidgetScript(req, res) {
@@ -1140,6 +1168,8 @@ function renderInbox(items) {
     const createdAt = escapeHtml(item.createdAt || "");
     const receivedAt = escapeHtml(item.receivedAt || "");
     const source = escapeHtml(item.source || "receiver");
+    const project = escapeHtml(item.projectId || "");
+    const demo = escapeHtml(item.demoId || "");
     const importedAt = escapeHtml(item.importedAt || "");
     const status = feedbackStatusOf(item);
     const slackStatus = escapeHtml((slack && slack.status) || "unknown");
@@ -1154,7 +1184,7 @@ function renderInbox(items) {
       ? `${env.viewport.width}×${env.viewport.height}`
       : "";
     return `
-      <article class="card" data-card data-status="${status}" data-kind="${kind}" data-reviewer="${reviewer}" data-source="${source}" data-slack="${slackStatus}" data-github="${githubStatus}" data-search="${searchText}">
+      <article class="card" data-card data-status="${status}" data-kind="${kind}" data-project="${project}" data-demo="${demo}" data-reviewer="${reviewer}" data-source="${source}" data-slack="${slackStatus}" data-github="${githubStatus}" data-search="${searchText}">
         <header>
           <span class="kind kind-${kind}">${kind}</span>
           <span class="reviewer">${reviewer || "(no name)"}</span>
@@ -1224,6 +1254,8 @@ function renderFilterPanel(items) {
     .concat(values.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`))
     .join("");
   const unique = (mapper) => Array.from(new Set(items.map(mapper).filter(Boolean))).sort();
+  const projects = unique((item) => item.projectId || "");
+  const demos = unique((item) => item.demoId || "");
   const reviewers = unique((item) => item.reviewer || "");
   const sources = unique((item) => item.source || "receiver");
   const slackStatuses = unique((item) => (item.integrations && item.integrations.slack && item.integrations.slack.status) || "unknown");
@@ -1234,6 +1266,8 @@ function renderFilterPanel(items) {
     <input type="search" placeholder="検索（コメント / reviewer / selector / URL）" data-filter-text />
     <select data-filter-key="status">${optionList(FEEDBACK_STATUSES, "Status: all")}</select>
     <select data-filter-key="kind">${optionList(["point", "area"], "Kind: all")}</select>
+    <select data-filter-key="project">${optionList(projects, "Project: all")}</select>
+    <select data-filter-key="demo">${optionList(demos, "Demo: all")}</select>
     <select data-filter-key="reviewer">${optionList(reviewers, "Reviewer: all")}</select>
     <select data-filter-key="source">${optionList(sources, "Source: all")}</select>
     <select data-filter-key="slack">${optionList(slackStatuses, "Slack: all")}</select>
