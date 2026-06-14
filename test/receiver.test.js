@@ -455,6 +455,45 @@ test("inbox exposes project and demo filters with the data attributes", async (t
   assert.match(html, /data-demo="home"/);
 });
 
+test("DELETE /feedback/:id removes the item and its screenshot file", async (t) => {
+  const receiver = await startReceiver(t);
+  const payload = feedbackPayload("pl_delete_1");
+  await postJson(`${receiver.baseUrl}/feedback`, payload);
+  await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_delete_keep"));
+
+  const before = await readStoredFeedback(receiver.storePath);
+  const screenshotPath = before.find((item) => item.id === "pl_delete_1").screenshot.path;
+  await fs.access(screenshotPath); // exists before delete
+
+  const response = await fetch(`${receiver.baseUrl}/feedback/pl_delete_1`, { method: "DELETE" });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(body, { ok: true, id: "pl_delete_1", count: 1 });
+
+  const after = await readStoredFeedback(receiver.storePath);
+  assert.deepEqual(after.map((item) => item.id), ["pl_delete_keep"]);
+  await assert.rejects(fs.access(screenshotPath), /ENOENT/);
+});
+
+test("DELETE /feedback/:id returns 404 for an unknown id", async (t) => {
+  const receiver = await startReceiver(t);
+  await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_delete_present"));
+
+  const response = await fetch(`${receiver.baseUrl}/feedback/pl_missing`, { method: "DELETE" });
+  assert.equal(response.status, 404);
+  assert.match((await response.json()).error, /Unknown feedback id/);
+
+  const stored = await readStoredFeedback(receiver.storePath);
+  assert.equal(stored.length, 1);
+});
+
+test("inbox renders a delete button per card", async (t) => {
+  const receiver = await startReceiver(t);
+  await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_delete_ui"));
+  const html = await fetch(`${receiver.baseUrl}/`).then((r) => r.text());
+  assert.match(html, /data-delete-feedback data-feedback-id="pl_delete_ui"/);
+});
+
 async function startReceiver(t, extraEnv = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const port = await getFreePort();

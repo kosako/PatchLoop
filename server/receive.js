@@ -70,6 +70,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  const deleteMatch = req.method === "DELETE" && /^\/feedback\/([^/]+)$/.exec(pathname);
+  if (deleteMatch) {
+    handleDeleteFeedback(req, res, decodeURIComponent(deleteMatch[1]));
+    return;
+  }
+
   const statusMatch = req.method === "POST" && /^\/feedback\/([^/]+)\/status$/.exec(pathname);
   if (statusMatch) {
     handlePostStatus(req, res, decodeURIComponent(statusMatch[1]));
@@ -124,7 +130,7 @@ server.listen(PORT, HOST, () => {
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
@@ -247,6 +253,37 @@ function handlePostImport(req, res) {
       source: "import"
     });
   });
+}
+
+async function handleDeleteFeedback(req, res, id) {
+  const index = feedback.findIndex((entry) => entry.id === id);
+  if (index === -1) {
+    respondJson(res, 404, { ok: false, error: `Unknown feedback id: ${id}` });
+    return;
+  }
+
+  const [removed] = feedback.splice(index, 1);
+  persist();
+  // Await the file removal so a 200 means the screenshot is gone too.
+  await deleteScreenshotFile(removed.screenshot);
+  console.log(`[PatchLoop receiver] deleted feedback id=${id}`);
+  respondJson(res, 200, { ok: true, id, count: feedback.length });
+}
+
+// Removes the stored screenshot for a deleted feedback. Confined to
+// SCREENSHOT_DIR so a tampered stored path cannot delete arbitrary files,
+// and missing files are ignored (the feedback is already gone).
+async function deleteScreenshotFile(screenshot) {
+  const storedPath = screenshot && screenshot.path;
+  if (!storedPath) return;
+  const resolved = path.resolve(storedPath);
+  const root = path.resolve(SCREENSHOT_DIR);
+  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return;
+  try {
+    await fs.promises.rm(resolved, { force: true });
+  } catch (error) {
+    console.warn(`[PatchLoop receiver] could not delete screenshot ${resolved}: ${error.message}`);
+  }
 }
 
 function handlePostStatus(req, res, id) {
@@ -1192,6 +1229,7 @@ function renderInbox(items) {
             <select data-status-select data-feedback-id="${escapeHtml(item.id || "")}">${statusOptions}</select>
           </label>
           <time>${receivedAt}</time>
+          <button type="button" class="delete-feedback" data-delete-feedback data-feedback-id="${escapeHtml(item.id || "")}" title="この feedback を削除">削除</button>
         </header>
         <p class="comment">${comment}</p>
         ${renderScreenshotPreview(screenshot)}
