@@ -169,16 +169,23 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 node server/receive.js
 ```
 
-- `POST /feedback` で payload を受け取り、デフォルトでは `server/feedback.json` に追記します
+- `POST /feedback` で payload を受け取り、デフォルトでは `server/feedback.db`（sqlite）に保存します
 - `POST /import` で download mode の JSON bundle を読み込み、通常の inbox と同じ形式で保存します
 - `GET /` で受信した feedback の一覧（inbox）を表示します
-- inbox にはテキスト検索と status / kind / reviewer / source / Slack の絞り込みがあります
-- 各 feedback には triage status（`new` / `accepted` / `fixed` / `ignored`）があり、card 上の select から変更できます。status は `server/feedback.json` に永続化されます
+- inbox にはテキスト検索と status / kind / project / demo / reviewer / source / Slack の絞り込みがあります
+- 各 feedback には triage status（`new` / `accepted` / `fixed` / `ignored`）があり、card 上の select から変更できます。status は sqlite に永続化されます
 - `POST /feedback/:id/status` で API からも status を更新できます（body は `{"status": "accepted"}` 形式）
+- `DELETE /feedback/:id` で feedback と紐づく screenshot を削除できます（inbox の card の「削除」ボタンからも）
 - GitHub 連携を設定すると、inbox の各 card から GitHub Issue を作成できます（後述）
 - inbox UI から `.patchloop-feedback.json` を選択して import できます
-- `GET /feedback.json` で raw JSON を返します
+- `GET /feedback.json` で raw JSON を返します（`?projectId=` / `?demoId=` / `?status=` で絞り込み可）
 - `GET /screenshots/:file` で保存済み screenshot を返します
+
+### ストレージ
+
+feedback は組み込みの `node:sqlite`（`server/feedback.db`）に保存します。バックエンドは `server/store.js` の小さな非同期インターフェース（`init` / `insert` / `get` / `list` / `update` / `delete` / `count`）の背後に隔離してあり、将来 MySQL 等の別バックエンドに差し替えても receiver 本体は変更不要です。
+
+起動時に旧形式の `server/feedback.json` が残っていれば一度だけ sqlite に取り込み、元ファイルは `feedback.json.migrated-<timestamp>` に退避します（壊れていれば `feedback.json.corrupt-<timestamp>` に退避して空で起動）。db ファイルのパスは `FEEDBACK_DB_PATH`、移行元の JSON は `FEEDBACK_STORE_PATH` で指定できます。
 - `PORT` / `HOST` env で変更可能（デフォルトは `127.0.0.1:4000`）
 - `FEEDBACK_STORE_PATH` env で保存先を変更できます
 - `SCREENSHOT_DIR` env で screenshot 保存先を変更できます

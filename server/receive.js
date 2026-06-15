@@ -7,6 +7,7 @@ const path = require("path");
 const crypto = require("crypto");
 
 const { truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } = require("../shared/format.js");
+const { createStore } = require("./store.js");
 
 const CONFIG_PATH = process.env.PATCHLOOP_RECEIVER_CONFIG || path.join(__dirname, "receiver.config.json");
 const config = loadConfig(CONFIG_PATH);
@@ -14,7 +15,8 @@ const configDir = path.dirname(CONFIG_PATH);
 
 const PORT = numberSetting(process.env.PORT, numberSetting(config.port, 4000));
 const HOST = process.env.HOST || config.host || "127.0.0.1";
-const STORE_PATH = process.env.FEEDBACK_STORE_PATH || pathFromConfig(config.feedbackStorePath, path.join(__dirname, "feedback.json"));
+const LEGACY_STORE_PATH = process.env.FEEDBACK_STORE_PATH || pathFromConfig(config.feedbackStorePath, path.join(__dirname, "feedback.json"));
+const DB_PATH = process.env.FEEDBACK_DB_PATH || pathFromConfig(config.feedbackDbPath, path.join(__dirname, "feedback.db"));
 const MAX_BODY_BYTES = numberSetting(process.env.MAX_BODY_BYTES, numberSetting(config.maxBodyBytes, 3_000_000));
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || pathFromConfig(config.screenshotDir, path.join(__dirname, "screenshots"));
 const SCREENSHOT_MAX_BYTES = numberSetting(process.env.SCREENSHOT_MAX_BYTES, numberSetting(config.screenshotMaxBytes, 1_500_000));
@@ -40,7 +42,7 @@ const FEEDBACK_STATUSES = ["new", "accepted", "fixed", "ignored"];
 // so every stored item carries a version going forward.
 const DEFAULT_SCHEMA_VERSION = 1;
 
-let feedback = loadFeedback();
+let store;
 
 const server = http.createServer((req, res) => {
   setCors(res);
@@ -117,15 +119,27 @@ const server = http.createServer((req, res) => {
   res.end("Not Found");
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`[PatchLoop receiver] listening on http://${HOST}:${PORT}`);
-  console.log(`[PatchLoop receiver] config file: ${config.__loaded ? CONFIG_PATH : "not loaded"}`);
-  console.log(`[PatchLoop receiver] feedback file: ${STORE_PATH}`);
-  console.log(`[PatchLoop receiver] screenshot dir: ${SCREENSHOT_DIR}`);
-  console.log(`[PatchLoop receiver] Slack webhook: ${SLACK_WEBHOOK_URL ? "enabled" : "disabled"}`);
-  console.log(`[PatchLoop receiver] Slack image mode: ${SLACK_IMAGE_MODE}`);
-  console.log(`[PatchLoop receiver] Slack file upload: ${SLACK_BOT_TOKEN && SLACK_UPLOAD_CHANNEL_ID ? "enabled" : "disabled"}`);
-  console.log(`[PatchLoop receiver] GitHub issues: ${GITHUB_CONFIGURED ? `enabled (${GITHUB_REPO})` : "disabled"}`);
+// Storage is initialized (and the legacy JSON store migrated) before the
+// server accepts requests, so no handler can run against an unready store.
+async function start() {
+  store = createStore({ dbPath: DB_PATH, legacyJsonPath: LEGACY_STORE_PATH });
+  await store.init();
+
+  server.listen(PORT, HOST, () => {
+    console.log(`[PatchLoop receiver] listening on http://${HOST}:${PORT}`);
+    console.log(`[PatchLoop receiver] config file: ${config.__loaded ? CONFIG_PATH : "not loaded"}`);
+    console.log(`[PatchLoop receiver] feedback db: ${DB_PATH}`);
+    console.log(`[PatchLoop receiver] screenshot dir: ${SCREENSHOT_DIR}`);
+    console.log(`[PatchLoop receiver] Slack webhook: ${SLACK_WEBHOOK_URL ? "enabled" : "disabled"}`);
+    console.log(`[PatchLoop receiver] Slack image mode: ${SLACK_IMAGE_MODE}`);
+    console.log(`[PatchLoop receiver] Slack file upload: ${SLACK_BOT_TOKEN && SLACK_UPLOAD_CHANNEL_ID ? "enabled" : "disabled"}`);
+    console.log(`[PatchLoop receiver] GitHub issues: ${GITHUB_CONFIGURED ? `enabled (${GITHUB_REPO})` : "disabled"}`);
+  });
+}
+
+start().catch((error) => {
+  console.error(`[PatchLoop receiver] failed to start: ${error.message}`);
+  process.exit(1);
 });
 
 function setCors(res) {
@@ -203,8 +217,7 @@ function handlePostFeedback(req, res) {
       ...(stored.integrations || {}),
       slack: await deliverToSlack(stored)
     };
-    feedback.unshift(stored);
-    persist();
+    await store.insert(stored);
     const slackLog = stored.integrations.slack.status === "disabled"
       ? ""
       : ` slack=${stored.integrations.slack.status}`;
@@ -212,7 +225,7 @@ function handlePostFeedback(req, res) {
     respondJson(res, 201, {
       ok: true,
       id: payload?.id,
-      count: feedback.length,
+      count: await store.count(),
       slack: stored.integrations.slack
     });
   });
@@ -243,31 +256,34 @@ function handlePostImport(req, res) {
       }
     };
 
-    feedback.unshift(stored);
-    persist();
+    await store.insert(stored);
     console.log(`[PatchLoop receiver] imported feedback id=${stored.id || "?"} comment="${truncateText(stored.comment || "", 60)}"`);
     respondJson(res, 201, {
       ok: true,
       id: stored.id,
-      count: feedback.length,
+      count: await store.count(),
       source: "import"
     });
   });
 }
 
 async function handleDeleteFeedback(req, res, id) {
-  const index = feedback.findIndex((entry) => entry.id === id);
-  if (index === -1) {
+  let removed;
+  try {
+    removed = await store.delete(id);
+  } catch (error) {
+    respondJson(res, 500, { ok: false, error: error.message });
+    return;
+  }
+  if (!removed) {
     respondJson(res, 404, { ok: false, error: `Unknown feedback id: ${id}` });
     return;
   }
 
-  const [removed] = feedback.splice(index, 1);
-  persist();
   // Await the file removal so a 200 means the screenshot is gone too.
   await deleteScreenshotFile(removed.screenshot);
   console.log(`[PatchLoop receiver] deleted feedback id=${id}`);
-  respondJson(res, 200, { ok: true, id, count: feedback.length });
+  respondJson(res, 200, { ok: true, id, count: await store.count() });
 }
 
 // Removes the stored screenshot for a deleted feedback. Confined to
@@ -294,15 +310,12 @@ function handlePostStatus(req, res, id) {
       return;
     }
 
-    const item = feedback.find((entry) => entry.id === id);
-    if (!item) {
+    const updated = await store.update(id, { status, statusUpdatedAt: new Date().toISOString() });
+    if (!updated) {
       respondJson(res, 404, { ok: false, error: `Unknown feedback id: ${id}` });
       return;
     }
 
-    item.status = status;
-    item.statusUpdatedAt = new Date().toISOString();
-    persist();
     respondJson(res, 200, { ok: true, id, status });
   });
 }
@@ -314,7 +327,7 @@ function handlePostGitHubIssue(req, res, id) {
       return;
     }
 
-    const item = feedback.find((entry) => entry.id === id);
+    const item = await store.get(id);
     if (!item) {
       respondJson(res, 404, { ok: false, error: `Unknown feedback id: ${id}` });
       return;
@@ -327,8 +340,7 @@ function handlePostGitHubIssue(req, res, id) {
     }
 
     const github = await createGitHubIssue(item);
-    item.integrations = { ...(item.integrations || {}), github };
-    persist();
+    await store.update(id, { integrations: { ...(item.integrations || {}), github } });
     console.log(`[PatchLoop receiver] github issue ${github.status} id=${id}${github.url ? ` url=${github.url}` : ""}`);
 
     if (github.status === "created") {
@@ -557,14 +569,21 @@ function requireNonEmptyString(value, label) {
   }
 }
 
-function handleGetInbox(req, res) {
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-  res.end(renderInbox(feedback));
+async function handleGetInbox(req, res) {
+  try {
+    const items = await store.list({});
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderInbox(items));
+  } catch (error) {
+    res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Internal Server Error");
+    console.warn(`[PatchLoop receiver] inbox render failed: ${error.message}`);
+  }
 }
 
 // GET /feedback.json supports ?projectId=&demoId=&status= to narrow the
 // export, so a shared receiver can hand each project just its own feedback.
-function handleGetFeedbackJson(req, res) {
+async function handleGetFeedbackJson(req, res) {
   let params;
   try {
     params = new URL(req.url, "http://localhost").searchParams;
@@ -573,21 +592,26 @@ function handleGetFeedbackJson(req, res) {
     return;
   }
 
-  const projectId = params.get("projectId");
-  const demoId = params.get("demoId");
-  const status = params.get("status");
+  // Empty query values mean "no filter" (matching the inbox's "all" option),
+  // not "items whose field equals the empty string".
+  const projectId = params.get("projectId") || null;
+  const demoId = params.get("demoId") || null;
+  const status = params.get("status") || null;
 
   if (status != null && !FEEDBACK_STATUSES.includes(status)) {
     respondJson(res, 400, { ok: false, error: `status must be one of: ${FEEDBACK_STATUSES.join(", ")}` });
     return;
   }
 
-  const filtered = feedback.filter((item) =>
-    (projectId == null || (item.projectId || "") === projectId)
-    && (demoId == null || (item.demoId || "") === demoId)
-    && (status == null || feedbackStatusOf(item) === status));
-
-  respondJson(res, 200, filtered);
+  try {
+    const filter = {};
+    if (projectId != null) filter.projectId = projectId;
+    if (demoId != null) filter.demoId = demoId;
+    if (status != null) filter.status = status;
+    respondJson(res, 200, await store.list(filter));
+  } catch (error) {
+    respondJson(res, 500, { ok: false, error: error.message });
+  }
 }
 
 function handleGetWidgetScript(req, res) {
@@ -669,45 +693,6 @@ function handleGetScreenshot(req, res) {
     });
     res.end(buffer);
   });
-}
-
-// An unreadable store must never be silently replaced: persist() rewrites the
-// whole file, so starting from [] would destroy all previous feedback on the
-// next write. Move the broken file aside and start fresh instead.
-function loadFeedback() {
-  let raw;
-  try {
-    raw = fs.readFileSync(STORE_PATH, "utf8");
-  } catch (error) {
-    if (error.code !== "ENOENT") {
-      console.warn(`[PatchLoop receiver] feedback store unreadable: ${error.message}`);
-    }
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) throw new Error("store content is not an array");
-    return parsed;
-  } catch (error) {
-    const backupPath = `${STORE_PATH}.corrupt-${Date.now()}`;
-    try {
-      fs.renameSync(STORE_PATH, backupPath);
-      console.warn(`[PatchLoop receiver] feedback store corrupt (${error.message}); backed up to ${backupPath}`);
-    } catch (backupError) {
-      console.warn(`[PatchLoop receiver] feedback store corrupt and backup failed: ${backupError.message}`);
-    }
-    return [];
-  }
-}
-
-// Write-then-rename keeps the store readable even if the process dies
-// mid-write; a torn direct write would corrupt the only copy.
-function persist() {
-  fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
-  const tempPath = `${STORE_PATH}.tmp`;
-  fs.writeFileSync(tempPath, JSON.stringify(feedback, null, 2));
-  fs.renameSync(tempPath, STORE_PATH);
 }
 
 function saveScreenshot(screenshot, id) {
