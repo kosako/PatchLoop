@@ -104,6 +104,128 @@ test("POST /import rejects unsupported bundle versions", async (t) => {
   assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
 });
 
+test("POST /import stores every feedback in a v2 batch bundle", async (t) => {
+  const receiver = await startReceiver(t);
+
+  const response = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 2,
+    exportedAt: "2026-06-03T00:00:00.000Z",
+    projectId: "patchloop",
+    demoId: "receiver-test",
+    feedback: [
+      { ...feedbackPayload("pl_batch_1"), exported: true, exportedAt: "2026-06-03T01:00:00.000Z" },
+      feedbackPayload("pl_batch_2"),
+      feedbackPayload("pl_batch_3")
+    ]
+  });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.imported, 3);
+  assert.deepEqual(response.body.ids, ["pl_batch_1", "pl_batch_2", "pl_batch_3"]);
+  assert.deepEqual(response.body.duplicates, []);
+  assert.deepEqual(response.body.failed, []);
+  assert.equal(response.body.count, 3);
+
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.equal(stored.length, 3);
+  for (const item of stored) {
+    assert.equal(item.source, "import");
+    // Local-only export markers must not be persisted.
+    assert.equal(item.exported, undefined);
+    assert.equal(item.exportedAt, undefined);
+    assert.equal(item.screenshot.status, "saved");
+  }
+});
+
+test("POST /import skips duplicate ids in a batch but lands the rest", async (t) => {
+  const receiver = await startReceiver(t);
+  await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 2,
+    feedback: [feedbackPayload("pl_dup_1")]
+  });
+
+  const response = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 2,
+    feedback: [feedbackPayload("pl_dup_1"), feedbackPayload("pl_dup_2")]
+  });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.imported, 1);
+  assert.deepEqual(response.body.ids, ["pl_dup_2"]);
+  assert.deepEqual(response.body.duplicates, ["pl_dup_1"]);
+  assert.equal(response.body.count, 2);
+
+  // The duplicate did not orphan a screenshot: exactly two files for two rows.
+  const stored = await readStoredFeedback(receiver.dbPath);
+  const files = await fs.readdir(receiver.screenshotDir);
+  assert.equal(stored.length, 2);
+  assert.equal(files.length, 2);
+});
+
+test("POST /import rejects the whole batch when one payload is invalid", async (t) => {
+  const receiver = await startReceiver(t);
+  const bad = feedbackPayload("pl_bad_2");
+  bad.reviewer = "";
+
+  const response = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 2,
+    feedback: [feedbackPayload("pl_good_1"), bad]
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.body.ok, false);
+  assert.match(response.body.error, /feedback\.reviewer must not be empty/);
+  // Nothing was written — validation runs before any insert.
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+});
+
+test("POST /import rejects the whole batch when a later screenshot is invalid", async (t) => {
+  const receiver = await startReceiver(t);
+  const bad = feedbackPayload("pl_badshot_2");
+  bad.screenshot = { status: "captured", kind: "viewport-svg", dataUrl: "data:text/plain;base64,Zm9v" };
+
+  const response = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 2,
+    feedback: [feedbackPayload("pl_goodshot_1"), bad]
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.body.ok, false);
+  assert.match(response.body.error, /Unsupported screenshot mime type/);
+  // The first (valid) item must not have landed before the bad one failed.
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+  const files = await fs.readdir(receiver.screenshotDir).catch(() => []);
+  assert.equal(files.length, 0);
+});
+
+test("POST /import enforces the feedback shape per bundle version", async (t) => {
+  const receiver = await startReceiver(t);
+
+  const v1Array = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 1,
+    feedback: [feedbackPayload("pl_shape_1")]
+  });
+  assert.equal(v1Array.status, 400);
+  assert.match(v1Array.body.error, /version 1 expects a single feedback object/);
+
+  const v2Single = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 2,
+    feedback: feedbackPayload("pl_shape_2")
+  });
+  assert.equal(v2Single.status, 400);
+  assert.match(v2Single.body.error, /version 2 expects a feedback array/);
+
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+});
+
 test("POST /feedback/:id/status updates triage status and persists it", async (t) => {
   const receiver = await startReceiver(t);
   const payload = feedbackPayload("pl_status_1");

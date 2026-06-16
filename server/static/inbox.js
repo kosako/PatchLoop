@@ -28,11 +28,19 @@
         body: text
       });
       const result = await response.json().catch(() => ({}));
-      if (!response.ok) {
+      // A genuine error (400/500) has no batch summary; a 409 all-duplicates
+      // response still carries imported/duplicates and is shown, not thrown.
+      if (!response.ok && result.imported === undefined) {
         throw new Error(result.error || "Import failed");
       }
-      status.textContent = "Imported " + (result.id || "feedback") + ". Reloading...";
-      window.location.reload();
+      const imported = result.imported || 0;
+      const skipped = (result.duplicates && result.duplicates.length) || 0;
+      const failed = (result.failed && result.failed.length) || 0;
+      status.textContent = "Imported " + imported + " feedback"
+        + (skipped ? " (" + skipped + " duplicate skipped)" : "")
+        + (failed ? " (" + failed + " failed)" : "")
+        + (imported ? ". Reloading..." : ".");
+      if (imported) window.location.reload();
     } catch (error) {
       status.dataset.state = "error";
       status.textContent = error.message;

@@ -36,7 +36,10 @@ const GITHUB_API_BASE = trimTrailingSlash(process.env.GITHUB_API_BASE || config.
 const GITHUB_TIMEOUT_MS = numberSetting(process.env.GITHUB_TIMEOUT_MS, numberSetting(config.githubTimeoutMs, 8000));
 const GITHUB_CONFIGURED = Boolean(GITHUB_TOKEN && GITHUB_REPO);
 const IMPORT_BUNDLE_KIND = "patchloop-feedback-bundle";
-const IMPORT_BUNDLE_VERSION = 1;
+// v1 wrapped a single feedback object; v2 carries an array (batch export).
+// Both are accepted so files exported before the batch-download switch still
+// import.
+const SUPPORTED_IMPORT_BUNDLE_VERSIONS = new Set([1, 2]);
 const FEEDBACK_STATUSES = ["new", "accepted", "fixed", "ignored"];
 // Default applied to payloads received before the widget sent schemaVersion,
 // so every stored item carries a version going forward.
@@ -233,34 +236,68 @@ function handlePostFeedback(req, res) {
 
 function handlePostImport(req, res) {
   readJsonBody(req, res, async (body) => {
-    let imported;
-    let screenshot;
+    let importedList;
     try {
-      imported = normalizeImportedBundle(body);
-      screenshot = saveScreenshot(imported.screenshot, imported.id);
+      importedList = normalizeImportedBundle(body);
     } catch (error) {
       respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
       return;
     }
 
     const now = new Date().toISOString();
-    const stored = {
-      schemaVersion: DEFAULT_SCHEMA_VERSION,
-      ...imported,
-      receivedAt: now,
-      importedAt: now,
-      source: "import",
-      screenshot,
-      integrations: {
-        slack: { status: "skipped", reason: "import" }
-      }
-    };
+    const ids = [];
+    const duplicates = [];
+    const failed = [];
 
-    await store.insert(stored);
-    console.log(`[PatchLoop receiver] imported feedback id=${stored.id || "?"} comment="${truncateText(stored.comment || "", 60)}"`);
-    respondJson(res, 201, {
-      ok: true,
-      id: stored.id,
+    // Best-effort per item: a duplicate id (re-imported batch) is skipped, not
+    // fatal, so the rest of the bundle still lands. Validation already ran for
+    // the whole list, so failures here are write-time only.
+    for (const imported of importedList) {
+      let screenshot;
+      try {
+        screenshot = saveScreenshot(imported.screenshot, imported.id);
+      } catch (error) {
+        failed.push({ id: imported.id, error: error.message });
+        continue;
+      }
+
+      const stored = {
+        schemaVersion: DEFAULT_SCHEMA_VERSION,
+        ...imported,
+        receivedAt: now,
+        importedAt: now,
+        source: "import",
+        screenshot,
+        integrations: {
+          slack: { status: "skipped", reason: "import" }
+        }
+      };
+
+      try {
+        await store.insert(stored);
+        ids.push(stored.id);
+        console.log(`[PatchLoop receiver] imported feedback id=${stored.id || "?"} comment="${truncateText(stored.comment || "", 60)}"`);
+      } catch (error) {
+        // The insert failed, so drop the screenshot we just wrote for it
+        // (saveScreenshot names files uniquely, so this never touches an
+        // existing record's screenshot).
+        await deleteScreenshotFile(screenshot);
+        if (error.statusCode === 409) {
+          duplicates.push(stored.id);
+        } else {
+          failed.push({ id: stored.id, error: error.message });
+        }
+      }
+    }
+
+    const status = ids.length > 0 ? 201 : duplicates.length > 0 ? 409 : 400;
+    respondJson(res, status, {
+      ok: ids.length > 0,
+      id: ids[0],
+      ids,
+      imported: ids.length,
+      duplicates,
+      failed,
       count: await store.count(),
       source: "import"
     });
@@ -498,21 +535,40 @@ function readJsonBody(req, res, onJson) {
   });
 }
 
+// Resolves a bundle (single or batch) into a list of normalized payloads.
+// Validation runs over every payload up front, so a batch with one bad item
+// is rejected whole before anything is written.
 function normalizeImportedBundle(body) {
   requirePlainObject(body, "Import body");
 
-  let payload;
+  let feedback;
   if (body.kind === IMPORT_BUNDLE_KIND) {
-    if (body.version !== IMPORT_BUNDLE_VERSION) {
+    if (!SUPPORTED_IMPORT_BUNDLE_VERSIONS.has(body.version)) {
       throw httpError(`Unsupported PatchLoop bundle version: ${body.version}`, 400);
     }
-    payload = body.feedback;
-  } else if (body.feedback) {
-    payload = body.feedback;
+    // Each version pins its feedback shape, so a malformed producer (v1 array
+    // or v2 single object) is rejected instead of silently reinterpreted.
+    if (body.version === 1 && Array.isArray(body.feedback)) {
+      throw httpError("PatchLoop bundle version 1 expects a single feedback object", 400);
+    }
+    if (body.version === 2 && !Array.isArray(body.feedback)) {
+      throw httpError("PatchLoop bundle version 2 expects a feedback array", 400);
+    }
+    feedback = body.feedback;
+  } else if (body.feedback !== undefined) {
+    feedback = body.feedback;
   } else {
-    payload = body;
+    feedback = body;
   }
 
+  const list = Array.isArray(feedback) ? feedback : [feedback];
+  if (list.length === 0) {
+    throw httpError("Import bundle contains no feedback", 400);
+  }
+  return list.map(normalizeImportedPayload);
+}
+
+function normalizeImportedPayload(payload) {
   validateFeedbackPayload(payload);
   const imported = JSON.parse(JSON.stringify(payload));
   delete imported.delivery;
@@ -520,6 +576,11 @@ function normalizeImportedBundle(body) {
   delete imported.receivedAt;
   delete imported.importedAt;
   delete imported.source;
+  // Local-only export markers (set by the widget after a batch download) must
+  // never reach the stored record.
+  delete imported.exported;
+  delete imported.exportedAt;
+  delete imported.exportedFileName;
   return imported;
 }
 
@@ -547,7 +608,26 @@ function validateFeedbackPayload(payload) {
   if (payload.target.selector != null) requireString(payload.target.selector, "feedback.target.selector");
   if (payload.target.text != null) requireString(payload.target.text, "feedback.target.text");
   if (payload.target.area != null) requirePlainObject(payload.target.area, "feedback.target.area");
-  if (payload.screenshot != null) requirePlainObject(payload.screenshot, "feedback.screenshot");
+  if (payload.screenshot != null) {
+    requirePlainObject(payload.screenshot, "feedback.screenshot");
+    validateScreenshotContent(payload.screenshot);
+  }
+}
+
+// Validates the screenshot's data URL / mime / size without writing a file, so
+// a batch import can reject every bad item up front (preserving the all-or-
+// nothing guarantee) instead of failing mid-write after some inserts landed.
+// Mirrors the checks saveScreenshot performs before persisting.
+function validateScreenshotContent(screenshot) {
+  if (screenshot.status && screenshot.status !== "captured") return;
+  if (!screenshot.dataUrl) return;
+  const parsed = parseDataUrl(screenshot.dataUrl);
+  if (!extensionForMimeType(parsed.mimeType)) {
+    throw httpError(`Unsupported screenshot mime type: ${parsed.mimeType}`, 400);
+  }
+  if (parsed.buffer.length > SCREENSHOT_MAX_BYTES) {
+    throw httpError(`Screenshot too large: ${parsed.buffer.length} bytes exceeds ${SCREENSHOT_MAX_BYTES}`, 413);
+  }
 }
 
 function requirePlainObject(value, label) {
