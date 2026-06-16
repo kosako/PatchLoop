@@ -372,7 +372,10 @@ const DEFAULTS = {
 };
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
-const EXPORT_VERSION = 1;
+// v2 carries an array of feedback (batch export). v1 wrapped a single
+// payload; the receiver still accepts that shape for files exported before
+// the switch to batch download.
+const EXPORT_VERSION = 2;
 const FEEDBACK_STORAGE_VERSION = 1;
 // Version of the feedback payload schema itself (distinct from the storage
 // envelope and export bundle versions). Bump when the payload shape changes
@@ -462,6 +465,7 @@ function renderShell() {
       <div class="pl-panel-body" data-pl-body>
         <p data-pl-help>コメントモードを開始して、画面上の気になる場所をクリックしてください。</p>
         <div class="pl-actions">
+          <button type="button" data-pl-download-all hidden>未送信をまとめてDL</button>
           <button type="button" data-pl-clear>フィードバックを消す</button>
         </div>
         ${renderDeliverySettings()}
@@ -492,6 +496,7 @@ function renderShell() {
 
   root.querySelector("[data-pl-collapse]").addEventListener("click", toggleCollapse);
   root.querySelector("[data-pl-mode]").addEventListener("click", toggleFeedbackMode);
+  root.querySelector("[data-pl-download-all]").addEventListener("click", downloadUnsentFeedback);
   root.querySelector("[data-pl-clear]").addEventListener("click", clearPins);
   root.querySelector("[data-pl-cancel]").addEventListener("click", cancelPendingComment);
   root.querySelector("[data-pl-comment]").addEventListener("submit", submitComment);
@@ -748,6 +753,7 @@ function syncDeliverySettingsVisibility() {
   const slackField = root.querySelector("[data-pl-slack-field]");
   if (endpointField) endpointField.hidden = mode !== "receiver";
   if (slackField) slackField.hidden = mode !== "slack-webhook";
+  updateDownloadAllButton();
 }
 
 function showFormError(form, message) {
@@ -1197,17 +1203,14 @@ function isMatchingFeedbackEnvelope(value) {
 
 function shouldDeliverFeedback() {
   if (state.options.deliveryMode === "none") return false;
-  if (state.options.deliveryMode === "download") return true;
+  // Download mode no longer ships per comment; the reviewer exports the
+  // unsent batch on demand via the drawer button.
+  if (state.options.deliveryMode === "download") return false;
   if (state.options.deliveryMode === "slack-webhook") return Boolean(state.options.slackWebhookUrl);
   return Boolean(state.options.endpoint);
 }
 
 async function deliverFeedback(payload) {
-  if (state.options.deliveryMode === "download") {
-    downloadFeedbackBundle(payload);
-    return;
-  }
-
   if (state.options.deliveryMode === "slack-webhook") {
     await postSlackWebhook(payload);
     return;
@@ -1216,52 +1219,74 @@ async function deliverFeedback(payload) {
   await postFeedback(payload);
 }
 
-function downloadFeedbackBundle(payload) {
+// Demo-scoped batch export: write every still-unsent comment as one bundle,
+// then flag them as exported so the next batch skips them. Replaces the old
+// one-file-per-comment download, which buried reviewers (and receivers) under
+// a file per click.
+function downloadUnsentFeedback() {
+  const unsent = state.feedback.filter((item) => !item.exported);
+  if (unsent.length === 0) return;
+
+  const exportedAt = new Date().toISOString();
   try {
-    const bundle = buildFeedbackBundle(payload);
+    const bundle = buildFeedbackBundle(unsent, exportedAt);
     const json = JSON.stringify(bundle, null, 2);
     const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = feedbackBundleFileName(payload);
+    link.download = batchBundleFileName(unsent.length);
     link.style.display = "none";
     document.body.append(link);
     link.click();
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
-    payload.delivery = {
-      ok: true,
-      status: "downloaded",
-      target: "download",
-      fileName: link.download
-    };
+    // Flag after the bundle is serialized, so the downloaded file does not
+    // carry the local exported markers.
+    unsent.forEach((item) => {
+      item.exported = true;
+      item.exportedAt = exportedAt;
+      item.exportedFileName = link.download;
+    });
+    persistFeedbackList();
+    renderFeedbackList();
+    console.info("[PatchLoop] batch download", unsent.length, link.download);
   } catch (error) {
-    payload.delivery = {
-      ok: false,
-      target: "download",
-      error: error.message
-    };
+    console.warn("[PatchLoop] batch download failed", error);
   }
-  console.info("[PatchLoop] delivery", payload.id, payload.delivery);
 }
 
-function buildFeedbackBundle(payload) {
+function buildFeedbackBundle(feedbackList, exportedAt) {
   return {
     kind: EXPORT_KIND,
     version: EXPORT_VERSION,
-    exportedAt: new Date().toISOString(),
-    projectId: payload.projectId || "",
-    demoId: payload.demoId || "",
-    feedback: payload
+    exportedAt,
+    projectId: state.options.projectId || "",
+    demoId: state.options.demoId || "",
+    feedback: feedbackList
   };
 }
 
-function feedbackBundleFileName(payload) {
-  const project = safeFilePart(payload.projectId || "patchloop");
-  const demo = safeFilePart(payload.demoId || "feedback");
-  const id = safeFilePart(payload.id || Date.now());
-  return `${project}-${demo}-${id}.patchloop-feedback.json`;
+function batchBundleFileName(count) {
+  const project = safeFilePart(state.options.projectId || "patchloop");
+  const demo = safeFilePart(state.options.demoId || "feedback");
+  const stamp = safeFilePart(new Date().toISOString());
+  return `${project}-${demo}-${count}-${stamp}.patchloop-feedback.json`;
+}
+
+function updateDownloadAllButton() {
+  const root = getRoot();
+  if (!root) return;
+  const button = root.querySelector("[data-pl-download-all]");
+  if (!button) return;
+  if (state.options.deliveryMode !== "download") {
+    button.hidden = true;
+    return;
+  }
+  const unsent = state.feedback.filter((item) => !item.exported).length;
+  button.hidden = false;
+  button.disabled = unsent === 0;
+  button.textContent = unsent > 0 ? `未送信をまとめてDL（${unsent}）` : "未送信はありません";
 }
 
 function safeFilePart(value) {
@@ -1717,6 +1742,7 @@ function renderFeedbackList() {
   if (!root) return;
   const list = root.querySelector("[data-pl-list]");
   if (!list) return;
+  updateDownloadAllButton();
   if (state.feedback.length === 0) {
     list.innerHTML = '<p class="pl-feedback-list-empty">まだフィードバックはありません。</p>';
     return;
@@ -1735,11 +1761,14 @@ function renderFeedbackList() {
       const approximate = state.approximateIds.has(item.id)
         ? '<span class="pl-feedback-approx" title="ウィンドウサイズが変わったため、位置が近似になっています">≈</span>'
         : "";
+      const exported = item.exported
+        ? `<span class="pl-feedback-exported" title="${escapeHtml(`ダウンロード済み: ${item.exportedFileName || ""}`.trim())}">DL済み</span>`
+        : "";
       return `
-        <article class="pl-feedback-item" data-feedback-id="${escapeHtml(item.id)}">
+        <article class="pl-feedback-item${item.exported ? " pl-feedback-item-exported" : ""}" data-feedback-id="${escapeHtml(item.id)}">
           <span class="pl-feedback-num kind-${escapeHtml(kind)}">${num}</span>
           <div class="pl-feedback-body">
-            <div class="pl-feedback-meta">${escapeHtml(item.reviewer || "(no name)")} ${delivery}${approximate}</div>
+            <div class="pl-feedback-meta">${escapeHtml(item.reviewer || "(no name)")} ${delivery}${exported}${approximate}</div>
             <div class="pl-feedback-text">${escapeHtml(item.comment || "")}</div>
           </div>
           <div class="pl-feedback-actions">
@@ -1968,6 +1997,8 @@ function injectStyles() {
     .pl-panel p { margin: 0; padding: 14px; color: #65716d; font-size: 13px; }
     .pl-actions { display: flex; gap: 8px; padding: 0 14px 14px; }
     .pl-actions button, .pl-form-actions button { min-height: 36px; border-radius: 8px; border: 1px solid #d9e1dd; background: #fff; color: #14211d; padding: 0 12px; cursor: pointer; }
+    .pl-actions [data-pl-download-all] { background: #0f7b63; border-color: #0f7b63; color: #fff; font-weight: 800; }
+    .pl-actions [data-pl-download-all]:disabled { background: #cfd8d4; border-color: #cfd8d4; color: #fff; cursor: default; }
     .pl-form-actions button[type="submit"] { background: #0f7b63; border-color: #0f7b63; color: #fff; font-weight: 800; }
     .pl-delivery-settings { margin: 0 14px 14px; border: 1px solid #d9e1dd; border-radius: 8px; padding: 8px 10px 10px; background: #f7f8f5; }
     .pl-delivery-settings summary { cursor: pointer; color: #14211d; font-weight: 800; font-size: 12px; }
@@ -1989,6 +2020,8 @@ function injectStyles() {
     .pl-feedback-status-ok { color: #0f7b63; }
     .pl-feedback-status-fail { color: #d1495b; }
     .pl-feedback-status-unknown { color: #8a9590; }
+    .pl-feedback-exported { color: #0f7b63; font-weight: 900; font-size: 10px; border: 1px solid #0f7b63; border-radius: 999px; padding: 1px 6px; margin-left: 2px; }
+    .pl-feedback-item-exported { opacity: 0.72; }
     .pl-tooltip { position: fixed; max-width: 280px; background: #14211d; color: #fff; padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.4; pointer-events: none; z-index: 2147483002; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.32); white-space: pre-wrap; word-break: break-word; }
     .pl-comment { position: fixed; z-index: 2147483001; width: min(320px, calc(100vw - 24px)); display: grid; gap: 10px; padding: 14px; background: #fff; border: 1px solid #d9e1dd; border-radius: 8px; box-shadow: 0 22px 70px rgba(20, 33, 29, 0.24); }
     .pl-comment label { display: grid; gap: 6px; color: #65716d; font-size: 12px; font-weight: 800; }
