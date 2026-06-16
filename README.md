@@ -66,8 +66,8 @@ script-tag widget:
 - 任意の `onSubmit(payload)` callback
 - 任意の `endpoint` 設定で payload を receiver に POST
 - ローカル receiver から任意の Slack Incoming Webhook へ、スクショリンク / image block / 任意の file upload 付きで転送
-- Download mode で 1 feedback ごとの versioned JSON bundle を保存
-- receiver inbox から download mode の bundle を import
+- Download mode で、未送信ぶんをデモ単位でまとめた versioned JSON bundle を一括保存（送り済みフラグで管理）
+- receiver inbox から download mode の bundle（単一・batch の両方）を import
 - 設定または drawer UI から、receiver 経由送信 / Slack webhook 直送 / download / 送信なしを切り替え
 
 ## 埋め込み Widget
@@ -170,7 +170,7 @@ node server/receive.js
 ```
 
 - `POST /feedback` で payload を受け取り、デフォルトでは `server/feedback.db`（sqlite）に保存します
-- `POST /import` で download mode の JSON bundle を読み込み、通常の inbox と同じ形式で保存します
+- `POST /import` で download mode の JSON bundle（単一 feedback の v1 / 配列の v2 batch の両方）を読み込み、通常の inbox と同じ形式で保存します。重複 id はスキップし `imported` / `duplicates` / `failed` を返します
 - `GET /` で受信した feedback の一覧（inbox）を表示します
 - inbox にはテキスト検索と status / kind / project / demo / reviewer / source / Slack の絞り込みがあります
 - 各 feedback には triage status（`new` / `accepted` / `fixed` / `ignored`）があり、card 上の select から変更できます。status は sqlite に永続化されます
@@ -280,22 +280,24 @@ window.PatchLoop.init({
 });
 ```
 
-送信時に `<project>-<demo>-<feedback-id>.patchloop-feedback.json` が保存されます。この bundle は単一 JSON ファイルで、現時点では ZIP ではありません。形式は versioned です。
+download mode では、コメントするたびに自動ダウンロードはされません。コメントは drawer に溜まり、「未送信をまとめてDL（N）」ボタンを押すと、**未送信ぶんをまとめて 1 ファイル**として `<project>-<demo>-<件数>-<timestamp>.patchloop-feedback.json` に書き出します。書き出したコメントには送り済みフラグ（一覧で「DL済み」表示）が付き、次回の一括 DL からは除外されます（DL済みコメントを編集すると未送信に戻ります）。bundle は単一 JSON ファイルで、現時点では ZIP ではありません。形式は versioned で、`feedback` は配列です。
 
 ```json
 {
   "kind": "patchloop-feedback-bundle",
-  "version": 1,
-  "exportedAt": "2026-06-02T00:00:00.000Z",
+  "version": 2,
+  "exportedAt": "2026-06-16T00:00:00.000Z",
   "projectId": "patchloop",
   "demoId": "plain-html-renewal-review",
-  "feedback": {
-    "id": "pl_...",
-    "screenshot": {
-      "status": "captured",
-      "dataUrl": "data:image/svg+xml;base64,..."
+  "feedback": [
+    {
+      "id": "pl_...",
+      "screenshot": {
+        "status": "captured",
+        "dataUrl": "data:image/svg+xml;base64,..."
+      }
     }
-  }
+  ]
 }
 ```
 
@@ -307,7 +309,7 @@ curl -X POST http://127.0.0.1:4000/import \
   --data-binary @patchloop-feedback.json
 ```
 
-receiver は bundle version と payload shape を検証し、screenshot の `dataUrl` を `server/screenshots/` に保存してから `server/feedback.json` に追記します。import した feedback には `source: "import"` / `importedAt` が付きます。Slack への再転送はせず、inbox 上では `Slack: skipped` と表示されます。
+receiver は bundle version（v1 の単一 feedback / v2 の配列の両方）と payload shape を検証し、各 feedback の screenshot `dataUrl` を `server/screenshots/` に保存してから store に追記します。import した feedback には `source: "import"` / `importedAt` が付きます。batch import では、すでに存在する id は重複としてスキップし（残りは取り込む）、応答に `imported` 件数・`duplicates`・`failed` を返します。payload のどれか 1 件でも不正なら、何も書き込まずに batch 全体を 400 で拒否します。Slack への再転送はせず、inbox 上では `Slack: skipped` と表示されます。
 
 ## 現在の境界
 

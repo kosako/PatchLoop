@@ -66,8 +66,8 @@ script-tag widget:
 - Optional `onSubmit(payload)` callback
 - Optional `endpoint` setting that POSTs payloads to the bundled local receiver
 - Optional Slack Incoming Webhook forwarding from the local receiver with screenshot links, image blocks, and optional file upload
-- Download mode that saves a versioned JSON bundle for each feedback item
-- Receiver inbox import for bundles created by download mode
+- Download mode that batches unsent feedback for a demo into one versioned JSON bundle (tracked with a sent flag)
+- Receiver inbox import for download-mode bundles (both single and batch)
 - Configurable delivery mode for receiver forwarding, direct Slack webhook delivery, download, or no delivery
 
 ## Embeddable Widget
@@ -170,7 +170,7 @@ node server/receive.js
 ```
 
 - Accepts payload at `POST /feedback`, storing it in `server/feedback.db` (sqlite) by default
-- Imports download-mode JSON bundles at `POST /import`, storing them in the same inbox format
+- Imports download-mode JSON bundles at `POST /import` (single v1 feedback or array-based v2 batch), storing them in the same inbox format. Duplicate ids are skipped, and the response returns `imported` / `duplicates` / `failed`
 - Renders an inbox of received feedback at `GET /`
 - The inbox has text search plus status / kind / project / demo / reviewer / source / Slack filters
 - Each feedback has a triage status (`new` / `accepted` / `fixed` / `ignored`) editable from the card; statuses persist to sqlite
@@ -280,22 +280,24 @@ window.PatchLoop.init({
 });
 ```
 
-On submit, the widget downloads `<project>-<demo>-<feedback-id>.patchloop-feedback.json`. The bundle is a single JSON file for now, not a ZIP. The format is versioned.
+In download mode, comments are not downloaded one-by-one on submit. They collect in the drawer, and the "未送信をまとめてDL（N）" button writes **all unsent comments as a single file** named `<project>-<demo>-<count>-<timestamp>.patchloop-feedback.json`. Exported comments get a sent flag (shown as "DL済み" in the list) and are excluded from the next batch download (editing a sent comment moves it back to unsent). The bundle is a single JSON file for now, not a ZIP. The format is versioned and `feedback` is an array.
 
 ```json
 {
   "kind": "patchloop-feedback-bundle",
-  "version": 1,
-  "exportedAt": "2026-06-02T00:00:00.000Z",
+  "version": 2,
+  "exportedAt": "2026-06-16T00:00:00.000Z",
   "projectId": "patchloop",
   "demoId": "plain-html-renewal-review",
-  "feedback": {
-    "id": "pl_...",
-    "screenshot": {
-      "status": "captured",
-      "dataUrl": "data:image/svg+xml;base64,..."
+  "feedback": [
+    {
+      "id": "pl_...",
+      "screenshot": {
+        "status": "captured",
+        "dataUrl": "data:image/svg+xml;base64,..."
+      }
     }
-  }
+  ]
 }
 ```
 
@@ -307,7 +309,7 @@ curl -X POST http://127.0.0.1:4000/import \
   --data-binary @patchloop-feedback.json
 ```
 
-The receiver validates the bundle version and payload shape, saves the screenshot `dataUrl` to `server/screenshots/`, and appends the imported feedback to `server/feedback.json`. Imported feedback gets `source: "import"` and `importedAt`. The receiver does not forward imported feedback to Slack; the inbox shows `Slack: skipped`.
+The receiver validates the bundle version (both the single-feedback v1 and the array-based v2 batch) and payload shape, saves each feedback's screenshot `dataUrl` to `server/screenshots/`, and appends the imported feedback to the store. Imported feedback gets `source: "import"` and `importedAt`. For a batch import, ids that already exist are skipped as duplicates (the rest still land), and the response returns `imported`, `duplicates`, and `failed`. If any payload in the bundle is invalid, the whole batch is rejected with 400 and nothing is written. The receiver does not forward imported feedback to Slack; the inbox shows `Slack: skipped`.
 
 ## Current Boundary
 

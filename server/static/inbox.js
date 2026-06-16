@@ -31,7 +31,12 @@
       if (!response.ok) {
         throw new Error(result.error || "Import failed");
       }
-      status.textContent = "Imported " + (result.id || "feedback") + ". Reloading...";
+      const skipped = (result.duplicates && result.duplicates.length) || 0;
+      const failed = (result.failed && result.failed.length) || 0;
+      status.textContent = "Imported " + (result.imported || 0) + " feedback"
+        + (skipped ? " (" + skipped + " duplicate skipped)" : "")
+        + (failed ? " (" + failed + " failed)" : "")
+        + ". Reloading...";
       window.location.reload();
     } catch (error) {
       status.dataset.state = "error";
