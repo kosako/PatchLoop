@@ -438,8 +438,16 @@ async function submitComment(event) {
   if (state.editingId) {
     const target = state.feedback.find((item) => item.id === state.editingId);
     if (target) {
+      const changed = target.comment !== comment || target.reviewer !== reviewer;
       target.comment = comment;
       target.reviewer = reviewer;
+      // An edited comment that was already exported must re-enter the unsent
+      // batch, otherwise the correction never reaches the receiver.
+      if (changed && target.exported) {
+        delete target.exported;
+        delete target.exportedAt;
+        delete target.exportedFileName;
+      }
       saveReviewer(reviewer);
       persistFeedbackList();
       renderFeedbackList();
