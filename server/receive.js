@@ -546,6 +546,14 @@ function normalizeImportedBundle(body) {
     if (!SUPPORTED_IMPORT_BUNDLE_VERSIONS.has(body.version)) {
       throw httpError(`Unsupported PatchLoop bundle version: ${body.version}`, 400);
     }
+    // Each version pins its feedback shape, so a malformed producer (v1 array
+    // or v2 single object) is rejected instead of silently reinterpreted.
+    if (body.version === 1 && Array.isArray(body.feedback)) {
+      throw httpError("PatchLoop bundle version 1 expects a single feedback object", 400);
+    }
+    if (body.version === 2 && !Array.isArray(body.feedback)) {
+      throw httpError("PatchLoop bundle version 2 expects a feedback array", 400);
+    }
     feedback = body.feedback;
   } else if (body.feedback !== undefined) {
     feedback = body.feedback;
@@ -600,7 +608,26 @@ function validateFeedbackPayload(payload) {
   if (payload.target.selector != null) requireString(payload.target.selector, "feedback.target.selector");
   if (payload.target.text != null) requireString(payload.target.text, "feedback.target.text");
   if (payload.target.area != null) requirePlainObject(payload.target.area, "feedback.target.area");
-  if (payload.screenshot != null) requirePlainObject(payload.screenshot, "feedback.screenshot");
+  if (payload.screenshot != null) {
+    requirePlainObject(payload.screenshot, "feedback.screenshot");
+    validateScreenshotContent(payload.screenshot);
+  }
+}
+
+// Validates the screenshot's data URL / mime / size without writing a file, so
+// a batch import can reject every bad item up front (preserving the all-or-
+// nothing guarantee) instead of failing mid-write after some inserts landed.
+// Mirrors the checks saveScreenshot performs before persisting.
+function validateScreenshotContent(screenshot) {
+  if (screenshot.status && screenshot.status !== "captured") return;
+  if (!screenshot.dataUrl) return;
+  const parsed = parseDataUrl(screenshot.dataUrl);
+  if (!extensionForMimeType(parsed.mimeType)) {
+    throw httpError(`Unsupported screenshot mime type: ${parsed.mimeType}`, 400);
+  }
+  if (parsed.buffer.length > SCREENSHOT_MAX_BYTES) {
+    throw httpError(`Screenshot too large: ${parsed.buffer.length} bytes exceeds ${SCREENSHOT_MAX_BYTES}`, 413);
+  }
 }
 
 function requirePlainObject(value, label) {

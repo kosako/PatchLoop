@@ -184,6 +184,48 @@ test("POST /import rejects the whole batch when one payload is invalid", async (
   assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
 });
 
+test("POST /import rejects the whole batch when a later screenshot is invalid", async (t) => {
+  const receiver = await startReceiver(t);
+  const bad = feedbackPayload("pl_badshot_2");
+  bad.screenshot = { status: "captured", kind: "viewport-svg", dataUrl: "data:text/plain;base64,Zm9v" };
+
+  const response = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 2,
+    feedback: [feedbackPayload("pl_goodshot_1"), bad]
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.body.ok, false);
+  assert.match(response.body.error, /Unsupported screenshot mime type/);
+  // The first (valid) item must not have landed before the bad one failed.
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+  const files = await fs.readdir(receiver.screenshotDir).catch(() => []);
+  assert.equal(files.length, 0);
+});
+
+test("POST /import enforces the feedback shape per bundle version", async (t) => {
+  const receiver = await startReceiver(t);
+
+  const v1Array = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 1,
+    feedback: [feedbackPayload("pl_shape_1")]
+  });
+  assert.equal(v1Array.status, 400);
+  assert.match(v1Array.body.error, /version 1 expects a single feedback object/);
+
+  const v2Single = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 2,
+    feedback: feedbackPayload("pl_shape_2")
+  });
+  assert.equal(v2Single.status, 400);
+  assert.match(v2Single.body.error, /version 2 expects a feedback array/);
+
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+});
+
 test("POST /feedback/:id/status updates triage status and persists it", async (t) => {
   const receiver = await startReceiver(t);
   const payload = feedbackPayload("pl_status_1");
