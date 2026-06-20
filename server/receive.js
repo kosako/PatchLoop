@@ -216,11 +216,24 @@ function handlePostFeedback(req, res) {
       ...payload,
       screenshot
     };
+
+    // Persist before notifying. A failed insert (e.g. a duplicate id -> 409)
+    // must not leave the screenshot we just wrote as an orphan, and only a
+    // feedback that actually landed should trigger a Slack notification. This
+    // mirrors the cleanup the import path already does on insert failure.
+    try {
+      await store.insert(stored);
+    } catch (error) {
+      await deleteScreenshotFile(screenshot);
+      respondJson(res, error.statusCode || 500, { ok: false, error: error.message });
+      return;
+    }
+
     stored.integrations = {
       ...(stored.integrations || {}),
       slack: await deliverToSlack(stored)
     };
-    await store.insert(stored);
+    await store.update(stored.id, { integrations: stored.integrations });
     const slackLog = stored.integrations.slack.status === "disabled"
       ? ""
       : ` slack=${stored.integrations.slack.status}`;

@@ -660,6 +660,11 @@ test("POST /feedback rejects a duplicate id instead of overwriting", async (t) =
   const stored = await readStoredFeedback(receiver.dbPath);
   assert.equal(stored.length, 1);
   assert.equal(stored[0].comment, "original");
+
+  // The rejected duplicate must not orphan the screenshot it wrote: one stored
+  // row means exactly one screenshot file (regression for #82).
+  const files = await fs.readdir(receiver.screenshotDir);
+  assert.equal(files.length, 1);
 });
 
 async function startReceiver(t, extraEnv = {}) {
