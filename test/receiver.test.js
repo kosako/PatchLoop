@@ -686,6 +686,22 @@ test("POST /feedback 409 cleanup cannot delete another record's screenshot", asy
   assert.deepEqual(after, [victimFile]);
 });
 
+test("POST /feedback keeps omitted screenshot metadata (bytes/maxBytes)", async (t) => {
+  const receiver = await startReceiver(t);
+  const payload = feedbackPayload("pl_omitted");
+  // The widget sends this shape when the capture is too large; receiver renders
+  // "omitted: <bytes> bytes exceeds <maxBytes>". Stripping server-owned fields
+  // must not drop this legitimate client metadata.
+  payload.screenshot = { status: "omitted", reason: "too-large", kind: "viewport-svg", bytes: 99999, maxBytes: 1000 };
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 201);
+
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.equal(stored[0].screenshot.status, "omitted");
+  assert.equal(stored[0].screenshot.bytes, 99999);
+  assert.equal(stored[0].screenshot.maxBytes, 1000);
+});
+
 async function startReceiver(t, extraEnv = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const port = await getFreePort();

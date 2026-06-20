@@ -793,15 +793,16 @@ function saveScreenshot(screenshot, id) {
 
   const metadata = { ...screenshot };
   delete metadata.dataUrl;
-  // path / url / fileName / bytes are server-owned and only set below when we
-  // actually write the file. Never trust client-supplied values: otherwise a
-  // crafted screenshot (e.g. {status:"saved", path:"<another record's file>"})
-  // could survive into the stored record and point cleanup
-  // (deleteScreenshotFile) or links at a file this request never wrote.
+  // path / url / fileName are server-owned and only set below when we actually
+  // write the file. Never trust client-supplied values: otherwise a crafted
+  // screenshot (e.g. {status:"saved", path:"<another record's file>"}) could
+  // survive into the stored record and point cleanup (deleteScreenshotFile) or
+  // serving links at a file this request never wrote. bytes/maxBytes are kept:
+  // the widget legitimately sends them for the status:"omitted" too-large case
+  // (formatScreenshotStatus renders them), and they are not used for file I/O.
   delete metadata.path;
   delete metadata.url;
   delete metadata.fileName;
-  delete metadata.bytes;
 
   if (screenshot.status && screenshot.status !== "captured") {
     return metadata;
