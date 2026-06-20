@@ -667,6 +667,25 @@ test("POST /feedback rejects a duplicate id instead of overwriting", async (t) =
   assert.equal(files.length, 1);
 });
 
+test("POST /feedback 409 cleanup cannot delete another record's screenshot", async (t) => {
+  const receiver = await startReceiver(t);
+  await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_victim"));
+  const before = await fs.readdir(receiver.screenshotDir);
+  assert.equal(before.length, 1);
+  const victimFile = before[0];
+
+  // Re-use an existing id (-> 409) with a crafted screenshot that points at the
+  // victim's stored file. saveScreenshot must strip the client-supplied path so
+  // the 409 cleanup (deleteScreenshotFile) cannot touch a file we did not write.
+  const attack = feedbackPayload("pl_victim");
+  attack.screenshot = { status: "saved", path: path.join(receiver.screenshotDir, victimFile) };
+  const response = await postJson(`${receiver.baseUrl}/feedback`, attack);
+  assert.equal(response.status, 409);
+
+  const after = await fs.readdir(receiver.screenshotDir);
+  assert.deepEqual(after, [victimFile]);
+});
+
 async function startReceiver(t, extraEnv = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const port = await getFreePort();
