@@ -370,6 +370,13 @@ function handlePostStatus(req, res, id) {
   });
 }
 
+// Serializes GitHub issue creation per feedback id. The create flow is
+// read -> network -> write with awaits in between, so two concurrent POSTs for
+// the same id could both pass the "already created" guard and open duplicate
+// issues. An in-flight marker (held only for the duration of one create) makes
+// the second request fail fast instead.
+const githubIssueInFlight = new Set();
+
 function handlePostGitHubIssue(req, res, id) {
   readJsonBody(req, res, async () => {
     if (!GITHUB_CONFIGURED) {
@@ -389,14 +396,23 @@ function handlePostGitHubIssue(req, res, id) {
       return;
     }
 
-    const github = await createGitHubIssue(item);
-    await store.update(id, { integrations: { ...(item.integrations || {}), github } });
-    console.log(`[PatchLoop receiver] github issue ${github.status} id=${id}${github.url ? ` url=${github.url}` : ""}`);
+    if (githubIssueInFlight.has(id)) {
+      respondJson(res, 409, { ok: false, error: `GitHub issue creation already in progress: ${id}` });
+      return;
+    }
+    githubIssueInFlight.add(id);
+    try {
+      const github = await createGitHubIssue(item);
+      await store.update(id, { integrations: { ...(item.integrations || {}), github } });
+      console.log(`[PatchLoop receiver] github issue ${github.status} id=${id}${github.url ? ` url=${github.url}` : ""}`);
 
-    if (github.status === "created") {
-      respondJson(res, 201, { ok: true, github });
-    } else {
-      respondJson(res, 502, { ok: false, error: github.error || "GitHub issue creation failed", github });
+      if (github.status === "created") {
+        respondJson(res, 201, { ok: true, github });
+      } else {
+        respondJson(res, 502, { ok: false, error: github.error || "GitHub issue creation failed", github });
+      }
+    } finally {
+      githubIssueInFlight.delete(id);
     }
   });
 }
