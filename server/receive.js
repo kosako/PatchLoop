@@ -35,6 +35,10 @@ const GITHUB_ASSIGNEES = normalizeStringList(process.env.GITHUB_ASSIGNEES || con
 const GITHUB_API_BASE = trimTrailingSlash(process.env.GITHUB_API_BASE || config.githubApiBase || "https://api.github.com");
 const GITHUB_TIMEOUT_MS = numberSetting(process.env.GITHUB_TIMEOUT_MS, numberSetting(config.githubTimeoutMs, 8000));
 const GITHUB_CONFIGURED = Boolean(GITHUB_TOKEN && GITHUB_REPO);
+// Optional shared token guarding the management/operation endpoints (import,
+// status, delete, github-issue). Unset = zero-config local dev (no auth) so
+// existing local workflows keep working; set it for public/shared deploys.
+const RECEIVER_TOKEN = process.env.RECEIVER_TOKEN || config.receiverToken || "";
 const IMPORT_BUNDLE_KIND = "patchloop-feedback-bundle";
 // v1 wrapped a single feedback object; v2 carries an array (batch export).
 // Both are accepted so files exported before the batch-download switch still
@@ -46,6 +50,25 @@ const FEEDBACK_STATUSES = ["new", "accepted", "fixed", "ignored"];
 const DEFAULT_SCHEMA_VERSION = 1;
 
 let store;
+
+function safeTokenEqual(provided, expected) {
+  const a = Buffer.from(String(provided));
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// Management/operation endpoints (import, status, delete, github-issue) require
+// the shared bearer token when RECEIVER_TOKEN is set. Returns true when the
+// request may proceed; otherwise responds 401 and returns false. With no token
+// configured, auth is disabled (zero-config local dev). The widget ingest path
+// (POST /feedback) and read endpoints are intentionally not gated here.
+function requireOperationAuth(req, res) {
+  if (!RECEIVER_TOKEN) return true;
+  const header = req.headers["authorization"] || "";
+  if (safeTokenEqual(header, `Bearer ${RECEIVER_TOKEN}`)) return true;
+  respondJson(res, 401, { ok: false, error: "Unauthorized" });
+  return false;
+}
 
 const server = http.createServer((req, res) => {
   setCors(res);
@@ -71,24 +94,28 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === "POST" && pathname === "/import") {
+    if (!requireOperationAuth(req, res)) return;
     handlePostImport(req, res);
     return;
   }
 
   const deleteMatch = req.method === "DELETE" && /^\/feedback\/([^/]+)$/.exec(pathname);
   if (deleteMatch) {
+    if (!requireOperationAuth(req, res)) return;
     handleDeleteFeedback(req, res, decodeURIComponent(deleteMatch[1]));
     return;
   }
 
   const statusMatch = req.method === "POST" && /^\/feedback\/([^/]+)\/status$/.exec(pathname);
   if (statusMatch) {
+    if (!requireOperationAuth(req, res)) return;
     handlePostStatus(req, res, decodeURIComponent(statusMatch[1]));
     return;
   }
 
   const githubMatch = req.method === "POST" && /^\/feedback\/([^/]+)\/github-issue$/.exec(pathname);
   if (githubMatch) {
+    if (!requireOperationAuth(req, res)) return;
     handlePostGitHubIssue(req, res, decodeURIComponent(githubMatch[1]));
     return;
   }

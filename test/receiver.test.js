@@ -737,6 +737,35 @@ test("POST /feedback keeps omitted screenshot metadata (bytes/maxBytes)", async 
   assert.equal(stored[0].screenshot.maxBytes, 1000);
 });
 
+test("operation endpoints require the shared token when RECEIVER_TOKEN is set", async (t) => {
+  const receiver = await startReceiver(t, { RECEIVER_TOKEN: "s3cret" });
+  const payload = feedbackPayload("pl_auth_1");
+
+  // Ingest (POST /feedback) is the widget path and stays open.
+  const ingest = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(ingest.status, 201);
+
+  // Reads stay open in this slice (inbox/GET auth is a follow-up, #43).
+  const read = await fetch(`${receiver.baseUrl}/feedback.json`);
+  assert.equal(read.status, 200);
+
+  // Every operation endpoint rejects a missing token (permission boundary).
+  const importNoToken = await postJson(`${receiver.baseUrl}/import`, { kind: "patchloop-feedback-bundle", version: 2, feedback: [feedbackPayload("pl_auth_imp")] });
+  assert.equal(importNoToken.status, 401);
+  const statusNoToken = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "accepted" });
+  assert.equal(statusNoToken.status, 401);
+  const githubNoToken = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {});
+  assert.equal(githubNoToken.status, 401);
+  const deleteNoToken = await fetch(`${receiver.baseUrl}/feedback/${payload.id}`, { method: "DELETE" });
+  assert.equal(deleteNoToken.status, 401);
+
+  // A wrong token is rejected; the correct bearer token is accepted.
+  const badToken = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "accepted" }, { Authorization: "Bearer nope" });
+  assert.equal(badToken.status, 401);
+  const ok = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "accepted" }, { Authorization: "Bearer s3cret" });
+  assert.equal(ok.status, 200);
+});
+
 async function startReceiver(t, extraEnv = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const port = await getFreePort();
@@ -850,10 +879,10 @@ function waitForExit(child) {
   });
 }
 
-async function postJson(url, body) {
+async function postJson(url, body, headers = {}) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body)
   });
   const text = await response.text();
