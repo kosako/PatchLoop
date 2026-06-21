@@ -2,6 +2,7 @@ import { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarge
 import { pointAnchorOffsets, areaAnchorOffsets, roundedAnchor, geometryFromAnchor, viewportDiffersFromCreation } from "./anchoring.js";
 import { selectorFor, textFor } from "./selector.js";
 import { freezeViewportUnits, flattenRulesForSnapshot } from "./snapshot-css.js";
+import { samePersistedPage } from "./url.js";
 import { truncateText, present, escapeHtml, escapeXml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } from "../../shared/format.js";
 
 const DEFAULTS = {
@@ -855,7 +856,7 @@ function isMatchingFeedbackEnvelope(value) {
   if (value.version !== FEEDBACK_STORAGE_VERSION) return false;
   if (value.projectId !== state.options.projectId) return false;
   if (value.demoId !== state.options.demoId) return false;
-  if (value.pageUrl !== window.location.href) return false;
+  if (!samePersistedPage(value.pageUrl, window.location.href)) return false;
   return Array.isArray(value.feedback);
 }
 

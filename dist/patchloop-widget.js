@@ -287,6 +287,39 @@ function flattenRulesForSnapshot(rules, mediaMatches) {
 
 return { freezeViewportUnits, flattenRulesForSnapshot };
 })();
+// --- widget/src/url.js ---
+const __pl_widget_src_url = (() => {
+// Page-identity helpers for persisted feedback.
+//
+// Saved feedback is keyed by the page it was left on. Using the full
+// `location.href` (which includes the query string and hash) is too strict:
+// after anchor navigation (`#section`), tracking params (`?utm=...`), or a
+// normalizing redirect, the URL no longer matches byte-for-byte and the saved
+// feedback is silently dropped — and then overwritten. The envelope is already
+// scoped by projectId/demoId, so comparing only origin + pathname is enough.
+
+function normalizePageUrl(url, base) {
+  try {
+    const parsed = new URL(url, base);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch (_) {
+    return "";
+  }
+}
+
+function samePersistedPage(storedUrl, currentUrl) {
+  if (typeof storedUrl !== "string" || storedUrl === "") return false;
+  // The stored pageUrl is always a full href (the save side writes
+  // window.location.href). Parse both WITHOUT a base so a missing, empty,
+  // relative, or otherwise malformed stored value cannot be resolved against
+  // the current page and falsely match it.
+  const stored = normalizePageUrl(storedUrl, undefined);
+  const current = normalizePageUrl(currentUrl, undefined);
+  return stored !== "" && stored === current;
+}
+
+return { normalizePageUrl, samePersistedPage };
+})();
 // --- shared/format.js ---
 const __pl_shared_format = (() => {
 // Formatting helpers shared by the widget (bundled into dist) and the
@@ -352,6 +385,7 @@ const { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarget
 const { pointAnchorOffsets, areaAnchorOffsets, roundedAnchor, geometryFromAnchor, viewportDiffersFromCreation } = __pl_widget_src_anchoring;
 const { selectorFor, textFor } = __pl_widget_src_selector;
 const { freezeViewportUnits, flattenRulesForSnapshot } = __pl_widget_src_snapshot_css;
+const { samePersistedPage } = __pl_widget_src_url;
 const { truncateText, present, escapeHtml, escapeXml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } = __pl_shared_format;
 
 const DEFAULTS = {
@@ -1205,7 +1239,7 @@ function isMatchingFeedbackEnvelope(value) {
   if (value.version !== FEEDBACK_STORAGE_VERSION) return false;
   if (value.projectId !== state.options.projectId) return false;
   if (value.demoId !== state.options.demoId) return false;
-  if (value.pageUrl !== window.location.href) return false;
+  if (!samePersistedPage(value.pageUrl, window.location.href)) return false;
   return Array.isArray(value.feedback);
 }
 
