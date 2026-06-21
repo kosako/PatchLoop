@@ -798,7 +798,16 @@ function handleGetScreenshot(req, res) {
     }
     res.writeHead(200, {
       "Content-Type": contentTypeForPath(screenshotPath),
-      "Cache-Control": "no-store"
+      "Cache-Control": "no-store",
+      // Screenshots are attacker-controlled: an SVG can carry <script> or
+      // onload. These headers neutralize the stored-XSS vector when the file is
+      // opened as a top-level document (e.g. the inbox's target=_blank link or
+      // a direct URL). nosniff stops MIME confusion; the CSP sandbox blocks
+      // script execution and default-src 'none' blocks all resource loads.
+      // Inline <img> rendering in the inbox is unaffected — CSP on an image
+      // subresource is not applied to its rendering.
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "default-src 'none'; sandbox"
     });
     res.end(buffer);
   });
