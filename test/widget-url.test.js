@@ -34,3 +34,11 @@ test("samePersistedPage distinguishes different paths and origins", () => {
 test("samePersistedPage is false when the current url is unparseable", () => {
   assert.equal(samePersistedPage("https://demo.example/app", "not a url"), false);
 });
+
+test("samePersistedPage rejects a missing, empty, or relative stored url", () => {
+  // The stored pageUrl must be a full href; an empty/relative value must not be
+  // resolved against the current page and falsely match it.
+  assert.equal(samePersistedPage("", "https://demo.example/app"), false);
+  assert.equal(samePersistedPage(undefined, "https://demo.example/app"), false);
+  assert.equal(samePersistedPage("/app", "https://demo.example/app"), false);
+});

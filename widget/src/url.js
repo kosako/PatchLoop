@@ -17,7 +17,12 @@ export function normalizePageUrl(url, base) {
 }
 
 export function samePersistedPage(storedUrl, currentUrl) {
-  const stored = normalizePageUrl(storedUrl, currentUrl);
-  const current = normalizePageUrl(currentUrl, currentUrl);
+  if (typeof storedUrl !== "string" || storedUrl === "") return false;
+  // The stored pageUrl is always a full href (the save side writes
+  // window.location.href). Parse both WITHOUT a base so a missing, empty,
+  // relative, or otherwise malformed stored value cannot be resolved against
+  // the current page and falsely match it.
+  const stored = normalizePageUrl(storedUrl, undefined);
+  const current = normalizePageUrl(currentUrl, undefined);
   return stored !== "" && stored === current;
 }
