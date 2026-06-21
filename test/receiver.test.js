@@ -39,6 +39,10 @@ test("POST /feedback stores valid feedback and saves screenshot data URLs", asyn
   assert.equal(screenshotResponse.status, 200);
   assert.match(screenshotResponse.headers.get("content-type"), /^image\/svg\+xml/);
   assert.equal(await screenshotResponse.text(), testSvg());
+  // An attacker-supplied SVG must not execute if opened directly: the serving
+  // response carries sandboxing headers (stored-XSS hardening, #44).
+  assert.equal(screenshotResponse.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(screenshotResponse.headers.get("content-security-policy"), "default-src 'none'; sandbox");
 });
 
 test("POST /feedback rejects malformed feedback payloads", async (t) => {
