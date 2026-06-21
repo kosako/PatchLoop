@@ -737,6 +737,33 @@ test("POST /feedback keeps omitted screenshot metadata (bytes/maxBytes)", async 
   assert.equal(stored[0].screenshot.maxBytes, 1000);
 });
 
+test("operation endpoints require the shared token when RECEIVER_TOKEN is set", async (t) => {
+  const receiver = await startReceiver(t, { RECEIVER_TOKEN: "s3cret" });
+  const payload = feedbackPayload("pl_auth_1");
+
+  // Ingest (POST /feedback) is the widget path and stays open.
+  const ingest = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(ingest.status, 201);
+
+  // Reads stay open in this slice (inbox/GET auth is a follow-up, #43).
+  const read = await fetch(`${receiver.baseUrl}/feedback.json`);
+  assert.equal(read.status, 200);
+
+  // An operation without a token, or with the wrong token, is rejected.
+  const noToken = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "accepted" });
+  assert.equal(noToken.status, 401);
+  const badToken = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "accepted" }, { Authorization: "Bearer nope" });
+  assert.equal(badToken.status, 401);
+
+  // The correct bearer token is accepted.
+  const ok = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "accepted" }, { Authorization: "Bearer s3cret" });
+  assert.equal(ok.status, 200);
+
+  // DELETE is gated too.
+  const del = await fetch(`${receiver.baseUrl}/feedback/${payload.id}`, { method: "DELETE" });
+  assert.equal(del.status, 401);
+});
+
 async function startReceiver(t, extraEnv = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const port = await getFreePort();
@@ -850,10 +877,10 @@ function waitForExit(child) {
   });
 }
 
-async function postJson(url, body) {
+async function postJson(url, body, headers = {}) {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body)
   });
   const text = await response.text();

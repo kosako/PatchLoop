@@ -191,6 +191,7 @@ On startup, an existing legacy `server/feedback.json` is migrated into sqlite on
 - Configurable screenshot directory via `SCREENSHOT_DIR`
 - Configurable receiver URL for Slack links via `PUBLIC_BASE_URL`
 - Configurable payload and screenshot limits via `MAX_BODY_BYTES` / `SCREENSHOT_MAX_BYTES`
+- Setting `RECEIVER_TOKEN` (or config `receiverToken`) requires `Authorization: Bearer <token>` on the operation endpoints (`POST /import` / `POST /feedback/:id/status` / `DELETE /feedback/:id` / `POST /feedback/:id/github-issue`). When unset, local runs work without auth (the widget's `POST /feedback` and read-only GETs are not gated; inbox browser auth and CORS restrictions are tracked separately)
 - Forwards received feedback to a Slack Incoming Webhook when `SLACK_WEBHOOK_URL` is set
 - Configurable Slack screenshot presentation via `SLACK_IMAGE_MODE` (`auto` / `link` / `block` / `upload` / `off`)
 - Optional Slack file upload via `SLACK_BOT_TOKEN` and `SLACK_UPLOAD_CHANNEL_ID`
