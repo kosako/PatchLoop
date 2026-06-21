@@ -660,6 +660,46 @@ test("POST /feedback rejects a duplicate id instead of overwriting", async (t) =
   const stored = await readStoredFeedback(receiver.dbPath);
   assert.equal(stored.length, 1);
   assert.equal(stored[0].comment, "original");
+
+  // The rejected duplicate must not orphan the screenshot it wrote: one stored
+  // row means exactly one screenshot file (regression for #82).
+  const files = await fs.readdir(receiver.screenshotDir);
+  assert.equal(files.length, 1);
+});
+
+test("POST /feedback 409 cleanup cannot delete another record's screenshot", async (t) => {
+  const receiver = await startReceiver(t);
+  await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_victim"));
+  const before = await fs.readdir(receiver.screenshotDir);
+  assert.equal(before.length, 1);
+  const victimFile = before[0];
+
+  // Re-use an existing id (-> 409) with a crafted screenshot that points at the
+  // victim's stored file. saveScreenshot must strip the client-supplied path so
+  // the 409 cleanup (deleteScreenshotFile) cannot touch a file we did not write.
+  const attack = feedbackPayload("pl_victim");
+  attack.screenshot = { status: "saved", path: path.join(receiver.screenshotDir, victimFile) };
+  const response = await postJson(`${receiver.baseUrl}/feedback`, attack);
+  assert.equal(response.status, 409);
+
+  const after = await fs.readdir(receiver.screenshotDir);
+  assert.deepEqual(after, [victimFile]);
+});
+
+test("POST /feedback keeps omitted screenshot metadata (bytes/maxBytes)", async (t) => {
+  const receiver = await startReceiver(t);
+  const payload = feedbackPayload("pl_omitted");
+  // The widget sends this shape when the capture is too large; receiver renders
+  // "omitted: <bytes> bytes exceeds <maxBytes>". Stripping server-owned fields
+  // must not drop this legitimate client metadata.
+  payload.screenshot = { status: "omitted", reason: "too-large", kind: "viewport-svg", bytes: 99999, maxBytes: 1000 };
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 201);
+
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.equal(stored[0].screenshot.status, "omitted");
+  assert.equal(stored[0].screenshot.bytes, 99999);
+  assert.equal(stored[0].screenshot.maxBytes, 1000);
 });
 
 async function startReceiver(t, extraEnv = {}) {

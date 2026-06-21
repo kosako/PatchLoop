@@ -216,11 +216,24 @@ function handlePostFeedback(req, res) {
       ...payload,
       screenshot
     };
+
+    // Persist before notifying. A failed insert (e.g. a duplicate id -> 409)
+    // must not leave the screenshot we just wrote as an orphan, and only a
+    // feedback that actually landed should trigger a Slack notification. This
+    // mirrors the cleanup the import path already does on insert failure.
+    try {
+      await store.insert(stored);
+    } catch (error) {
+      await deleteScreenshotFile(screenshot);
+      respondJson(res, error.statusCode || 500, { ok: false, error: error.message });
+      return;
+    }
+
     stored.integrations = {
       ...(stored.integrations || {}),
       slack: await deliverToSlack(stored)
     };
-    await store.insert(stored);
+    await store.update(stored.id, { integrations: stored.integrations });
     const slackLog = stored.integrations.slack.status === "disabled"
       ? ""
       : ` slack=${stored.integrations.slack.status}`;
@@ -780,6 +793,16 @@ function saveScreenshot(screenshot, id) {
 
   const metadata = { ...screenshot };
   delete metadata.dataUrl;
+  // path / url / fileName are server-owned and only set below when we actually
+  // write the file. Never trust client-supplied values: otherwise a crafted
+  // screenshot (e.g. {status:"saved", path:"<another record's file>"}) could
+  // survive into the stored record and point cleanup (deleteScreenshotFile) or
+  // serving links at a file this request never wrote. bytes/maxBytes are kept:
+  // the widget legitimately sends them for the status:"omitted" too-large case
+  // (formatScreenshotStatus renders them), and they are not used for file I/O.
+  delete metadata.path;
+  delete metadata.url;
+  delete metadata.fileName;
 
   if (screenshot.status && screenshot.status !== "captured") {
     return metadata;
