@@ -283,6 +283,37 @@ test("POST /feedback/:id/github-issue creates an issue via the GitHub API", asyn
   assert.equal(github.requests.length, 1);
 });
 
+test("POST /feedback/:id/github-issue serializes concurrent requests (no duplicate issue)", async (t) => {
+  // Respond slowly so both requests overlap on the server: the first holds the
+  // in-flight marker while the second arrives.
+  const github = await startMockGitHub(t, (res) => {
+    setTimeout(() => {
+      res.writeHead(201, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ number: 7, html_url: "https://github.com/acme/demo/issues/7" }));
+    }, 60);
+  });
+  const receiver = await startReceiver(t, {
+    GITHUB_TOKEN: "test-token",
+    GITHUB_REPO: "acme/demo",
+    GITHUB_API_BASE: github.baseUrl
+  });
+  const payload = feedbackPayload("pl_github_concurrent");
+  await postJson(`${receiver.baseUrl}/feedback`, payload);
+
+  const [a, b] = await Promise.all([
+    postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {}),
+    postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {})
+  ]);
+
+  // Exactly one creates the issue (201); the other is rejected (409). Only one
+  // request reaches the GitHub API, so no duplicate issue is opened.
+  assert.deepEqual([a.status, b.status].sort(), [201, 409]);
+  assert.equal(github.requests.length, 1);
+
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.equal(stored[0].integrations.github.status, "created");
+});
+
 test("POST /feedback/:id/github-issue persists failures and requires configuration", async (t) => {
   const unconfigured = await startReceiver(t);
   const payload = feedbackPayload("pl_github_2");
