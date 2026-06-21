@@ -749,19 +749,21 @@ test("operation endpoints require the shared token when RECEIVER_TOKEN is set", 
   const read = await fetch(`${receiver.baseUrl}/feedback.json`);
   assert.equal(read.status, 200);
 
-  // An operation without a token, or with the wrong token, is rejected.
-  const noToken = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "accepted" });
-  assert.equal(noToken.status, 401);
+  // Every operation endpoint rejects a missing token (permission boundary).
+  const importNoToken = await postJson(`${receiver.baseUrl}/import`, { kind: "patchloop-feedback-bundle", version: 2, feedback: [feedbackPayload("pl_auth_imp")] });
+  assert.equal(importNoToken.status, 401);
+  const statusNoToken = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "accepted" });
+  assert.equal(statusNoToken.status, 401);
+  const githubNoToken = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {});
+  assert.equal(githubNoToken.status, 401);
+  const deleteNoToken = await fetch(`${receiver.baseUrl}/feedback/${payload.id}`, { method: "DELETE" });
+  assert.equal(deleteNoToken.status, 401);
+
+  // A wrong token is rejected; the correct bearer token is accepted.
   const badToken = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "accepted" }, { Authorization: "Bearer nope" });
   assert.equal(badToken.status, 401);
-
-  // The correct bearer token is accepted.
   const ok = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "accepted" }, { Authorization: "Bearer s3cret" });
   assert.equal(ok.status, 200);
-
-  // DELETE is gated too.
-  const del = await fetch(`${receiver.baseUrl}/feedback/${payload.id}`, { method: "DELETE" });
-  assert.equal(del.status, 401);
 });
 
 async function startReceiver(t, extraEnv = {}) {
