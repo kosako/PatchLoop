@@ -691,6 +691,49 @@ test("rate limiting returns 429 with Retry-After once the window is exceeded", a
   assert.ok(Number(limited.headers.get("retry-after")) > 0);
 });
 
+test("the rate-limit map is hard-capped, evicting old clients under churn", async (t) => {
+  // Regression: previously only expired buckets were swept, so an IP-spoofing
+  // flood with every bucket active grew the map without bound. With a hard cap,
+  // a new client evicts the oldest, which both bounds memory and lets the
+  // evicted IP start a fresh window.
+  const receiver = await startReceiver(t, {
+    RATE_LIMIT_MAX: "1",
+    RATE_LIMIT_MAX_CLIENTS: "1",
+    RECEIVER_TRUST_PROXY: "1"
+  });
+  const get = (ip) => fetch(`${receiver.baseUrl}/feedback.json`, { headers: { "X-Forwarded-For": ip } });
+
+  assert.equal((await get("10.0.0.1")).status, 200); // A: first request in window
+  assert.equal((await get("10.0.0.1")).status, 429); // A: over the limit
+  assert.equal((await get("10.0.0.2")).status, 200); // B: new client evicts A (cap 1)
+  // A was evicted, so it gets a fresh bucket and is allowed again. Without a
+  // hard cap (expired-only sweep) A would still be throttled (429).
+  assert.equal((await get("10.0.0.1")).status, 200);
+});
+
+test("preflight OPTIONS requests are not rate limited", async (t) => {
+  const receiver = await startReceiver(t, { RATE_LIMIT_MAX: "1" });
+  const url = `${receiver.baseUrl}/feedback.json`;
+
+  for (let i = 0; i < 3; i++) {
+    assert.equal((await fetch(url, { method: "OPTIONS" })).status, 204);
+  }
+  // The OPTIONS calls didn't consume the budget: the first GET still passes,
+  // the second is throttled.
+  assert.equal((await fetch(url)).status, 200);
+  assert.equal((await fetch(url)).status, 429);
+});
+
+test("X-Forwarded-For is ignored for rate limiting unless trust proxy is set", async (t) => {
+  const receiver = await startReceiver(t, { RATE_LIMIT_MAX: "1" });
+  const url = `${receiver.baseUrl}/feedback.json`;
+
+  assert.equal((await fetch(url, { headers: { "X-Forwarded-For": "1.1.1.1" } })).status, 200);
+  // Different spoofed header, same socket: without trust-proxy it can't buy a
+  // fresh bucket.
+  assert.equal((await fetch(url, { headers: { "X-Forwarded-For": "2.2.2.2" } })).status, 429);
+});
+
 test("POST /feedback returns 507 once the stored feedback limit is reached", async (t) => {
   const receiver = await startReceiver(t, { MAX_FEEDBACK_COUNT: "1" });
   const first = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_cap_1"));

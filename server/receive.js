@@ -103,10 +103,23 @@ function rateLimitRetryAfter(ip) {
   }
   bucket.count += 1;
   if (rateLimitBuckets.size > RATE_LIMIT_MAX_CLIENTS) {
-    // A churn of distinct IPs must not grow the map without bound: drop expired
-    // buckets. Active buckets within the current window are kept.
+    // A churn of distinct IPs must not grow the map without bound. First drop
+    // expired buckets (cheap, accurate). If the map is still over the cap —
+    // e.g. an IP-spoofing flood keeping every bucket active — hard-evict the
+    // oldest-inserted ones so memory stays bounded. Evicting an active bucket
+    // just resets that client's window: acceptable degradation under attack,
+    // and we never evict the current request's own bucket.
     for (const [key, b] of rateLimitBuckets) {
       if (now - b.windowStart >= RATE_LIMIT_WINDOW_MS) rateLimitBuckets.delete(key);
+    }
+    let overflow = rateLimitBuckets.size - RATE_LIMIT_MAX_CLIENTS;
+    if (overflow > 0) {
+      for (const key of rateLimitBuckets.keys()) {
+        if (overflow <= 0) break;
+        if (key === ip) continue;
+        rateLimitBuckets.delete(key);
+        overflow -= 1;
+      }
     }
   }
   if (bucket.count <= RATE_LIMIT_MAX) return 0;
