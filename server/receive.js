@@ -26,10 +26,10 @@ const SCREENSHOT_MAX_BYTES = numberSetting(process.env.SCREENSHOT_MAX_BYTES, num
 // into a GitHub issue body), a huge array, a deeply nested object, or an import
 // bundle with an unbounded number of items. Lenient defaults keep local /
 // zero-config runs working; tune via env or config.
-const MAX_IMPORT_ITEMS = numberSetting(process.env.MAX_IMPORT_ITEMS, numberSetting(config.maxImportItems, 500));
-const MAX_FIELD_LENGTH = numberSetting(process.env.MAX_FIELD_LENGTH, numberSetting(config.maxFieldLength, 20_000));
-const MAX_ARRAY_LENGTH = numberSetting(process.env.MAX_ARRAY_LENGTH, numberSetting(config.maxArrayLength, 1_000));
-const MAX_OBJECT_DEPTH = numberSetting(process.env.MAX_OBJECT_DEPTH, numberSetting(config.maxObjectDepth, 32));
+const MAX_IMPORT_ITEMS = positiveIntSetting(process.env.MAX_IMPORT_ITEMS, positiveIntSetting(config.maxImportItems, 500));
+const MAX_FIELD_LENGTH = positiveIntSetting(process.env.MAX_FIELD_LENGTH, positiveIntSetting(config.maxFieldLength, 20_000));
+const MAX_ARRAY_LENGTH = positiveIntSetting(process.env.MAX_ARRAY_LENGTH, positiveIntSetting(config.maxArrayLength, 1_000));
+const MAX_OBJECT_DEPTH = positiveIntSetting(process.env.MAX_OBJECT_DEPTH, positiveIntSetting(config.maxObjectDepth, 32));
 const WIDGET_DIST_PATH = path.join(__dirname, "..", "dist", "patchloop-widget.js");
 const STATIC_DIR = path.join(__dirname, "static");
 const PUBLIC_BASE_URL = trimTrailingSlash(process.env.PUBLIC_BASE_URL || config.publicBaseUrl || `http://${HOST}:${PORT}`);
@@ -194,6 +194,14 @@ function numberSetting(value, fallback) {
   if (value === undefined || value === null || String(value).trim() === "") return fallback;
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+// For limits where 0, a negative, or a fractional value is a misconfiguration
+// (it would reject nearly every request): such values fall back to the lenient
+// default instead of silently bricking the receiver.
+function positiveIntSetting(value, fallback) {
+  const number = numberSetting(value, fallback);
+  return Number.isInteger(number) && number > 0 ? number : fallback;
 }
 
 function loadConfig(configPath) {
@@ -655,9 +663,14 @@ function normalizeImportedPayload(payload) {
 
 // Recursively bound a payload's shape (string length, array length, nesting
 // depth) so an in-body-budget request can't smuggle an oversized field, a huge
-// array, or a deeply nested object into stored data. The screenshot subtree is
-// skipped: its dataUrl is a large base64 blob bounded separately by
-// SCREENSHOT_MAX_BYTES, and the generic field-length cap would reject it.
+// array, or a deeply nested object into stored data. Deep nesting matters
+// beyond storage size: the store's JSON.stringify would overflow the stack and
+// surface as a 500, so the depth cap (well below that limit) must apply
+// everywhere. Only the screenshot's base64 dataUrl string is exempt from the
+// length cap — it is legitimately large and bounded separately by
+// SCREENSHOT_MAX_BYTES. Everything else, including the rest of a screenshot
+// object, is still walked so the limits can't be bypassed by burying data
+// under a "screenshot" key at any depth.
 function enforcePayloadLimits(value, label, depth) {
   if (depth > MAX_OBJECT_DEPTH) {
     throw httpError(`${label} exceeds the maximum nesting depth of ${MAX_OBJECT_DEPTH}`, 413);
@@ -677,7 +690,11 @@ function enforcePayloadLimits(value, label, depth) {
   }
   if (value && typeof value === "object") {
     for (const key of Object.keys(value)) {
-      if (key === "screenshot") continue;
+      // Exempt only the dataUrl string itself (bounded by SCREENSHOT_MAX_BYTES),
+      // not the whole screenshot subtree: skipping the subtree would let a
+      // crafted environment.screenshot / page.screenshot bury deep nesting that
+      // bypasses the depth cap and overflows the store's JSON.stringify.
+      if (key === "dataUrl" && typeof value[key] === "string") continue;
       enforcePayloadLimits(value[key], `${label}.${key}`, depth + 1);
     }
   }
