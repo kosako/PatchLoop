@@ -20,6 +20,16 @@ const DB_PATH = process.env.FEEDBACK_DB_PATH || pathFromConfig(config.feedbackDb
 const MAX_BODY_BYTES = numberSetting(process.env.MAX_BODY_BYTES, numberSetting(config.maxBodyBytes, 3_000_000));
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || pathFromConfig(config.screenshotDir, path.join(__dirname, "screenshots"));
 const SCREENSHOT_MAX_BYTES = numberSetting(process.env.SCREENSHOT_MAX_BYTES, numberSetting(config.screenshotMaxBytes, 1_500_000));
+// Defense-in-depth shape limits on accepted payloads. MAX_BODY_BYTES already
+// caps the raw request, but without these a single in-budget request could
+// still smuggle an oversized string (e.g. a multi-MB comment copied verbatim
+// into a GitHub issue body), a huge array, a deeply nested object, or an import
+// bundle with an unbounded number of items. Lenient defaults keep local /
+// zero-config runs working; tune via env or config.
+const MAX_IMPORT_ITEMS = positiveIntSetting(process.env.MAX_IMPORT_ITEMS, positiveIntSetting(config.maxImportItems, 500));
+const MAX_FIELD_LENGTH = positiveIntSetting(process.env.MAX_FIELD_LENGTH, positiveIntSetting(config.maxFieldLength, 20_000));
+const MAX_ARRAY_LENGTH = positiveIntSetting(process.env.MAX_ARRAY_LENGTH, positiveIntSetting(config.maxArrayLength, 1_000));
+const MAX_OBJECT_DEPTH = positiveIntSetting(process.env.MAX_OBJECT_DEPTH, positiveIntSetting(config.maxObjectDepth, 32));
 const WIDGET_DIST_PATH = path.join(__dirname, "..", "dist", "patchloop-widget.js");
 const STATIC_DIR = path.join(__dirname, "static");
 const PUBLIC_BASE_URL = trimTrailingSlash(process.env.PUBLIC_BASE_URL || config.publicBaseUrl || `http://${HOST}:${PORT}`);
@@ -184,6 +194,14 @@ function numberSetting(value, fallback) {
   if (value === undefined || value === null || String(value).trim() === "") return fallback;
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+// For limits where 0, a negative, or a fractional value is a misconfiguration
+// (it would reject nearly every request): such values fall back to the lenient
+// default instead of silently bricking the receiver.
+function positiveIntSetting(value, fallback) {
+  const number = numberSetting(value, fallback);
+  return Number.isInteger(number) && number > 0 ? number : fallback;
 }
 
 function loadConfig(configPath) {
@@ -621,6 +639,9 @@ function normalizeImportedBundle(body) {
   if (list.length === 0) {
     throw httpError("Import bundle contains no feedback", 400);
   }
+  if (list.length > MAX_IMPORT_ITEMS) {
+    throw httpError(`Import bundle exceeds the maximum of ${MAX_IMPORT_ITEMS} items`, 413);
+  }
   return list.map(normalizeImportedPayload);
 }
 
@@ -640,8 +661,48 @@ function normalizeImportedPayload(payload) {
   return imported;
 }
 
+// Recursively bound a payload's shape (string length, array length, nesting
+// depth) so an in-body-budget request can't smuggle an oversized field, a huge
+// array, or a deeply nested object into stored data. Deep nesting matters
+// beyond storage size: the store's JSON.stringify would overflow the stack and
+// surface as a 500, so the depth cap (well below that limit) must apply
+// everywhere. The only exemption is the real top-level feedback.screenshot's
+// base64 dataUrl string: it is legitimately large and bounded separately by
+// SCREENSHOT_MAX_BYTES. The exemption is scoped to that exact field (not any
+// "dataUrl"/"screenshot" key at any depth), so data can't be smuggled past the
+// caps — and from there into stored records or a GitHub issue body — by naming
+// a field dataUrl or burying it under a screenshot key.
+function enforcePayloadLimits(value, label, depth, exemptDataUrl) {
+  if (depth > MAX_OBJECT_DEPTH) {
+    throw httpError(`${label} exceeds the maximum nesting depth of ${MAX_OBJECT_DEPTH}`, 413);
+  }
+  if (typeof value === "string") {
+    if (value.length > MAX_FIELD_LENGTH) {
+      throw httpError(`${label} exceeds the maximum length of ${MAX_FIELD_LENGTH} characters`, 413);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > MAX_ARRAY_LENGTH) {
+      throw httpError(`${label} exceeds the maximum of ${MAX_ARRAY_LENGTH} entries`, 413);
+    }
+    value.forEach((item, index) => enforcePayloadLimits(item, `${label}[${index}]`, depth + 1, false));
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const key of Object.keys(value)) {
+      if (exemptDataUrl && key === "dataUrl" && typeof value[key] === "string") continue;
+      // Only the top-level screenshot object (a direct child of the payload
+      // root, depth 0) may carry the exempt dataUrl; its own children do not.
+      const childExemptsDataUrl = depth === 0 && key === "screenshot";
+      enforcePayloadLimits(value[key], `${label}.${key}`, depth + 1, childExemptsDataUrl);
+    }
+  }
+}
+
 function validateFeedbackPayload(payload) {
   requirePlainObject(payload, "Feedback payload");
+  enforcePayloadLimits(payload, "feedback", 0, false);
   requireNonEmptyString(payload.id, "feedback.id");
   requireNonEmptyString(payload.comment, "feedback.comment");
   requireNonEmptyString(payload.reviewer, "feedback.reviewer");

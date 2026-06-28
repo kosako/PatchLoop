@@ -556,6 +556,130 @@ test("non-numeric size limits fall back instead of disabling the limit", async (
   assert.equal(rejected.status, 413);
 });
 
+test("POST /feedback rejects an oversized text field with 413", async (t) => {
+  const receiver = await startReceiver(t);
+  const payload = feedbackPayload("pl_long_field");
+  // Under MAX_BODY_BYTES (3MB) but over the per-field length cap (20k default):
+  // a multi-MB comment would otherwise be copied verbatim into a GitHub issue.
+  payload.comment = "x".repeat(20_001);
+
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 413);
+  assert.match(response.body.error, /maximum length/i);
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+});
+
+test("POST /feedback rejects a too-deeply nested payload with 413", async (t) => {
+  const receiver = await startReceiver(t, { MAX_OBJECT_DEPTH: "4" });
+  const payload = feedbackPayload("pl_deep");
+  // environment is stored as-is, so an attacker can bury arbitrary nesting here.
+  payload.environment.extra = { a: { b: { c: { d: "deep" } } } };
+
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 413);
+  assert.match(response.body.error, /nesting depth/i);
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+});
+
+test("POST /feedback rejects an oversized array with 413", async (t) => {
+  const receiver = await startReceiver(t, { MAX_ARRAY_LENGTH: "3" });
+  const payload = feedbackPayload("pl_big_array");
+  payload.environment.tags = ["a", "b", "c", "d"];
+
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 413);
+  assert.match(response.body.error, /entries/i);
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+});
+
+test("payload size limits exempt the screenshot dataUrl", async (t) => {
+  // The base64 dataUrl is legitimately long and bounded by SCREENSHOT_MAX_BYTES,
+  // not the generic field-length cap; a tiny MAX_FIELD_LENGTH must not reject it.
+  const receiver = await startReceiver(t, { MAX_FIELD_LENGTH: "50" });
+  const payload = feedbackPayload("pl_screenshot_exempt");
+  payload.comment = "short comment";
+
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 201);
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].screenshot.status, "saved");
+});
+
+test("POST /import rejects a bundle with too many items with 413", async (t) => {
+  const receiver = await startReceiver(t, { MAX_IMPORT_ITEMS: "2" });
+  const response = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 2,
+    feedback: [
+      feedbackPayload("pl_imp_1"),
+      feedbackPayload("pl_imp_2"),
+      feedbackPayload("pl_imp_3")
+    ]
+  });
+
+  assert.equal(response.status, 413);
+  assert.match(response.body.error, /maximum of 2 items/i);
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+});
+
+test("nested screenshot keys cannot bypass the nesting-depth cap", async (t) => {
+  // Regression: exempting the whole screenshot subtree let a crafted
+  // environment.screenshot bury deep nesting that bypassed the depth cap and
+  // overflowed the store's JSON.stringify (surfacing as a 500).
+  const receiver = await startReceiver(t, { MAX_OBJECT_DEPTH: "4" });
+  const payload = feedbackPayload("pl_nested_shot");
+  payload.environment.screenshot = { a: { b: { c: { d: "deep" } } } };
+
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 413);
+  assert.match(response.body.error, /nesting depth/i);
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+});
+
+test("only the screenshot dataUrl is exempt, not other screenshot fields", async (t) => {
+  const receiver = await startReceiver(t, { MAX_FIELD_LENGTH: "50" });
+  const payload = feedbackPayload("pl_shot_caption");
+  payload.comment = "short";
+  payload.screenshot.caption = "y".repeat(51);
+
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 413);
+  assert.match(response.body.error, /maximum length/i);
+});
+
+test("a dataUrl key outside the screenshot is still length-capped", async (t) => {
+  // The exemption is scoped to the real feedback.screenshot.dataUrl, not any
+  // field named dataUrl: otherwise environment.dataUrl could carry an oversized
+  // string past the cap and into the GitHub issue body's raw-payload dump.
+  const receiver = await startReceiver(t, { MAX_FIELD_LENGTH: "50" });
+  const payload = feedbackPayload("pl_fake_dataurl");
+  payload.comment = "short";
+  payload.environment.dataUrl = "z".repeat(51);
+
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 413);
+  assert.match(response.body.error, /maximum length/i);
+});
+
+test("non-positive shape limits fall back to the default instead of bricking", async (t) => {
+  // 0 / negative would reject nearly every request; treat as a misconfig.
+  const receiver = await startReceiver(t, {
+    MAX_FIELD_LENGTH: "0",
+    MAX_OBJECT_DEPTH: "-3",
+    MAX_IMPORT_ITEMS: "0"
+  });
+  const ok = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_zero_limits"));
+  assert.equal(ok.status, 201);
+
+  // The default cap (20000) is still in force, so a genuinely oversized field
+  // is rejected rather than the limit being disabled.
+  const big = feedbackPayload("pl_zero_limits_big");
+  big.comment = "x".repeat(20_001);
+  const rejected = await postJson(`${receiver.baseUrl}/feedback`, big);
+  assert.equal(rejected.status, 413);
+});
+
 test("upload-only Slack config reports skipped, not failed, without a screenshot", async (t) => {
   const receiver = await startReceiver(t, {
     SLACK_IMAGE_MODE: "auto",
