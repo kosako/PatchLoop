@@ -20,6 +20,16 @@ const DB_PATH = process.env.FEEDBACK_DB_PATH || pathFromConfig(config.feedbackDb
 const MAX_BODY_BYTES = numberSetting(process.env.MAX_BODY_BYTES, numberSetting(config.maxBodyBytes, 3_000_000));
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || pathFromConfig(config.screenshotDir, path.join(__dirname, "screenshots"));
 const SCREENSHOT_MAX_BYTES = numberSetting(process.env.SCREENSHOT_MAX_BYTES, numberSetting(config.screenshotMaxBytes, 1_500_000));
+// Defense-in-depth shape limits on accepted payloads. MAX_BODY_BYTES already
+// caps the raw request, but without these a single in-budget request could
+// still smuggle an oversized string (e.g. a multi-MB comment copied verbatim
+// into a GitHub issue body), a huge array, a deeply nested object, or an import
+// bundle with an unbounded number of items. Lenient defaults keep local /
+// zero-config runs working; tune via env or config.
+const MAX_IMPORT_ITEMS = numberSetting(process.env.MAX_IMPORT_ITEMS, numberSetting(config.maxImportItems, 500));
+const MAX_FIELD_LENGTH = numberSetting(process.env.MAX_FIELD_LENGTH, numberSetting(config.maxFieldLength, 20_000));
+const MAX_ARRAY_LENGTH = numberSetting(process.env.MAX_ARRAY_LENGTH, numberSetting(config.maxArrayLength, 1_000));
+const MAX_OBJECT_DEPTH = numberSetting(process.env.MAX_OBJECT_DEPTH, numberSetting(config.maxObjectDepth, 32));
 const WIDGET_DIST_PATH = path.join(__dirname, "..", "dist", "patchloop-widget.js");
 const STATIC_DIR = path.join(__dirname, "static");
 const PUBLIC_BASE_URL = trimTrailingSlash(process.env.PUBLIC_BASE_URL || config.publicBaseUrl || `http://${HOST}:${PORT}`);
@@ -621,6 +631,9 @@ function normalizeImportedBundle(body) {
   if (list.length === 0) {
     throw httpError("Import bundle contains no feedback", 400);
   }
+  if (list.length > MAX_IMPORT_ITEMS) {
+    throw httpError(`Import bundle exceeds the maximum of ${MAX_IMPORT_ITEMS} items`, 413);
+  }
   return list.map(normalizeImportedPayload);
 }
 
@@ -640,8 +653,39 @@ function normalizeImportedPayload(payload) {
   return imported;
 }
 
+// Recursively bound a payload's shape (string length, array length, nesting
+// depth) so an in-body-budget request can't smuggle an oversized field, a huge
+// array, or a deeply nested object into stored data. The screenshot subtree is
+// skipped: its dataUrl is a large base64 blob bounded separately by
+// SCREENSHOT_MAX_BYTES, and the generic field-length cap would reject it.
+function enforcePayloadLimits(value, label, depth) {
+  if (depth > MAX_OBJECT_DEPTH) {
+    throw httpError(`${label} exceeds the maximum nesting depth of ${MAX_OBJECT_DEPTH}`, 413);
+  }
+  if (typeof value === "string") {
+    if (value.length > MAX_FIELD_LENGTH) {
+      throw httpError(`${label} exceeds the maximum length of ${MAX_FIELD_LENGTH} characters`, 413);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > MAX_ARRAY_LENGTH) {
+      throw httpError(`${label} exceeds the maximum of ${MAX_ARRAY_LENGTH} entries`, 413);
+    }
+    value.forEach((item, index) => enforcePayloadLimits(item, `${label}[${index}]`, depth + 1));
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const key of Object.keys(value)) {
+      if (key === "screenshot") continue;
+      enforcePayloadLimits(value[key], `${label}.${key}`, depth + 1);
+    }
+  }
+}
+
 function validateFeedbackPayload(payload) {
   requirePlainObject(payload, "Feedback payload");
+  enforcePayloadLimits(payload, "feedback", 0);
   requireNonEmptyString(payload.id, "feedback.id");
   requireNonEmptyString(payload.comment, "feedback.comment");
   requireNonEmptyString(payload.reviewer, "feedback.reviewer");

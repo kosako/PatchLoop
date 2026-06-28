@@ -556,6 +556,73 @@ test("non-numeric size limits fall back instead of disabling the limit", async (
   assert.equal(rejected.status, 413);
 });
 
+test("POST /feedback rejects an oversized text field with 413", async (t) => {
+  const receiver = await startReceiver(t);
+  const payload = feedbackPayload("pl_long_field");
+  // Under MAX_BODY_BYTES (3MB) but over the per-field length cap (20k default):
+  // a multi-MB comment would otherwise be copied verbatim into a GitHub issue.
+  payload.comment = "x".repeat(20_001);
+
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 413);
+  assert.match(response.body.error, /maximum length/i);
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+});
+
+test("POST /feedback rejects a too-deeply nested payload with 413", async (t) => {
+  const receiver = await startReceiver(t, { MAX_OBJECT_DEPTH: "4" });
+  const payload = feedbackPayload("pl_deep");
+  // environment is stored as-is, so an attacker can bury arbitrary nesting here.
+  payload.environment.extra = { a: { b: { c: { d: "deep" } } } };
+
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 413);
+  assert.match(response.body.error, /nesting depth/i);
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+});
+
+test("POST /feedback rejects an oversized array with 413", async (t) => {
+  const receiver = await startReceiver(t, { MAX_ARRAY_LENGTH: "3" });
+  const payload = feedbackPayload("pl_big_array");
+  payload.environment.tags = ["a", "b", "c", "d"];
+
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 413);
+  assert.match(response.body.error, /entries/i);
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+});
+
+test("payload size limits exempt the screenshot dataUrl", async (t) => {
+  // The base64 dataUrl is legitimately long and bounded by SCREENSHOT_MAX_BYTES,
+  // not the generic field-length cap; a tiny MAX_FIELD_LENGTH must not reject it.
+  const receiver = await startReceiver(t, { MAX_FIELD_LENGTH: "50" });
+  const payload = feedbackPayload("pl_screenshot_exempt");
+  payload.comment = "short comment";
+
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 201);
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].screenshot.status, "saved");
+});
+
+test("POST /import rejects a bundle with too many items with 413", async (t) => {
+  const receiver = await startReceiver(t, { MAX_IMPORT_ITEMS: "2" });
+  const response = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 2,
+    feedback: [
+      feedbackPayload("pl_imp_1"),
+      feedbackPayload("pl_imp_2"),
+      feedbackPayload("pl_imp_3")
+    ]
+  });
+
+  assert.equal(response.status, 413);
+  assert.match(response.body.error, /maximum of 2 items/i);
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+});
+
 test("upload-only Slack config reports skipped, not failed, without a screenshot", async (t) => {
   const receiver = await startReceiver(t, {
     SLACK_IMAGE_MODE: "auto",
