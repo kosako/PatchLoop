@@ -680,6 +680,64 @@ test("non-positive shape limits fall back to the default instead of bricking", a
   assert.equal(rejected.status, 413);
 });
 
+test("rate limiting returns 429 with Retry-After once the window is exceeded", async (t) => {
+  const receiver = await startReceiver(t, { RATE_LIMIT_MAX: "2" });
+  const url = `${receiver.baseUrl}/feedback.json`;
+
+  assert.equal((await fetch(url)).status, 200);
+  assert.equal((await fetch(url)).status, 200);
+  const limited = await fetch(url);
+  assert.equal(limited.status, 429);
+  assert.ok(Number(limited.headers.get("retry-after")) > 0);
+});
+
+test("POST /feedback returns 507 once the stored feedback limit is reached", async (t) => {
+  const receiver = await startReceiver(t, { MAX_FEEDBACK_COUNT: "1" });
+  const first = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_cap_1"));
+  assert.equal(first.status, 201);
+
+  const second = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_cap_2"));
+  assert.equal(second.status, 507);
+  assert.match(second.body.error, /limit reached/i);
+
+  // Rejected before the screenshot was written, so no orphan file and the store
+  // is unchanged.
+  assert.equal((await readStoredFeedback(receiver.dbPath)).length, 1);
+  assert.equal((await fs.readdir(receiver.screenshotDir)).length, 1);
+});
+
+test("POST /import returns 507 when the batch would exceed the stored limit", async (t) => {
+  const receiver = await startReceiver(t, { MAX_FEEDBACK_COUNT: "1" });
+  const response = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 2,
+    feedback: [feedbackPayload("pl_cap_imp_1"), feedbackPayload("pl_cap_imp_2")]
+  });
+
+  assert.equal(response.status, 507);
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+});
+
+test("screenshot disk cap returns 507 and frees bytes on delete", async (t) => {
+  const svgBytes = Buffer.byteLength(testSvg());
+  // Room for exactly one screenshot, so a second one trips the cap.
+  const receiver = await startReceiver(t, { SCREENSHOT_DISK_MAX_BYTES: String(svgBytes + 10) });
+
+  const first = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_disk_1"));
+  assert.equal(first.status, 201);
+
+  const second = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_disk_2"));
+  assert.equal(second.status, 507);
+  assert.match(second.body.error, /storage limit reached/i);
+
+  // Deleting the first frees its bytes, so a fresh screenshot fits again —
+  // proving the running counter is decremented on delete.
+  const del = await fetch(`${receiver.baseUrl}/feedback/pl_disk_1`, { method: "DELETE" });
+  assert.equal(del.status, 200);
+  const third = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_disk_3"));
+  assert.equal(third.status, 201);
+});
+
 test("upload-only Slack config reports skipped, not failed, without a screenshot", async (t) => {
   const receiver = await startReceiver(t, {
     SLACK_IMAGE_MODE: "auto",
