@@ -666,12 +666,13 @@ function normalizeImportedPayload(payload) {
 // array, or a deeply nested object into stored data. Deep nesting matters
 // beyond storage size: the store's JSON.stringify would overflow the stack and
 // surface as a 500, so the depth cap (well below that limit) must apply
-// everywhere. Only the screenshot's base64 dataUrl string is exempt from the
-// length cap — it is legitimately large and bounded separately by
-// SCREENSHOT_MAX_BYTES. Everything else, including the rest of a screenshot
-// object, is still walked so the limits can't be bypassed by burying data
-// under a "screenshot" key at any depth.
-function enforcePayloadLimits(value, label, depth) {
+// everywhere. The only exemption is the real top-level feedback.screenshot's
+// base64 dataUrl string: it is legitimately large and bounded separately by
+// SCREENSHOT_MAX_BYTES. The exemption is scoped to that exact field (not any
+// "dataUrl"/"screenshot" key at any depth), so data can't be smuggled past the
+// caps — and from there into stored records or a GitHub issue body — by naming
+// a field dataUrl or burying it under a screenshot key.
+function enforcePayloadLimits(value, label, depth, exemptDataUrl) {
   if (depth > MAX_OBJECT_DEPTH) {
     throw httpError(`${label} exceeds the maximum nesting depth of ${MAX_OBJECT_DEPTH}`, 413);
   }
@@ -685,24 +686,23 @@ function enforcePayloadLimits(value, label, depth) {
     if (value.length > MAX_ARRAY_LENGTH) {
       throw httpError(`${label} exceeds the maximum of ${MAX_ARRAY_LENGTH} entries`, 413);
     }
-    value.forEach((item, index) => enforcePayloadLimits(item, `${label}[${index}]`, depth + 1));
+    value.forEach((item, index) => enforcePayloadLimits(item, `${label}[${index}]`, depth + 1, false));
     return;
   }
   if (value && typeof value === "object") {
     for (const key of Object.keys(value)) {
-      // Exempt only the dataUrl string itself (bounded by SCREENSHOT_MAX_BYTES),
-      // not the whole screenshot subtree: skipping the subtree would let a
-      // crafted environment.screenshot / page.screenshot bury deep nesting that
-      // bypasses the depth cap and overflows the store's JSON.stringify.
-      if (key === "dataUrl" && typeof value[key] === "string") continue;
-      enforcePayloadLimits(value[key], `${label}.${key}`, depth + 1);
+      if (exemptDataUrl && key === "dataUrl" && typeof value[key] === "string") continue;
+      // Only the top-level screenshot object (a direct child of the payload
+      // root, depth 0) may carry the exempt dataUrl; its own children do not.
+      const childExemptsDataUrl = depth === 0 && key === "screenshot";
+      enforcePayloadLimits(value[key], `${label}.${key}`, depth + 1, childExemptsDataUrl);
     }
   }
 }
 
 function validateFeedbackPayload(payload) {
   requirePlainObject(payload, "Feedback payload");
-  enforcePayloadLimits(payload, "feedback", 0);
+  enforcePayloadLimits(payload, "feedback", 0, false);
   requireNonEmptyString(payload.id, "feedback.id");
   requireNonEmptyString(payload.comment, "feedback.comment");
   requireNonEmptyString(payload.reviewer, "feedback.reviewer");

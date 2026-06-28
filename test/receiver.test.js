@@ -648,6 +648,20 @@ test("only the screenshot dataUrl is exempt, not other screenshot fields", async
   assert.match(response.body.error, /maximum length/i);
 });
 
+test("a dataUrl key outside the screenshot is still length-capped", async (t) => {
+  // The exemption is scoped to the real feedback.screenshot.dataUrl, not any
+  // field named dataUrl: otherwise environment.dataUrl could carry an oversized
+  // string past the cap and into the GitHub issue body's raw-payload dump.
+  const receiver = await startReceiver(t, { MAX_FIELD_LENGTH: "50" });
+  const payload = feedbackPayload("pl_fake_dataurl");
+  payload.comment = "short";
+  payload.environment.dataUrl = "z".repeat(51);
+
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 413);
+  assert.match(response.body.error, /maximum length/i);
+});
+
 test("non-positive shape limits fall back to the default instead of bricking", async (t) => {
   // 0 / negative would reject nearly every request; treat as a misconfig.
   const receiver = await startReceiver(t, {
