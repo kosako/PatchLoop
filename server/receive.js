@@ -30,6 +30,19 @@ const MAX_IMPORT_ITEMS = positiveIntSetting(process.env.MAX_IMPORT_ITEMS, positi
 const MAX_FIELD_LENGTH = positiveIntSetting(process.env.MAX_FIELD_LENGTH, positiveIntSetting(config.maxFieldLength, 20_000));
 const MAX_ARRAY_LENGTH = positiveIntSetting(process.env.MAX_ARRAY_LENGTH, positiveIntSetting(config.maxArrayLength, 1_000));
 const MAX_OBJECT_DEPTH = positiveIntSetting(process.env.MAX_OBJECT_DEPTH, positiveIntSetting(config.maxObjectDepth, 32));
+// Resource limits (DoS / disk exhaustion). A public receiver accepts unauth'd
+// POST /feedback, so without these an attacker can spam requests until the
+// process or disk is exhausted. All are tunable; lenient defaults stay on so
+// local / zero-config runs are unaffected.
+const RATE_LIMIT_WINDOW_MS = positiveIntSetting(process.env.RATE_LIMIT_WINDOW_MS, positiveIntSetting(config.rateLimitWindowMs, 60_000));
+const RATE_LIMIT_MAX = positiveIntSetting(process.env.RATE_LIMIT_MAX, positiveIntSetting(config.rateLimitMax, 120));
+const RATE_LIMIT_MAX_CLIENTS = positiveIntSetting(process.env.RATE_LIMIT_MAX_CLIENTS, positiveIntSetting(config.rateLimitMaxClients, 10_000));
+const MAX_FEEDBACK_COUNT = positiveIntSetting(process.env.MAX_FEEDBACK_COUNT, positiveIntSetting(config.maxFeedbackCount, 100_000));
+const SCREENSHOT_DISK_MAX_BYTES = positiveIntSetting(process.env.SCREENSHOT_DISK_MAX_BYTES, positiveIntSetting(config.screenshotDiskMaxBytes, 500_000_000));
+// Behind a reverse proxy the socket address is the proxy's; trust X-Forwarded-For
+// only when explicitly enabled, so a direct client can't spoof its rate-limit
+// identity by sending the header.
+const TRUST_PROXY = boolSetting(process.env.RECEIVER_TRUST_PROXY ?? config.trustProxy);
 const WIDGET_DIST_PATH = path.join(__dirname, "..", "dist", "patchloop-widget.js");
 const STATIC_DIR = path.join(__dirname, "static");
 const PUBLIC_BASE_URL = trimTrailingSlash(process.env.PUBLIC_BASE_URL || config.publicBaseUrl || `http://${HOST}:${PORT}`);
@@ -60,6 +73,58 @@ const FEEDBACK_STATUSES = ["new", "accepted", "fixed", "ignored"];
 const DEFAULT_SCHEMA_VERSION = 1;
 
 let store;
+// Running total of bytes under SCREENSHOT_DIR, seeded once at startup and kept
+// in sync on save/delete so the disk cap is O(1) per request (no per-write
+// directory scan).
+let screenshotBytesUsed = 0;
+
+// Fixed-window per-client rate limiter (in-memory, single process), bounded by
+// RATE_LIMIT_MAX_CLIENTS so the limiter itself can't become a memory DoS.
+const rateLimitBuckets = new Map();
+
+function clientIp(req) {
+  if (TRUST_PROXY) {
+    const forwarded = req.headers["x-forwarded-for"];
+    if (typeof forwarded === "string" && forwarded.trim()) {
+      return forwarded.split(",")[0].trim();
+    }
+  }
+  return (req.socket && req.socket.remoteAddress) || "unknown";
+}
+
+// Records one request from ip and returns the seconds to wait if it is now over
+// the limit, or 0 when the request is allowed.
+function rateLimitRetryAfter(ip) {
+  const now = Date.now();
+  let bucket = rateLimitBuckets.get(ip);
+  if (!bucket || now - bucket.windowStart >= RATE_LIMIT_WINDOW_MS) {
+    bucket = { windowStart: now, count: 0 };
+    rateLimitBuckets.set(ip, bucket);
+  }
+  bucket.count += 1;
+  if (rateLimitBuckets.size > RATE_LIMIT_MAX_CLIENTS) {
+    // A churn of distinct IPs must not grow the map without bound. First drop
+    // expired buckets (cheap, accurate). If the map is still over the cap —
+    // e.g. an IP-spoofing flood keeping every bucket active — hard-evict the
+    // oldest-inserted ones so memory stays bounded. Evicting an active bucket
+    // just resets that client's window: acceptable degradation under attack,
+    // and we never evict the current request's own bucket.
+    for (const [key, b] of rateLimitBuckets) {
+      if (now - b.windowStart >= RATE_LIMIT_WINDOW_MS) rateLimitBuckets.delete(key);
+    }
+    let overflow = rateLimitBuckets.size - RATE_LIMIT_MAX_CLIENTS;
+    if (overflow > 0) {
+      for (const key of rateLimitBuckets.keys()) {
+        if (overflow <= 0) break;
+        if (key === ip) continue;
+        rateLimitBuckets.delete(key);
+        overflow -= 1;
+      }
+    }
+  }
+  if (bucket.count <= RATE_LIMIT_MAX) return 0;
+  return Math.ceil((RATE_LIMIT_WINDOW_MS - (now - bucket.windowStart)) / 1000);
+}
 
 function safeTokenEqual(provided, expected) {
   const a = Buffer.from(String(provided));
@@ -95,6 +160,12 @@ const server = http.createServer((req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  const retryAfter = rateLimitRetryAfter(clientIp(req));
+  if (retryAfter > 0) {
+    respondJson(res, 429, { ok: false, error: "Too Many Requests" }, { "Retry-After": String(retryAfter) });
     return;
   }
 
@@ -164,6 +235,7 @@ const server = http.createServer((req, res) => {
 async function start() {
   store = createStore({ dbPath: DB_PATH, legacyJsonPath: LEGACY_STORE_PATH });
   await store.init();
+  screenshotBytesUsed = await computeScreenshotDirBytes();
 
   server.listen(PORT, HOST, () => {
     console.log(`[PatchLoop receiver] listening on http://${HOST}:${PORT}`);
@@ -202,6 +274,12 @@ function numberSetting(value, fallback) {
 function positiveIntSetting(value, fallback) {
   const number = numberSetting(value, fallback);
   return Number.isInteger(number) && number > 0 ? number : fallback;
+}
+
+function boolSetting(value) {
+  if (value === true) return true;
+  if (value === undefined || value === null) return false;
+  return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
 }
 
 function loadConfig(configPath) {
@@ -244,11 +322,22 @@ function normalizeStringList(value) {
   return items.map((item) => String(item).trim()).filter(Boolean);
 }
 
+// Rejects new feedback once the store is full, before any screenshot is written
+// (so a rejected request leaves no orphan file). 507 signals the store, not the
+// request, is the problem.
+async function assertFeedbackCapacity(adding) {
+  const current = await store.count();
+  if (current + adding > MAX_FEEDBACK_COUNT) {
+    throw httpError(`Stored feedback limit reached (${MAX_FEEDBACK_COUNT})`, 507);
+  }
+}
+
 function handlePostFeedback(req, res) {
   readJsonBody(req, res, async (payload) => {
     let screenshot;
     try {
       validateFeedbackPayload(payload);
+      await assertFeedbackCapacity(1);
       screenshot = saveScreenshot(payload.screenshot, payload.id);
     } catch (error) {
       respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
@@ -297,6 +386,7 @@ function handlePostImport(req, res) {
     let importedList;
     try {
       importedList = normalizeImportedBundle(body);
+      await assertFeedbackCapacity(importedList.length);
     } catch (error) {
       respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
       return;
@@ -384,6 +474,27 @@ async function handleDeleteFeedback(req, res, id) {
 // Removes the stored screenshot for a deleted feedback. Confined to
 // SCREENSHOT_DIR so a tampered stored path cannot delete arbitrary files,
 // and missing files are ignored (the feedback is already gone).
+// Seeds the running disk total at startup by summing the files already under
+// SCREENSHOT_DIR. The O(n) scan happens once; every request after is O(1).
+async function computeScreenshotDirBytes() {
+  let total = 0;
+  let entries;
+  try {
+    entries = await fs.promises.readdir(SCREENSHOT_DIR);
+  } catch (_) {
+    return 0; // directory not created yet
+  }
+  for (const entry of entries) {
+    try {
+      const stat = await fs.promises.stat(path.join(SCREENSHOT_DIR, entry));
+      if (stat.isFile()) total += stat.size;
+    } catch (_) {
+      // file vanished between readdir and stat; skip it
+    }
+  }
+  return total;
+}
+
 async function deleteScreenshotFile(screenshot) {
   const storedPath = screenshot && screenshot.path;
   if (!storedPath) return;
@@ -391,7 +502,16 @@ async function deleteScreenshotFile(screenshot) {
   const root = path.resolve(SCREENSHOT_DIR);
   if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return;
   try {
+    // Measure the real file size before removing so the disk counter reflects
+    // what was actually freed (a missing file frees nothing).
+    let freed = 0;
+    try {
+      freed = (await fs.promises.stat(resolved)).size;
+    } catch (_) {
+      freed = 0;
+    }
     await fs.promises.rm(resolved, { force: true });
+    screenshotBytesUsed = Math.max(0, screenshotBytesUsed - freed);
   } catch (error) {
     console.warn(`[PatchLoop receiver] could not delete screenshot ${resolved}: ${error.message}`);
   }
@@ -935,11 +1055,20 @@ function saveScreenshot(screenshot, id) {
     throw httpError(`Screenshot too large: ${parsed.buffer.length} bytes exceeds ${SCREENSHOT_MAX_BYTES}`, 413);
   }
 
+  // Stop before writing once the screenshot directory would exceed its cap. The
+  // running total is kept in sync below and in deleteScreenshotFile; 507 signals
+  // the store, not the request, is out of room. The check and the increment run
+  // synchronously around the write, so concurrent requests can't both slip past.
+  if (screenshotBytesUsed + parsed.buffer.length > SCREENSHOT_DISK_MAX_BYTES) {
+    throw httpError(`Screenshot storage limit reached (${SCREENSHOT_DISK_MAX_BYTES} bytes)`, 507);
+  }
+
   fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
   const random = crypto.randomUUID().slice(0, 8);
   const fileName = `${safeFilePart(id || "feedback")}-${Date.now()}-${random}.${extension}`;
   const filePath = path.join(SCREENSHOT_DIR, fileName);
   fs.writeFileSync(filePath, parsed.buffer);
+  screenshotBytesUsed += parsed.buffer.length;
 
   return {
     ...metadata,
@@ -994,8 +1123,8 @@ function httpError(message, statusCode) {
   return error;
 }
 
-function respondJson(res, status, body) {
-  res.writeHead(status, { "Content-Type": "application/json" });
+function respondJson(res, status, body, headers) {
+  res.writeHead(status, { "Content-Type": "application/json", ...headers });
   res.end(JSON.stringify(body));
 }
 
