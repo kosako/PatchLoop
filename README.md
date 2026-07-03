@@ -36,6 +36,8 @@ npm run check
 
 `npm test` は Node.js の test runner でローカル receiver を一時ポートに起動し、`/feedback` と `/import` の保存・検証・screenshot 処理を確認します。テストデータは OS の一時ディレクトリに作られ、終了時に削除されます。
 
+main への push と pull request 時には GitHub Actions（`.github/workflows/check.yml`）が同じ `npm run check` を自動実行します。
+
 widget のソースは `widget/src/` の ES modules で、配布用の単一ファイル `dist/patchloop-widget.js` は依存ゼロの自前ビルドスクリプトで生成します。`dist/` は commit 対象で、`npm run check` がビルド結果との一致を検証します。
 
 ```sh

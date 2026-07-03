@@ -1,0 +1,20 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the development environment (engines requires >=22.12).
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # lint + dist freshness (build --check) + tests, same gate as local dev.
+      - run: npm run check
