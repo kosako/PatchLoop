@@ -187,7 +187,7 @@ Feedback is stored in the built-in `node:sqlite` (`server/feedback.db`). The bac
 
 On startup, an existing legacy `server/feedback.json` is migrated into sqlite once and archived to `feedback.json.migrated-<timestamp>` (or `feedback.json.corrupt-<timestamp>` if unreadable, starting empty). The db path is set via `FEEDBACK_DB_PATH` and the migration source via `FEEDBACK_STORE_PATH`.
 - Configurable via `PORT` / `HOST` env (default `127.0.0.1:4000`)
-- Configurable storage path via `FEEDBACK_STORE_PATH`
+- Configurable sqlite db path via `FEEDBACK_DB_PATH` (`FEEDBACK_STORE_PATH` is the legacy `feedback.json` migration source, not the storage path)
 - Configurable screenshot directory via `SCREENSHOT_DIR`
 - Configurable receiver URL for Slack links via `PUBLIC_BASE_URL`
 - Configurable payload and screenshot limits via `MAX_BODY_BYTES` / `SCREENSHOT_MAX_BYTES`
@@ -214,7 +214,7 @@ cp server/receiver.config.example.json server/receiver.config.json
 {
   "host": "127.0.0.1",
   "port": 4000,
-  "feedbackStorePath": "feedback.json",
+  "feedbackDbPath": "feedback.db",
   "screenshotDir": "screenshots",
   "publicBaseUrl": "http://127.0.0.1:4000",
   "maxBodyBytes": 3000000,
@@ -227,7 +227,7 @@ cp server/receiver.config.example.json server/receiver.config.json
 }
 ```
 
-Relative `feedbackStorePath` and `screenshotDir` values are resolved from the config file location. `publicBaseUrl` is used for screenshot links and image blocks in Slack messages. For local testing, `http://127.0.0.1:4000` is enough. If you want Slack image previews to render outside your machine, point it at a public tunnel such as ngrok.
+Relative path values such as `feedbackDbPath` and `screenshotDir` are resolved from the config file location. See `server/receiver.config.example.json` for the full list of supported keys and their defaults (`feedbackStorePath` is the legacy `feedback.json` migration source and normally does not need to be set). `publicBaseUrl` is used for screenshot links and image blocks in Slack messages. For local testing, `http://127.0.0.1:4000` is enough. If you want Slack image previews to render outside your machine, point it at a public tunnel such as ngrok.
 
 `slackImageMode` defaults to `auto`. When `publicBaseUrl` is public, the receiver adds a Slack image block. When `slackBotToken` and `slackUploadChannelId` are also set, the receiver uploads the saved screenshot as a Slack file through the Slack Web API. The token needs the Slack App `files:write` scope. Use `link` for links only, `block` to force an image block, `upload` for file upload only, or `off` to omit screenshot presentation.
 

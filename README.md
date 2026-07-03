@@ -187,7 +187,7 @@ feedback は組み込みの `node:sqlite`（`server/feedback.db`）に保存し�
 
 起動時に旧形式の `server/feedback.json` が残っていれば一度だけ sqlite に取り込み、元ファイルは `feedback.json.migrated-<timestamp>` に退避します（壊れていれば `feedback.json.corrupt-<timestamp>` に退避して空で起動）。db ファイルのパスは `FEEDBACK_DB_PATH`、移行元の JSON は `FEEDBACK_STORE_PATH` で指定できます。
 - `PORT` / `HOST` env で変更可能（デフォルトは `127.0.0.1:4000`）
-- `FEEDBACK_STORE_PATH` env で保存先を変更できます
+- `FEEDBACK_DB_PATH` env で sqlite DB の保存先を変更できます（`FEEDBACK_STORE_PATH` は保存先ではなく、旧 `feedback.json` の移行元です）
 - `SCREENSHOT_DIR` env で screenshot 保存先を変更できます
 - `PUBLIC_BASE_URL` env で Slack に載せる receiver の URL を指定できます
 - `MAX_BODY_BYTES` / `SCREENSHOT_MAX_BYTES` env で payload / screenshot の上限を変更できます
@@ -214,7 +214,7 @@ cp server/receiver.config.example.json server/receiver.config.json
 {
   "host": "127.0.0.1",
   "port": 4000,
-  "feedbackStorePath": "feedback.json",
+  "feedbackDbPath": "feedback.db",
   "screenshotDir": "screenshots",
   "publicBaseUrl": "http://127.0.0.1:4000",
   "maxBodyBytes": 3000000,
@@ -227,7 +227,7 @@ cp server/receiver.config.example.json server/receiver.config.json
 }
 ```
 
-`feedbackStorePath` / `screenshotDir` に相対パスを書く場合は、設定ファイルからの相対パスとして扱われます。`publicBaseUrl` は Slack 通知内の screenshot link と image block に使われます。ローカル検証なら `http://127.0.0.1:4000` のままで十分です。外部の Slack 上で画像 preview まで表示したい場合は、ngrok などで公開した URL を指定してください。
+`feedbackDbPath` / `screenshotDir` などのパス系キーに相対パスを書く場合は、設定ファイルからの相対パスとして扱われます。サポートする全キーと既定値は `server/receiver.config.example.json` を参照してください（`feedbackStorePath` は旧 `feedback.json` の移行元で、通常は設定不要です）。`publicBaseUrl` は Slack 通知内の screenshot link と image block に使われます。ローカル検証なら `http://127.0.0.1:4000` のままで十分です。外部の Slack 上で画像 preview まで表示したい場合は、ngrok などで公開した URL を指定してください。
 
 `slackImageMode` はデフォルト `auto` です。`publicBaseUrl` が公開 URL の場合は Slack message に image block を追加します。`slackBotToken` と `slackUploadChannelId` も設定されている場合は、Slack Web API で保存済み screenshot を file upload します。この token には Slack App の `files:write` scope が必要です。`link` はリンクのみ、`block` は image block を強制、`upload` は file upload のみ、`off` は screenshot 表示を送らない設定です。
 
