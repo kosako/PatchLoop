@@ -58,10 +58,27 @@ const GITHUB_ASSIGNEES = normalizeStringList(process.env.GITHUB_ASSIGNEES || con
 const GITHUB_API_BASE = trimTrailingSlash(process.env.GITHUB_API_BASE || config.githubApiBase || "https://api.github.com");
 const GITHUB_TIMEOUT_MS = numberSetting(process.env.GITHUB_TIMEOUT_MS, numberSetting(config.githubTimeoutMs, 8000));
 const GITHUB_CONFIGURED = Boolean(GITHUB_TOKEN && GITHUB_REPO);
-// Optional shared token guarding the management/operation endpoints (import,
-// status, delete, github-issue). Unset = zero-config local dev (no auth) so
-// existing local workflows keep working; set it for public/shared deploys.
+// Optional shared token guarding the management (import, status, delete,
+// github-issue) and read (inbox, feedback.json, screenshots) endpoints. Unset =
+// zero-config local dev (no auth) so existing local workflows keep working; set
+// it for public/shared deploys. The same token backs both the API bearer auth
+// and the inbox login form (a browser session holds an HMAC-derived cookie, not
+// the token itself, so rotating the token invalidates every session at once).
 const RECEIVER_TOKEN = process.env.RECEIVER_TOKEN || config.receiverToken || "";
+// CORS allowlist for the widget ingest route (POST /feedback). Cross-origin
+// JSON POSTs always preflight, so origins outside the list are blocked by the
+// browser before the payload is sent. Unset keeps the historical open default
+// (Access-Control-Allow-Origin: *) so zero-config local runs keep working; the
+// startup log warns about it. Entries are exact origins (scheme://host[:port]).
+const ALLOWED_ORIGINS = normalizeStringList(process.env.ALLOWED_ORIGINS || config.allowedOrigins).map(trimTrailingSlash);
+// Browser sessions for the inbox: the cookie value is
+// "<expiresAtMs>.<HMAC(RECEIVER_TOKEN, expiresAtMs)>" — a derived credential,
+// never the raw token, valid for 7 days. Secure is tied to the deploy's public
+// URL: an https publicBaseUrl means TLS termination is in place, so the cookie
+// must not travel over plain http.
+const SESSION_COOKIE_NAME = "patchloop_session";
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const SESSION_COOKIE_SECURE = PUBLIC_BASE_URL.startsWith("https://");
 const IMPORT_BUNDLE_KIND = "patchloop-feedback-bundle";
 // v1 wrapped a single feedback object; v2 carries an array (batch export).
 // Both are accepted so files exported before the batch-download switch still
@@ -132,38 +149,92 @@ function safeTokenEqual(provided, expected) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-// Management/operation endpoints (import, status, delete, github-issue) require
-// the shared bearer token when RECEIVER_TOKEN is set. Returns true when the
-// request may proceed; otherwise responds 401 and returns false. With no token
-// configured, auth is disabled (zero-config local dev). The widget ingest path
-// (POST /feedback) and read endpoints are intentionally not gated here.
-function requireOperationAuth(req, res) {
+// The signature covers the expiry, so a client cannot extend its own session,
+// and a forged cookie fails the HMAC check without knowledge of the token.
+function sessionSignature(expiresAtMs) {
+  return crypto.createHmac("sha256", RECEIVER_TOKEN).update(String(expiresAtMs)).digest("hex");
+}
+
+function cookieValue(req, name) {
+  const header = req.headers["cookie"];
+  if (typeof header !== "string") return "";
+  for (const pair of header.split(";")) {
+    const separator = pair.indexOf("=");
+    if (separator === -1) continue;
+    if (pair.slice(0, separator).trim() === name) return pair.slice(separator + 1).trim();
+  }
+  return "";
+}
+
+function hasValidSessionCookie(req) {
+  const raw = cookieValue(req, SESSION_COOKIE_NAME);
+  const separator = raw.indexOf(".");
+  if (separator === -1) return false;
+  const expiry = raw.slice(0, separator);
+  const signature = raw.slice(separator + 1);
+  if (!/^\d+$/.test(expiry) || !signature) return false;
+  if (Number(expiry) <= Date.now()) return false;
+  return safeTokenEqual(signature, sessionSignature(expiry));
+}
+
+// Protected endpoints (management + reads) accept either the shared bearer
+// token (curl / API clients) or a valid session cookie (the inbox UI — its
+// same-origin fetches carry the HttpOnly cookie automatically, so inbox.js
+// needs no auth wiring). With no token configured, auth is disabled
+// (zero-config local dev). The widget ingest path (POST /feedback) is
+// intentionally not gated here.
+function isAuthorizedRequest(req) {
   if (!RECEIVER_TOKEN) return true;
   const header = req.headers["authorization"] || "";
   if (safeTokenEqual(header, `Bearer ${RECEIVER_TOKEN}`)) return true;
-  respondJson(res, 401, { ok: false, error: "Unauthorized" });
-  return false;
+  return hasValidSessionCookie(req);
 }
 
-// Every route declares its auth policy so a new endpoint cannot silently
-// skip the check; dispatch applies it in one place instead of per-branch
-// (#43). Auth kinds grow to inbox/ingest (plus per-route CORS) in the
-// follow-up hardening slice.
-const ROUTE_AUTH_KINDS = new Set(["none", "operation"]);
+function sessionCookieAttributes() {
+  return `Path=/; HttpOnly; SameSite=Lax${SESSION_COOKIE_SECURE ? "; Secure" : ""}`;
+}
+
+function issueSessionCookie(res) {
+  const expiresAtMs = Date.now() + SESSION_TTL_MS;
+  const value = `${expiresAtMs}.${sessionSignature(expiresAtMs)}`;
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE_NAME}=${value}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; ${sessionCookieAttributes()}`);
+}
+
+function clearSessionCookie(res) {
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE_NAME}=; Max-Age=0; ${sessionCookieAttributes()}`);
+}
+
+function redirect(res, location) {
+  res.writeHead(303, { "Location": location });
+  res.end();
+}
+
+// Every route declares its auth and CORS policy so a new endpoint cannot
+// silently skip either check; dispatch applies them in one place instead of
+// per-branch (#43). Auth kinds: "none" (public), "protected" (bearer token or
+// session cookie, 401 on failure — APIs and resources), "page" (same
+// credentials, but an unauthenticated browser is redirected to the login form
+// instead of getting raw JSON). CORS headers are only emitted for routes with
+// cors: true — the inbox, management endpoints, and screenshots are same-origin
+// surfaces, so withholding the headers there is a second wall next to auth.
+const ROUTE_AUTH_KINDS = new Set(["none", "protected", "page"]);
 const ROUTES = [
-  { method: "POST", pattern: /^\/feedback$/, auth: "none", handler: handlePostFeedback },
-  { method: "POST", pattern: /^\/import$/, auth: "operation", handler: handlePostImport },
-  { method: "DELETE", pattern: /^\/feedback\/([^/]+)$/, auth: "operation",
+  { method: "POST", pattern: /^\/feedback$/, auth: "none", cors: true, handler: handlePostFeedback },
+  { method: "GET", pattern: /^\/login$/, auth: "none", handler: handleGetLogin },
+  { method: "POST", pattern: /^\/login$/, auth: "none", handler: handlePostLogin },
+  { method: "POST", pattern: /^\/logout$/, auth: "none", handler: handlePostLogout },
+  { method: "POST", pattern: /^\/import$/, auth: "protected", handler: handlePostImport },
+  { method: "DELETE", pattern: /^\/feedback\/([^/]+)$/, auth: "protected",
     handler: (req, res, match) => handleDeleteFeedback(req, res, decodeURIComponent(match[1])) },
-  { method: "POST", pattern: /^\/feedback\/([^/]+)\/status$/, auth: "operation",
+  { method: "POST", pattern: /^\/feedback\/([^/]+)\/status$/, auth: "protected",
     handler: (req, res, match) => handlePostStatus(req, res, decodeURIComponent(match[1])) },
-  { method: "POST", pattern: /^\/feedback\/([^/]+)\/github-issue$/, auth: "operation",
+  { method: "POST", pattern: /^\/feedback\/([^/]+)\/github-issue$/, auth: "protected",
     handler: (req, res, match) => handlePostGitHubIssue(req, res, decodeURIComponent(match[1])) },
-  { method: "GET", pattern: /^\/(?:index\.html)?$/, auth: "none", handler: handleGetInbox },
-  { method: "GET", pattern: /^\/feedback\.json$/, auth: "none", handler: handleGetFeedbackJson },
+  { method: "GET", pattern: /^\/(?:index\.html)?$/, auth: "page", handler: handleGetInbox },
+  { method: "GET", pattern: /^\/feedback\.json$/, auth: "protected", handler: handleGetFeedbackJson },
   { method: "GET", pattern: /^\/widget\.js$/, auth: "none", handler: handleGetWidgetScript },
   { method: "GET", pattern: /^\/static\//, auth: "none", handler: handleGetStaticAsset },
-  { method: "GET", pattern: /^\/screenshots\//, auth: "none", handler: handleGetScreenshot }
+  { method: "GET", pattern: /^\/screenshots\//, auth: "protected", handler: handleGetScreenshot }
 ];
 
 for (const route of ROUTES) {
@@ -173,8 +244,6 @@ for (const route of ROUTES) {
 }
 
 const server = http.createServer((req, res) => {
-  setCors(res);
-
   // Routes match the pathname so query strings (e.g. /feedback.json?v=2)
   // cannot turn a valid endpoint into a 404.
   let pathname;
@@ -182,6 +251,10 @@ const server = http.createServer((req, res) => {
     pathname = new URL(req.url, "http://localhost").pathname;
   } catch (_) {
     pathname = req.url;
+  }
+
+  if (ROUTES.some((route) => route.cors && route.pattern.test(pathname))) {
+    setCorsHeaders(req, res);
   }
 
   if (req.method === "OPTIONS") {
@@ -204,7 +277,14 @@ const server = http.createServer((req, res) => {
       allowedMethods.add(route.method);
       continue;
     }
-    if (route.auth === "operation" && !requireOperationAuth(req, res)) return;
+    if (route.auth !== "none" && !isAuthorizedRequest(req)) {
+      if (route.auth === "page") {
+        redirect(res, "/login");
+      } else {
+        respondJson(res, 401, { ok: false, error: "Unauthorized" });
+      }
+      return;
+    }
     route.handler(req, res, match);
     return;
   }
@@ -226,15 +306,25 @@ async function start() {
   await store.init();
   screenshotBytesUsed = await computeScreenshotDirBytes();
 
+  // The configuration summary prints before listen so "listening" is the final
+  // startup line — the signal (for humans and the test harness) that everything
+  // above reflects the running server.
+  console.log(`[PatchLoop receiver] config file: ${config.__loaded ? CONFIG_PATH : "not loaded"}`);
+  console.log(`[PatchLoop receiver] feedback db: ${DB_PATH}`);
+  console.log(`[PatchLoop receiver] screenshot dir: ${SCREENSHOT_DIR}`);
+  console.log(`[PatchLoop receiver] auth: ${RECEIVER_TOKEN ? "enabled (token + inbox login)" : "disabled (no RECEIVER_TOKEN)"}`);
+  if (ALLOWED_ORIGINS.length > 0) {
+    console.log(`[PatchLoop receiver] CORS allowlist: ${ALLOWED_ORIGINS.join(", ")}`);
+  } else {
+    console.warn("[PatchLoop receiver] CORS: every origin may POST /feedback (*) — set ALLOWED_ORIGINS / allowedOrigins for public deploys");
+  }
+  console.log(`[PatchLoop receiver] Slack webhook: ${SLACK_WEBHOOK_URL ? "enabled" : "disabled"}`);
+  console.log(`[PatchLoop receiver] Slack image mode: ${SLACK_IMAGE_MODE}`);
+  console.log(`[PatchLoop receiver] Slack file upload: ${SLACK_BOT_TOKEN && SLACK_UPLOAD_CHANNEL_ID ? "enabled" : "disabled"}`);
+  console.log(`[PatchLoop receiver] GitHub issues: ${GITHUB_CONFIGURED ? `enabled (${GITHUB_REPO})` : "disabled"}`);
+
   server.listen(PORT, HOST, () => {
     console.log(`[PatchLoop receiver] listening on http://${HOST}:${PORT}`);
-    console.log(`[PatchLoop receiver] config file: ${config.__loaded ? CONFIG_PATH : "not loaded"}`);
-    console.log(`[PatchLoop receiver] feedback db: ${DB_PATH}`);
-    console.log(`[PatchLoop receiver] screenshot dir: ${SCREENSHOT_DIR}`);
-    console.log(`[PatchLoop receiver] Slack webhook: ${SLACK_WEBHOOK_URL ? "enabled" : "disabled"}`);
-    console.log(`[PatchLoop receiver] Slack image mode: ${SLACK_IMAGE_MODE}`);
-    console.log(`[PatchLoop receiver] Slack file upload: ${SLACK_BOT_TOKEN && SLACK_UPLOAD_CHANNEL_ID ? "enabled" : "disabled"}`);
-    console.log(`[PatchLoop receiver] GitHub issues: ${GITHUB_CONFIGURED ? `enabled (${GITHUB_REPO})` : "disabled"}`);
   });
 }
 
@@ -243,9 +333,23 @@ start().catch((error) => {
   process.exit(1);
 });
 
-function setCors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+// CORS headers for the ingest route only. With no allowlist configured every
+// origin may post (historical open default, warned at startup). With an
+// allowlist, the request's Origin is echoed back only when it matches; other
+// origins get no CORS headers, so the browser blocks the cross-origin POST at
+// the preflight — before the payload leaves the page.
+function setCorsHeaders(req, res) {
+  let allowOrigin = "*";
+  if (ALLOWED_ORIGINS.length > 0) {
+    // Origin comparison is exact (scheme://host[:port]); allowlist entries are
+    // normalized at startup by stripping trailing slashes.
+    const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+    res.setHeader("Vary", "Origin");
+    if (!ALLOWED_ORIGINS.includes(origin)) return;
+    allowOrigin = origin;
+  }
+  res.setHeader("Access-Control-Allow-Origin", allowOrigin);
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
@@ -337,7 +441,18 @@ function handlePostFeedback(req, res) {
       receivedAt: new Date().toISOString(),
       schemaVersion: DEFAULT_SCHEMA_VERSION,
       ...payload,
-      screenshot
+      screenshot,
+      // Weak provenance signal for triage (#44 will add an unforgeable ingest
+      // key): the browser-sent Origin and whether the allowlist would have let
+      // a browser post it. Origin-less clients (curl, scripts) are not subject
+      // to CORS, so they record originAllowed: true. Set after the payload
+      // spread so a crafted payload cannot supply its own value.
+      received: {
+        origin: typeof req.headers.origin === "string" ? req.headers.origin : null,
+        originAllowed: ALLOWED_ORIGINS.length === 0
+          || typeof req.headers.origin !== "string"
+          || ALLOWED_ORIGINS.includes(req.headers.origin)
+      }
     };
 
     // Persist before notifying. A failed insert (e.g. a duplicate id -> 409)
@@ -653,9 +768,16 @@ function gitHubIssueBody(item) {
   const screenshotUrl = screenshotUrlFor(item.screenshot);
   if (screenshotUrl) {
     lines.push("### Screenshot", "");
-    lines.push(`![PatchLoop screenshot](${screenshotUrl})`, "");
-    lines.push(`[Open screenshot](${screenshotUrl})`, "");
-    lines.push("_The image only renders if the receiver's `publicBaseUrl` is reachable from GitHub._", "");
+    if (RECEIVER_TOKEN) {
+      // With auth enabled GitHub's image proxy (camo) cannot send credentials,
+      // so an inline embed would always render as a broken image — link only.
+      lines.push(`[Open screenshot](${screenshotUrl})`, "");
+      lines.push("_Sign in to the receiver to view it (auth is enabled)._", "");
+    } else {
+      lines.push(`![PatchLoop screenshot](${screenshotUrl})`, "");
+      lines.push(`[Open screenshot](${screenshotUrl})`, "");
+      lines.push("_The image only renders if the receiver's `publicBaseUrl` is reachable from GitHub._", "");
+    }
   } else if (item.screenshot && item.screenshot.status) {
     lines.push(`Screenshot: ${formatScreenshotStatus(item.screenshot)}`, "");
   }
@@ -674,7 +796,9 @@ function mdTableCell(value) {
   return String(value ?? "").replaceAll("|", "\\|").replaceAll("\n", " ");
 }
 
-function readJsonBody(req, res, onJson) {
+// Collects the request body (bounded by MAX_BODY_BYTES) and hands the raw text
+// to onBody. Shared by the JSON endpoints and the urlencoded login form.
+function readRequestBody(req, res, onBody) {
   let received = 0;
   const chunks = [];
   let aborted = false;
@@ -695,16 +819,8 @@ function readJsonBody(req, res, onJson) {
 
   req.on("end", async () => {
     if (aborted) return;
-    let payload;
     try {
-      const raw = Buffer.concat(chunks).toString("utf8");
-      payload = raw.trim() ? JSON.parse(raw) : {};
-    } catch (_) {
-      respondJson(res, 400, { ok: false, error: "Invalid JSON" });
-      return;
-    }
-    try {
-      await onJson(payload);
+      await onBody(Buffer.concat(chunks).toString("utf8"));
     } catch (error) {
       if (!res.headersSent) {
         respondJson(res, error.statusCode || 500, { ok: false, error: error.message });
@@ -715,6 +831,19 @@ function readJsonBody(req, res, onJson) {
   req.on("error", (error) => {
     if (aborted || res.headersSent) return;
     respondJson(res, 500, { ok: false, error: error.message });
+  });
+}
+
+function readJsonBody(req, res, onJson) {
+  readRequestBody(req, res, async (raw) => {
+    let payload;
+    try {
+      payload = raw.trim() ? JSON.parse(raw) : {};
+    } catch (_) {
+      respondJson(res, 400, { ok: false, error: "Invalid JSON" });
+      return;
+    }
+    await onJson(payload);
   });
 }
 
@@ -762,6 +891,8 @@ function normalizeImportedPayload(payload) {
   delete imported.receivedAt;
   delete imported.importedAt;
   delete imported.source;
+  // Server-owned provenance (set on live ingest); a bundle must not carry it in.
+  delete imported.received;
   // Local-only export markers (set by the widget after a batch download) must
   // never reach the stored record.
   delete imported.exported;
@@ -875,10 +1006,105 @@ function requireNonEmptyString(value, label) {
   }
 }
 
+// With auth disabled the login page has no job, so it (and logout) bounce to
+// the inbox instead of dead-ending a bookmarked /login.
+function handleGetLogin(req, res) {
+  if (!RECEIVER_TOKEN || isAuthorizedRequest(req)) {
+    redirect(res, "/");
+    return;
+  }
+  respondLoginPage(res, 200, false);
+}
+
+function handlePostLogin(req, res) {
+  if (!RECEIVER_TOKEN) {
+    req.resume();
+    redirect(res, "/");
+    return;
+  }
+  readRequestBody(req, res, (raw) => {
+    const token = new URLSearchParams(raw).get("token") || "";
+    if (!safeTokenEqual(token, RECEIVER_TOKEN)) {
+      // Re-rendered with 401 (not a redirect) so the failure is visible to
+      // both the browser and scripted probes; the per-IP rate limit bounds
+      // brute-force attempts.
+      respondLoginPage(res, 401, true);
+      return;
+    }
+    issueSessionCookie(res);
+    redirect(res, "/");
+  });
+}
+
+function handlePostLogout(req, res) {
+  req.resume();
+  clearSessionCookie(res);
+  redirect(res, RECEIVER_TOKEN ? "/login" : "/");
+}
+
+function respondLoginPage(res, status, failed) {
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    "X-Content-Type-Options": "nosniff",
+    // The page carries no user-controlled content; inline styles keep it
+    // self-contained (no /static dependency), everything else stays blocked.
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+  });
+  res.end(renderLoginPage(failed));
+}
+
+function renderLoginPage(failed) {
+  return `<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PatchLoop Inbox — Login</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 24rem; margin: 4rem auto; padding: 0 1rem; }
+    label { display: block; margin-bottom: 0.75rem; }
+    input { display: block; width: 100%; box-sizing: border-box; margin-top: 0.25rem; padding: 0.5rem; }
+    button { padding: 0.5rem 1.25rem; }
+    .error { color: #b00020; }
+  </style>
+</head>
+<body>
+  <h1>PatchLoop Inbox</h1>
+  ${failed ? '<p class="error">トークンが違います。</p>' : ""}
+  <form method="post" action="/login">
+    <label>Access token
+      <input type="password" name="token" autocomplete="current-password" autofocus required />
+    </label>
+    <button type="submit">Sign in</button>
+  </form>
+</body>
+</html>`;
+}
+
+// The inbox renders screenshots via their public URL, which can differ from the
+// origin the browser used to reach the inbox (e.g. publicBaseUrl behind a
+// tunnel), so img-src lists it next to 'self'.
+const PUBLIC_ORIGIN = (() => {
+  try {
+    return new URL(PUBLIC_BASE_URL).origin;
+  } catch (_) {
+    console.warn(`[PatchLoop receiver] publicBaseUrl is not a valid URL, screenshot previews may be blocked by CSP: ${PUBLIC_BASE_URL}`);
+    return "";
+  }
+})();
+const INBOX_CSP = `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'${PUBLIC_ORIGIN ? ` ${PUBLIC_ORIGIN}` : ""}; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`;
+
 async function handleGetInbox(req, res) {
   try {
     const items = await store.list({});
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      // Everything on the page is same-origin (script, styles, fetches); a
+      // stored payload that slipped past escaping still could not load or run
+      // anything external.
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": INBOX_CSP
+    });
     res.end(renderInbox(items));
   } catch (error) {
     res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
@@ -1582,6 +1808,7 @@ function renderInbox(items) {
 <body>
   <h1>PatchLoop Inbox</h1>
   <p class="meta">${items.length} feedback received · <a href="/feedback.json">raw JSON</a></p>
+  ${RECEIVER_TOKEN ? '<form class="logout-form" method="post" action="/logout"><button type="submit">ログアウト</button></form>' : ""}
   ${renderImportPanel()}
   ${items.length === 0 ? "" : renderFilterPanel(items)}
   ${items.length === 0 ? '<p class="empty">まだフィードバックはありません。widget からコメントを送ると、ここに表示されます。</p>' : cards.join("")}

@@ -18,6 +18,7 @@
   "screenshotDiskMaxBytes": 500000000,
   "trustProxy": false,
   "receiverToken": "",
+  "allowedOrigins": [],
   "slackWebhookUrl": "",
   "slackImageMode": "auto",
   "slackBotToken": "",
