@@ -101,6 +101,7 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 - `feedbackStorageKey` (string, optional) — `localStorage` key used to persist the feedback list; defaults to `patchloop:feedback`
 - `deliveryMode` (`"receiver"` | `"slack-webhook"` | `"download"` | `"none"`, optional) — delivery target; defaults to `"receiver"`
 - `endpoint` (string, optional) — URL the widget POSTs each payload to; nothing is sent when omitted
+- `ingestKey` (string, optional) — per-project public key sent to the receiver in the `X-PatchLoop-Ingest-Key` header; required when the receiver sets `INGEST_KEYS` / `ingestKeys`. It is embedded in the page, so it is not a secret — it identifies the project, deters indiscriminate spam, and can be rotated to revoke
 - `slackWebhookUrl` (string, optional) — Slack Incoming Webhook URL used when `deliveryMode: "slack-webhook"`
 - `showDeliverySettings` (boolean, optional) — show the delivery target controls in the drawer; defaults to `false`
 - `captureScreenshot` (boolean, optional) — include a viewport snapshot in the payload; defaults to `true`
@@ -182,6 +183,8 @@ node server/receive.js
 - Imports `.patchloop-feedback.json` files from the inbox UI
 - Returns the raw JSON at `GET /feedback.json` (filterable via `?projectId=` / `?demoId=` / `?status=`)
 - Serves saved screenshots from `GET /screenshots/:file`
+- Liveness monitoring at `GET /healthz` (200 with a store connectivity check; 503 on store failure or during shutdown; no auth required and exempt from rate limiting)
+- Graceful shutdown on SIGTERM / SIGINT (stops accepting new connections, waits for in-flight requests and the store to close, then exits; force-exits after 10 seconds)
 
 ### Storage
 
@@ -196,7 +199,9 @@ On startup, an existing legacy `server/feedback.json` is migrated into sqlite on
 - Configurable payload shape limits via `MAX_IMPORT_ITEMS` / `MAX_FIELD_LENGTH` / `MAX_ARRAY_LENGTH` / `MAX_OBJECT_DEPTH` (or config `maxImportItems` / `maxFieldLength` / `maxArrayLength` / `maxObjectDepth`): caps the items per `POST /import`, string length, array length, and nesting depth of accepted payloads (over-limit returns `413`; `screenshot.dataUrl` is bounded separately by `SCREENSHOT_MAX_BYTES`). Lenient defaults (`500` / `20000` / `1000` / `32`) stay on even when unset
 - Configurable per-IP fixed-window rate limit via `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` / `RATE_LIMIT_MAX_CLIENTS` (or config `rateLimitMax` / `rateLimitWindowMs` / `rateLimitMaxClients`): defaults to `120` requests per `60000` ms; over-limit returns `429` with `Retry-After`. The client is identified by the socket remote address; behind a reverse proxy, set `RECEIVER_TRUST_PROXY=1` to use the first `X-Forwarded-For` entry instead (off by default so a direct client can't spoof its identity)
 - New feedback is rejected with `507` once `MAX_FEEDBACK_COUNT` (or config `maxFeedbackCount`, default `100000`) is reached, and a screenshot write is rejected with `507` once it would exceed `SCREENSHOT_DISK_MAX_BYTES` (or config `screenshotDiskMaxBytes`, default `500000000`). Disk usage is measured once at startup and tracked on save/delete
-- Setting `RECEIVER_TOKEN` (or config `receiverToken`) requires `Authorization: Bearer <token>` on the operation endpoints (`POST /import` / `POST /feedback/:id/status` / `DELETE /feedback/:id` / `POST /feedback/:id/github-issue`). When unset, local runs work without auth (the widget's `POST /feedback` and read-only GETs are not gated; inbox browser auth and CORS restrictions are tracked separately)
+- Setting `RECEIVER_TOKEN` (or config `receiverToken`) requires auth on the operation endpoints (`POST /import` / `POST /feedback/:id/status` / `DELETE /feedback/:id` / `POST /feedback/:id/github-issue`) and the read endpoints (`GET /` (inbox) / `GET /feedback.json` / `GET /screenshots/:file`). API clients send `Authorization: Bearer <token>`; browsers enter the same token in the inbox login form (`GET /login`). After login, the session is held in an HMAC-derived HttpOnly cookie (7-day expiry, `SameSite=Lax`, `Secure` when `publicBaseUrl` is `https://`) — the raw token is never stored in the browser, and rotating the token invalidates every session at once. When unset, local runs work without auth (the widget's `POST /feedback` and `GET /widget.js` stay public even when set)
+- Setting `INGEST_KEYS` (comma-separated env) or config `ingestKeys` (array) requires a matching `X-PatchLoop-Ingest-Key` header on widget posts (`POST /feedback`); a missing or wrong key returns `401`. Config entries can be `"key"` strings or `{ "key": "...", "projectId": "..." }` objects that **bind a key to a projectId**: posts with a bound key reject a spoofed payload `projectId` with `403` and fill it in when omitted. Keys are public — they ship inside the demo page — so this is not secret-based auth (it identifies the project, deters indiscriminate spam, and can be rotated to revoke). When unset, anyone can post as before
+- Setting `ALLOWED_ORIGINS` (comma-separated env, or config `allowedOrigins` array) restricts CORS for widget posts (`POST /feedback`) to the listed origins (exact `scheme://host[:port]` match). JSON POSTs always trigger a preflight, so browser posts from origins outside the list are blocked before the request body is ever sent. When unset, every origin is allowed (`*`) as before, with a startup log warning. CORS headers are only emitted on `POST /feedback`; the inbox, operation endpoints, and screenshots are same-origin surfaces and return no CORS headers at all (a second wall next to auth). Received feedback records `received: { origin, originAllowed }`, visible in the inbox raw payload (the Origin header is spoofable, so treat it as a hint)
 - Forwards received feedback to a Slack Incoming Webhook when `SLACK_WEBHOOK_URL` is set
 - Configurable Slack screenshot presentation via `SLACK_IMAGE_MODE` (`auto` / `link` / `block` / `upload` / `off`)
 - Optional Slack file upload via `SLACK_BOT_TOKEN` and `SLACK_UPLOAD_CHANNEL_ID`
@@ -235,6 +240,8 @@ Relative path values such as `feedbackDbPath` and `screenshotDir` are resolved f
 
 To use a config file from another path, run `PATCHLOOP_RECEIVER_CONFIG=/path/to/receiver.config.json node server/receive.js`.
 
+Invalid numeric settings (non-numeric values, or 0 / negative / fractional values for the limit-style settings) are ignored in favor of the default (an invalid env value falls back to the config value) with an `ignored invalid setting ...` warning in the startup log. The effective values are printed in the startup `limits:` / `rate limit:` summary lines.
+
 Environment variables override the config file. For example, to try Slack forwarding temporarily:
 
 ```sh
@@ -260,7 +267,28 @@ GITHUB_TOKEN="github_pat_..." GITHUB_REPO="owner/repo" node server/receive.js
 
 When configured, each inbox card shows a `Create GitHub Issue` button. Created issues include the comment, reviewer, page URL, selector, target position, viewport, screenshot link, and the raw payload. The result is persisted as `integrations.github` and the card shows the issue link (or the error on failure). Creating a second issue from the same feedback is rejected. The API equivalent is `POST /feedback/:id/github-issue`.
 
-The screenshot image only renders inside the issue if GitHub can reach your `publicBaseUrl`; with a local receiver the link still works locally.
+The screenshot image only renders inside the issue if GitHub can reach your `publicBaseUrl`; with a local receiver the link still works locally. When `RECEIVER_TOKEN` is set, GitHub's image proxy cannot authenticate, so the issue carries only an `[Open screenshot]` link instead of an inline embed (opening it requires signing in to the receiver).
+
+### Public Deployment (EC2 etc.)
+
+The receiver defaults to a local-prototype setup (`127.0.0.1` bind, no auth, CORS `*`). When exposing it to the internet, assume the following:
+
+- **Terminate HTTPS at a reverse proxy (nginx / Caddy / ALB etc.)**: the receiver itself speaks plain HTTP. Behind a proxy, bind `HOST` to an interface only the proxy can reach, and set `RECEIVER_TRUST_PROXY=1` so the rate limiter sees real client IPs
+- **Always set `RECEIVER_TOKEN`**: publishing without it exposes the inbox, the feedback data, and every operation endpoint with no auth
+- **List your demo page origins in `ALLOWED_ORIGINS`**: restrict widget posts to the origins you expect
+- **Set `INGEST_KEYS` and pass `ingestKey` to the widget init**: rejects keyless `POST /feedback` with 401. Keys are public by design, so treat them as leak-tolerant and keep them per-project so they can be rotated
+- **Point `PUBLIC_BASE_URL` at your public `https://` URL**: it determines the reachability of screenshot links sent to Slack / GitHub, and the session cookie's `Secure` attribute follows this URL's scheme
+- **Inject secrets (`RECEIVER_TOKEN` / `GITHUB_TOKEN` / `SLACK_WEBHOOK_URL` etc.) via env**: env overrides the config file. If you keep them in `receiver.config.json` instead, keep the file out of git and under file-permission control
+- **Point liveness monitoring at `GET /healthz`**: it needs no auth, is exempt from rate limiting, and returns 200 / 503 including a store connectivity check. systemd / ALB stops trigger a graceful shutdown via SIGTERM (in-flight requests are drained, so set the stop timeout above 10 seconds)
+
+```sh
+RECEIVER_TOKEN="<long-random-token>" \
+INGEST_KEYS="<per-project-public-key>" \
+ALLOWED_ORIGINS="https://demo.example.com" \
+PUBLIC_BASE_URL="https://feedback.example.com" \
+RECEIVER_TRUST_PROXY=1 \
+HOST=127.0.0.1 PORT=4000 node server/receive.js
+```
 
 ## Slack Direct Mode
 
@@ -326,7 +354,7 @@ Not included yet:
 - Slack App / OAuth integration
 - Persistent database
 - Pixel-perfect browser screenshot capture
-- Auth
+- Per-reviewer authentication (the ingest key is a per-project public key and does not identify individuals; signed tokens issued behind a demo-side login are future scope)
 - AI PR integration
 
 ## License
