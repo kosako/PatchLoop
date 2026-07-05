@@ -1177,6 +1177,73 @@ test("without an allowlist, ingest CORS stays open and startup warns", async (t)
   assert.equal(inbox.headers.get("access-control-allow-origin"), null);
 });
 
+test("GET /healthz reports liveness and is exempt from rate limiting", async (t) => {
+  const receiver = await startReceiver(t, { RATE_LIMIT_MAX: "1" });
+
+  // Repeated probes (a load balancer polls continuously) all succeed and do
+  // not consume the per-client budget…
+  for (let i = 0; i < 3; i++) {
+    const health = await fetch(`${receiver.baseUrl}/healthz`);
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { ok: true });
+  }
+  // …so a real request still gets the full budget (1 allowed, then 429).
+  assert.equal((await fetch(`${receiver.baseUrl}/feedback.json`)).status, 200);
+  assert.equal((await fetch(`${receiver.baseUrl}/feedback.json`)).status, 429);
+});
+
+test("SIGTERM drains: an in-flight request completes and the process exits cleanly", async (t) => {
+  const receiver = await startReceiver(t);
+  const body = JSON.stringify(feedbackPayload("pl_drain_1"));
+  const head = [
+    "POST /feedback HTTP/1.1",
+    "Host: 127.0.0.1",
+    "Content-Type: application/json",
+    `Content-Length: ${Buffer.byteLength(body)}`,
+    "Connection: close",
+    "", ""
+  ].join("\r\n");
+
+  // Start a request but hold back the tail of the body so it is still in
+  // flight when the signal arrives.
+  const socket = net.connect(receiver.port, "127.0.0.1");
+  await new Promise((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+  const exited = new Promise((resolve) => receiver.child.once("exit", (code, signal) => resolve({ code, signal })));
+  socket.write(head + body.slice(0, 50));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  receiver.child.kill("SIGTERM");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  socket.write(body.slice(50));
+
+  const response = await new Promise((resolve, reject) => {
+    let raw = "";
+    socket.on("data", (chunk) => { raw += chunk; });
+    socket.once("end", () => resolve(raw));
+    socket.once("error", reject);
+  });
+  assert.match(response, /^HTTP\/1\.1 201/);
+
+  // Graceful exit: code 0 (not killed by the signal), store closed last.
+  const exit = await exited;
+  assert.deepEqual(exit, { code: 0, signal: null });
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].id, "pl_drain_1");
+});
+
+test("invalid settings warn at startup and the effective values are logged", async (t) => {
+  const receiver = await startReceiver(t, { MAX_IMPORT_ITEMS: "0", RATE_LIMIT_MAX: "abc" });
+
+  assert.match(receiver.logs, /ignored invalid setting MAX_IMPORT_ITEMS \(env\): "0" — using 500/);
+  assert.match(receiver.logs, /ignored invalid setting RATE_LIMIT_MAX \(env\): "abc" — using 120/);
+  // The one-block effective summary shows what the server actually runs with.
+  assert.match(receiver.logs, /limits: body=3000000B .*importItems=500/);
+  assert.match(receiver.logs, /rate limit: 120 req \/ 60000ms per client/);
+});
+
 async function startReceiver(t, extraEnv = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const port = await getFreePort();
@@ -1216,7 +1283,9 @@ async function startReceiver(t, extraEnv = {}) {
 
   return {
     baseUrl,
+    child,
     logs,
+    port,
     screenshotDir,
     storePath,
     dbPath,

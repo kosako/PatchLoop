@@ -182,6 +182,8 @@ node server/receive.js
 - inbox UI から `.patchloop-feedback.json` を選択して import できます
 - `GET /feedback.json` で raw JSON を返します（`?projectId=` / `?demoId=` / `?status=` で絞り込み可）
 - `GET /screenshots/:file` で保存済み screenshot を返します
+- `GET /healthz` で死活監視ができます（store 疎通込みで 200 / 異常・シャットダウン中は 503。認証不要・rate limit 対象外）
+- SIGTERM / SIGINT で graceful shutdown します（新規接続を止め、処理中のリクエスト完了と store の close を待ってから終了。10 秒で強制終了）
 
 ### ストレージ
 
@@ -236,6 +238,8 @@ cp server/receiver.config.example.json server/receiver.config.json
 
 別の場所の設定ファイルを使う場合は `PATCHLOOP_RECEIVER_CONFIG=/path/to/receiver.config.json node server/receive.js` で指定できます。
 
+数値系の設定に不正な値（非数値や、上限系での 0・負・小数）を与えた場合は、その値を無視してデフォルト（env が不正なら config の値）に戻し、起動ログに `ignored invalid setting ...` の警告を出します。実効値は起動時の `limits:` / `rate limit:` サマリ行で確認できます。
+
 環境変数を指定した場合は設定ファイルより優先されます。たとえば一時的に Slack 転送を試す場合:
 
 ```sh
@@ -272,6 +276,7 @@ receiver はデフォルトでローカルプロトタイプ前提（`127.0.0.1`
 - **`ALLOWED_ORIGINS` にデモページの origin を列挙する**: widget からの投稿を想定した origin に絞ります
 - **`PUBLIC_BASE_URL` を `https://` の公開 URL にする**: Slack / GitHub に載せる screenshot link の到達性に加え、セッション cookie の `Secure` 属性がこの URL のスキームで決まります
 - **secrets（`RECEIVER_TOKEN` / `GITHUB_TOKEN` / `SLACK_WEBHOOK_URL` など）は env 注入を推奨**: env は config ファイルより優先されます。config ファイル（`receiver.config.json`）に書く場合は git 管理外・ファイル権限の管理下に置いてください
+- **死活監視は `GET /healthz` に張る**: 認証不要・rate limit 対象外で、store 疎通込みの 200 / 503 を返します。systemd / ALB からの停止は SIGTERM で graceful shutdown します（in-flight 完了を待つため、停止タイムアウトは 10 秒より長めに）
 
 ```sh
 RECEIVER_TOKEN="<long-random-token>" \
