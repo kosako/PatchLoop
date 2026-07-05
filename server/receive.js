@@ -13,32 +13,34 @@ const CONFIG_PATH = process.env.PATCHLOOP_RECEIVER_CONFIG || path.join(__dirname
 const config = loadConfig(CONFIG_PATH);
 const configDir = path.dirname(CONFIG_PATH);
 
-const PORT = numberSetting(process.env.PORT, numberSetting(config.port, 4000));
+const PORT = numberSetting(process.env.PORT, numberSetting(config.port, 4000, "port (config)"), "PORT (env)");
 const HOST = process.env.HOST || config.host || "127.0.0.1";
 const LEGACY_STORE_PATH = process.env.FEEDBACK_STORE_PATH || pathFromConfig(config.feedbackStorePath, path.join(__dirname, "feedback.json"));
 const DB_PATH = process.env.FEEDBACK_DB_PATH || pathFromConfig(config.feedbackDbPath, path.join(__dirname, "feedback.db"));
-const MAX_BODY_BYTES = numberSetting(process.env.MAX_BODY_BYTES, numberSetting(config.maxBodyBytes, 3_000_000));
+const MAX_BODY_BYTES = positiveIntSetting(process.env.MAX_BODY_BYTES, positiveIntSetting(config.maxBodyBytes, 3_000_000, "maxBodyBytes (config)"), "MAX_BODY_BYTES (env)");
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || pathFromConfig(config.screenshotDir, path.join(__dirname, "screenshots"));
-const SCREENSHOT_MAX_BYTES = numberSetting(process.env.SCREENSHOT_MAX_BYTES, numberSetting(config.screenshotMaxBytes, 1_500_000));
+// Size caps use positiveIntSetting like the shape limits below: a 0 / negative
+// cap would reject every POST, so it is a misconfiguration, not a setting.
+const SCREENSHOT_MAX_BYTES = positiveIntSetting(process.env.SCREENSHOT_MAX_BYTES, positiveIntSetting(config.screenshotMaxBytes, 1_500_000, "screenshotMaxBytes (config)"), "SCREENSHOT_MAX_BYTES (env)");
 // Defense-in-depth shape limits on accepted payloads. MAX_BODY_BYTES already
 // caps the raw request, but without these a single in-budget request could
 // still smuggle an oversized string (e.g. a multi-MB comment copied verbatim
 // into a GitHub issue body), a huge array, a deeply nested object, or an import
 // bundle with an unbounded number of items. Lenient defaults keep local /
 // zero-config runs working; tune via env or config.
-const MAX_IMPORT_ITEMS = positiveIntSetting(process.env.MAX_IMPORT_ITEMS, positiveIntSetting(config.maxImportItems, 500));
-const MAX_FIELD_LENGTH = positiveIntSetting(process.env.MAX_FIELD_LENGTH, positiveIntSetting(config.maxFieldLength, 20_000));
-const MAX_ARRAY_LENGTH = positiveIntSetting(process.env.MAX_ARRAY_LENGTH, positiveIntSetting(config.maxArrayLength, 1_000));
-const MAX_OBJECT_DEPTH = positiveIntSetting(process.env.MAX_OBJECT_DEPTH, positiveIntSetting(config.maxObjectDepth, 32));
+const MAX_IMPORT_ITEMS = positiveIntSetting(process.env.MAX_IMPORT_ITEMS, positiveIntSetting(config.maxImportItems, 500, "maxImportItems (config)"), "MAX_IMPORT_ITEMS (env)");
+const MAX_FIELD_LENGTH = positiveIntSetting(process.env.MAX_FIELD_LENGTH, positiveIntSetting(config.maxFieldLength, 20_000, "maxFieldLength (config)"), "MAX_FIELD_LENGTH (env)");
+const MAX_ARRAY_LENGTH = positiveIntSetting(process.env.MAX_ARRAY_LENGTH, positiveIntSetting(config.maxArrayLength, 1_000, "maxArrayLength (config)"), "MAX_ARRAY_LENGTH (env)");
+const MAX_OBJECT_DEPTH = positiveIntSetting(process.env.MAX_OBJECT_DEPTH, positiveIntSetting(config.maxObjectDepth, 32, "maxObjectDepth (config)"), "MAX_OBJECT_DEPTH (env)");
 // Resource limits (DoS / disk exhaustion). A public receiver accepts unauth'd
 // POST /feedback, so without these an attacker can spam requests until the
 // process or disk is exhausted. All are tunable; lenient defaults stay on so
 // local / zero-config runs are unaffected.
-const RATE_LIMIT_WINDOW_MS = positiveIntSetting(process.env.RATE_LIMIT_WINDOW_MS, positiveIntSetting(config.rateLimitWindowMs, 60_000));
-const RATE_LIMIT_MAX = positiveIntSetting(process.env.RATE_LIMIT_MAX, positiveIntSetting(config.rateLimitMax, 120));
-const RATE_LIMIT_MAX_CLIENTS = positiveIntSetting(process.env.RATE_LIMIT_MAX_CLIENTS, positiveIntSetting(config.rateLimitMaxClients, 10_000));
-const MAX_FEEDBACK_COUNT = positiveIntSetting(process.env.MAX_FEEDBACK_COUNT, positiveIntSetting(config.maxFeedbackCount, 100_000));
-const SCREENSHOT_DISK_MAX_BYTES = positiveIntSetting(process.env.SCREENSHOT_DISK_MAX_BYTES, positiveIntSetting(config.screenshotDiskMaxBytes, 500_000_000));
+const RATE_LIMIT_WINDOW_MS = positiveIntSetting(process.env.RATE_LIMIT_WINDOW_MS, positiveIntSetting(config.rateLimitWindowMs, 60_000, "rateLimitWindowMs (config)"), "RATE_LIMIT_WINDOW_MS (env)");
+const RATE_LIMIT_MAX = positiveIntSetting(process.env.RATE_LIMIT_MAX, positiveIntSetting(config.rateLimitMax, 120, "rateLimitMax (config)"), "RATE_LIMIT_MAX (env)");
+const RATE_LIMIT_MAX_CLIENTS = positiveIntSetting(process.env.RATE_LIMIT_MAX_CLIENTS, positiveIntSetting(config.rateLimitMaxClients, 10_000, "rateLimitMaxClients (config)"), "RATE_LIMIT_MAX_CLIENTS (env)");
+const MAX_FEEDBACK_COUNT = positiveIntSetting(process.env.MAX_FEEDBACK_COUNT, positiveIntSetting(config.maxFeedbackCount, 100_000, "maxFeedbackCount (config)"), "MAX_FEEDBACK_COUNT (env)");
+const SCREENSHOT_DISK_MAX_BYTES = positiveIntSetting(process.env.SCREENSHOT_DISK_MAX_BYTES, positiveIntSetting(config.screenshotDiskMaxBytes, 500_000_000, "screenshotDiskMaxBytes (config)"), "SCREENSHOT_DISK_MAX_BYTES (env)");
 // Behind a reverse proxy the socket address is the proxy's; trust X-Forwarded-For
 // only when explicitly enabled, so a direct client can't spoof its rate-limit
 // identity by sending the header.
@@ -47,7 +49,7 @@ const WIDGET_DIST_PATH = path.join(__dirname, "..", "dist", "patchloop-widget.js
 const STATIC_DIR = path.join(__dirname, "static");
 const PUBLIC_BASE_URL = trimTrailingSlash(process.env.PUBLIC_BASE_URL || config.publicBaseUrl || `http://${HOST}:${PORT}`);
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || config.slackWebhookUrl || "";
-const SLACK_TIMEOUT_MS = numberSetting(process.env.SLACK_TIMEOUT_MS, numberSetting(config.slackTimeoutMs, 5000));
+const SLACK_TIMEOUT_MS = numberSetting(process.env.SLACK_TIMEOUT_MS, numberSetting(config.slackTimeoutMs, 5000, "slackTimeoutMs (config)"), "SLACK_TIMEOUT_MS (env)");
 const SLACK_IMAGE_MODE = normalizeSlackImageMode(process.env.SLACK_IMAGE_MODE || config.slackImageMode || "auto");
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || config.slackBotToken || "";
 const SLACK_UPLOAD_CHANNEL_ID = process.env.SLACK_UPLOAD_CHANNEL_ID || config.slackUploadChannelId || "";
@@ -56,7 +58,7 @@ const GITHUB_REPO = normalizeGitHubRepo(process.env.GITHUB_REPO || config.github
 const GITHUB_LABELS = normalizeStringList(process.env.GITHUB_LABELS || config.githubLabels);
 const GITHUB_ASSIGNEES = normalizeStringList(process.env.GITHUB_ASSIGNEES || config.githubAssignees);
 const GITHUB_API_BASE = trimTrailingSlash(process.env.GITHUB_API_BASE || config.githubApiBase || "https://api.github.com");
-const GITHUB_TIMEOUT_MS = numberSetting(process.env.GITHUB_TIMEOUT_MS, numberSetting(config.githubTimeoutMs, 8000));
+const GITHUB_TIMEOUT_MS = numberSetting(process.env.GITHUB_TIMEOUT_MS, numberSetting(config.githubTimeoutMs, 8000, "githubTimeoutMs (config)"), "GITHUB_TIMEOUT_MS (env)");
 const GITHUB_CONFIGURED = Boolean(GITHUB_TOKEN && GITHUB_REPO);
 // Optional shared token guarding the management (import, status, delete,
 // github-issue) and read (inbox, feedback.json, screenshots) endpoints. Unset =
@@ -220,6 +222,7 @@ function redirect(res, location) {
 const ROUTE_AUTH_KINDS = new Set(["none", "protected", "page"]);
 const ROUTES = [
   { method: "POST", pattern: /^\/feedback$/, auth: "none", cors: true, handler: handlePostFeedback },
+  { method: "GET", pattern: /^\/healthz$/, auth: "none", rateLimit: false, handler: handleGetHealthz },
   { method: "GET", pattern: /^\/login$/, auth: "none", handler: handleGetLogin },
   { method: "POST", pattern: /^\/login$/, auth: "none", handler: handlePostLogin },
   { method: "POST", pattern: /^\/logout$/, auth: "none", handler: handlePostLogout },
@@ -266,29 +269,43 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const retryAfter = rateLimitRetryAfter(clientIp(req));
-  if (retryAfter > 0) {
-    respondJson(res, 429, { ok: false, error: "Too Many Requests" }, { "Retry-After": String(retryAfter) });
-    return;
-  }
-
   const allowedMethods = new Set();
+  let matched = null;
+  let match = null;
   for (const route of ROUTES) {
-    const match = route.pattern.exec(pathname);
-    if (!match) continue;
+    const result = route.pattern.exec(pathname);
+    if (!result) continue;
     if (route.method !== req.method) {
       allowedMethods.add(route.method);
       continue;
     }
-    if (route.auth !== "none" && !isAuthorizedRequest(req)) {
-      if (route.auth === "page") {
+    matched = route;
+    match = result;
+    break;
+  }
+
+  // Health probes poll continuously and must not be throttled into flapping a
+  // load balancer (routes opt out with rateLimit: false). Everything else —
+  // including unmatched paths, so scanning floods still count — draws from the
+  // per-client budget.
+  if (!matched || matched.rateLimit !== false) {
+    const retryAfter = rateLimitRetryAfter(clientIp(req));
+    if (retryAfter > 0) {
+      respondJson(res, 429, { ok: false, error: "Too Many Requests" }, { "Retry-After": String(retryAfter) });
+      return;
+    }
+  }
+
+  if (matched) {
+    if (matched.auth !== "none" && !isAuthorizedRequest(req)) {
+      if (matched.auth === "page") {
         redirect(res, "/login");
       } else {
         respondJson(res, 401, { ok: false, error: "Unauthorized" });
       }
       return;
     }
-    route.handler(req, res, match);
+    matched.handler(req, res, match);
     return;
   }
 
@@ -301,6 +318,59 @@ const server = http.createServer((req, res) => {
   res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
   res.end("Not Found");
 });
+
+// Liveness for load balancers / monitoring: 200 while serving, 503 once the
+// process is draining or the store fails a trivial query. Unauthenticated —
+// probes cannot carry credentials and the response reveals only liveness.
+async function handleGetHealthz(req, res) {
+  if (shuttingDown) {
+    respondJson(res, 503, { ok: false, status: "shutting-down" });
+    return;
+  }
+  try {
+    await store.count();
+    respondJson(res, 200, { ok: true });
+  } catch (error) {
+    // Details go to the log, not the (unauthenticated) response.
+    console.warn(`[PatchLoop receiver] healthz store check failed: ${error.message}`);
+    respondJson(res, 503, { ok: false, status: "store-unavailable" });
+  }
+}
+
+let shuttingDown = false;
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+
+// SIGTERM (systemd / docker stop) and SIGINT (Ctrl-C) drain instead of dying
+// mid-write: stop accepting connections, let in-flight requests finish, then
+// close the store so no sqlite write is cut off. If a request hangs past the
+// drain deadline, exit anyway (the timer is unref'd, so it never delays a
+// clean exit).
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[PatchLoop receiver] ${signal} received, draining connections`);
+  setTimeout(() => {
+    console.warn(`[PatchLoop receiver] drain deadline (${SHUTDOWN_TIMEOUT_MS}ms) exceeded, exiting`);
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS).unref();
+  // A signal can arrive while startup is still running (legacy migration,
+  // screenshot dir scan): close() on a non-listening server still invokes the
+  // callback (with an error we can ignore), and the store may not exist yet.
+  server.close(async () => {
+    try {
+      if (store) await store.close();
+    } catch (error) {
+      console.warn(`[PatchLoop receiver] store close failed: ${error.message}`);
+    }
+    console.log("[PatchLoop receiver] shutdown complete");
+    process.exit(0);
+  });
+}
+
+// Registered at load — before the async startup — so a stop during startup
+// drains via the same path instead of dying mid-migration.
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 // Storage is initialized (and the legacy JSON store migrated) before the
 // server accepts requests, so no handler can run against an unready store.
@@ -321,6 +391,8 @@ async function start() {
   } else {
     console.warn("[PatchLoop receiver] CORS: every origin may POST /feedback (*) — set ALLOWED_ORIGINS / allowedOrigins for public deploys");
   }
+  console.log(`[PatchLoop receiver] limits: body=${MAX_BODY_BYTES}B screenshot=${SCREENSHOT_MAX_BYTES}B disk=${SCREENSHOT_DISK_MAX_BYTES}B count=${MAX_FEEDBACK_COUNT} importItems=${MAX_IMPORT_ITEMS} fieldLength=${MAX_FIELD_LENGTH} arrayLength=${MAX_ARRAY_LENGTH} objectDepth=${MAX_OBJECT_DEPTH}`);
+  console.log(`[PatchLoop receiver] rate limit: ${RATE_LIMIT_MAX} req / ${RATE_LIMIT_WINDOW_MS}ms per client (max ${RATE_LIMIT_MAX_CLIENTS} clients, trustProxy=${TRUST_PROXY})`);
   console.log(`[PatchLoop receiver] Slack webhook: ${SLACK_WEBHOOK_URL ? "enabled" : "disabled"}`);
   console.log(`[PatchLoop receiver] Slack image mode: ${SLACK_IMAGE_MODE}`);
   console.log(`[PatchLoop receiver] Slack file upload: ${SLACK_BOT_TOKEN && SLACK_UPLOAD_CHANNEL_ID ? "enabled" : "disabled"}`);
@@ -356,20 +428,34 @@ function setCorsHeaders(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
+function warnIgnoredSetting(label, value, fallback) {
+  console.warn(`[PatchLoop receiver] ignored invalid setting ${label}: ${JSON.stringify(String(value))} — using ${fallback}`);
+}
+
 // Number("") is 0 and Number("abc") is NaN; both would silently disable or
-// corrupt a limit, so blank and non-numeric settings fall back instead.
-function numberSetting(value, fallback) {
+// corrupt a limit, so blank settings are treated as unset and non-numeric ones
+// fall back with a startup warning (#99: a misconfig must be visible).
+function numberSetting(value, fallback, label) {
   if (value === undefined || value === null || String(value).trim() === "") return fallback;
   const number = Number(value);
-  return Number.isFinite(number) ? number : fallback;
+  if (!Number.isFinite(number)) {
+    warnIgnoredSetting(label, value, fallback);
+    return fallback;
+  }
+  return number;
 }
 
 // For limits where 0, a negative, or a fractional value is a misconfiguration
 // (it would reject nearly every request): such values fall back to the lenient
-// default instead of silently bricking the receiver.
-function positiveIntSetting(value, fallback) {
-  const number = numberSetting(value, fallback);
-  return Number.isInteger(number) && number > 0 ? number : fallback;
+// default instead of silently bricking the receiver, and warn at startup.
+function positiveIntSetting(value, fallback, label) {
+  if (value === undefined || value === null || String(value).trim() === "") return fallback;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number <= 0) {
+    warnIgnoredSetting(label, value, fallback);
+    return fallback;
+  }
+  return number;
 }
 
 function boolSetting(value) {
