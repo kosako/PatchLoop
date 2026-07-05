@@ -600,11 +600,11 @@ function handlePostFeedback(req, res) {
       schemaVersion: DEFAULT_SCHEMA_VERSION,
       ...payload,
       screenshot,
-      // Weak provenance signal for triage (#44 will add an unforgeable ingest
-      // key): the browser-sent Origin and whether the allowlist would have let
-      // a browser post it. Origin-less clients (curl, scripts) are not subject
-      // to CORS, so they record originAllowed: true. Set after the payload
-      // spread so a crafted payload cannot supply its own value.
+      // Weak provenance signal for triage, alongside the ingest key / project
+      // binding (#44): the browser-sent Origin and whether the allowlist would
+      // have let a browser post it. Origin-less clients (curl, scripts) are not
+      // subject to CORS, so they record originAllowed: true. Set after the
+      // payload spread so a crafted payload cannot supply its own value.
       received: {
         origin: typeof req.headers.origin === "string" ? req.headers.origin : null,
         originAllowed: ALLOWED_ORIGINS.length === 0
