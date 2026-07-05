@@ -1139,11 +1139,15 @@ test("CORS headers are scoped to the ingest route and honor the allowlist", asyn
   assert.equal(denied.status, 204);
   assert.equal(denied.headers.get("access-control-allow-origin"), null);
 
-  // Non-ingest endpoints emit no CORS headers at all (same-origin surfaces).
+  // Non-ingest endpoints emit no CORS headers at all (same-origin surfaces),
+  // and neither does a 405 on the ingest path (only POST + preflight do).
   const inbox = await fetch(receiver.baseUrl, { headers: { Origin: "http://demo.example" } });
   assert.equal(inbox.headers.get("access-control-allow-origin"), null);
   const read = await fetch(`${receiver.baseUrl}/feedback.json`, { headers: { Origin: "http://demo.example" } });
   assert.equal(read.headers.get("access-control-allow-origin"), null);
+  const wrongMethod = await fetch(`${receiver.baseUrl}/feedback`, { headers: { Origin: "http://demo.example" } });
+  assert.equal(wrongMethod.status, 405);
+  assert.equal(wrongMethod.headers.get("access-control-allow-origin"), null);
 
   // The stored record keeps the provenance signal for triage.
   const fromAllowed = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_cors_ok"), { Origin: "http://demo.example" });

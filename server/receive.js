@@ -253,7 +253,10 @@ const server = http.createServer((req, res) => {
     pathname = req.url;
   }
 
-  if (ROUTES.some((route) => route.cors && route.pattern.test(pathname))) {
+  // Method is part of the match (OPTIONS stands in for the preflight) so a 405
+  // response on a cors-enabled path does not advertise CORS either.
+  if (ROUTES.some((route) => route.cors && route.pattern.test(pathname)
+    && (req.method === "OPTIONS" || req.method === route.method))) {
     setCorsHeaders(req, res);
   }
 
