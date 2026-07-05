@@ -101,6 +101,7 @@ PatchLoop は、普通の HTML に `script` tag で埋め込める standalone wi
 - `feedbackStorageKey` (string, optional) — feedback list を保存する `localStorage` key。デフォルトは `patchloop:feedback`
 - `deliveryMode` (`"receiver"` | `"slack-webhook"` | `"download"` | `"none"`, optional) — 送信方式。デフォルトは `"receiver"`
 - `endpoint` (string, optional) — payload を `POST` する URL。未設定なら送信しない
+- `ingestKey` (string, optional) — receiver に `X-PatchLoop-Ingest-Key` ヘッダーで送るプロジェクトごとの公開キー。receiver 側で `INGEST_KEYS` / `ingestKeys` を設定している場合は必須。ページに埋め込まれるため秘密ではなく、プロジェクト識別・無差別 spam の抑止・ローテーションによる失効が目的
 - `slackWebhookUrl` (string, optional) — `deliveryMode: "slack-webhook"` 時にブラウザから直接送る Slack Incoming Webhook URL
 - `showDeliverySettings` (boolean, optional) — drawer 内に送信先切替 UI を表示するか。デフォルトは `false`
 - `captureScreenshot` (boolean, optional) — viewport snapshot を payload に含めるか。デフォルトは `true`
@@ -199,6 +200,7 @@ feedback は組み込みの `node:sqlite`（`server/feedback.db`）に保存し�
 - `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` / `RATE_LIMIT_MAX_CLIENTS` env（または config の `rateLimitMax` / `rateLimitWindowMs` / `rateLimitMaxClients`）で、IP ごとの固定窓レート制限を変更できます（デフォルト `120` req / `60000` ms、超過は `429` + `Retry-After`）。クライアント識別は既定で socket の remoteAddress。reverse proxy 配下では `RECEIVER_TRUST_PROXY` を `1` にしたときだけ `X-Forwarded-For` 先頭を使います（既定では直アクセスがヘッダーで識別を偽装できないようにするため）
 - `MAX_FEEDBACK_COUNT` env（または config の `maxFeedbackCount`、デフォルト `100000`）を超えると新規保存を `507` で拒否します。`SCREENSHOT_DISK_MAX_BYTES` env（または config の `screenshotDiskMaxBytes`、デフォルト `500000000`）を超える screenshot 書き込みも `507` で拒否します（起動時にディスク使用量を実測し、保存・削除で追跡）
 - `RECEIVER_TOKEN` env（または config の `receiverToken`）を設定すると、操作系 endpoint（`POST /import` / `POST /feedback/:id/status` / `DELETE /feedback/:id` / `POST /feedback/:id/github-issue`）と閲覧系 endpoint（`GET /`（inbox）/ `GET /feedback.json` / `GET /screenshots/:file`）に認証を必須にします。API からは `Authorization: Bearer <token>`、ブラウザからは inbox のログインフォーム（`GET /login`）に同じ token を入力します。ログイン後は HMAC 派生値の HttpOnly cookie（有効期限 7 日、`SameSite=Lax`、`publicBaseUrl` が `https://` のとき `Secure` 付き）でセッションが維持され、生 token はブラウザに保存されません。token を変更すると全端末のセッションが即失効します。未設定ならローカルは認証なしで動作します（widget の `POST /feedback` と `GET /widget.js` は設定時も常に公開）
+- `INGEST_KEYS` env（カンマ区切り）または config の `ingestKeys`（配列）を設定すると、widget の投稿（`POST /feedback`）に `X-PatchLoop-Ingest-Key` ヘッダーの一致を必須にします（不一致・欠落は `401`）。config では `"key文字列"` に加えて `{ "key": "...", "projectId": "..." }` 形式で **key と projectId を紐付け**でき、紐付いた key での投稿は payload の `projectId` 詐称を `403` で拒否し、省略時は key の projectId を補完します。キーはデモページに埋め込まれる公開キーで、秘密による認証ではありません（プロジェクト識別・spam 抑止・ローテーション失効が目的）。未設定なら従来通り誰でも投稿できます
 - `ALLOWED_ORIGINS` env（または config の `allowedOrigins`、env はカンマ区切り・config は配列）を設定すると、widget の投稿（`POST /feedback`）の CORS を許可 origin（`scheme://host[:port]` の完全一致）に制限します。JSON POST は必ず preflight されるため、リスト外 origin のブラウザ投稿は本体 POST の前にブラウザ側で遮断されます。未設定なら従来通り全 origin 許可（`*`）で、起動ログに警告が出ます。CORS ヘッダーが付くのは `POST /feedback` のみで、inbox・操作系・screenshot は同一オリジン利用のため CORS 自体を返しません。受信した feedback には `received: { origin, originAllowed }` が保存され、inbox の raw payload から確認できます（Origin ヘッダーは偽装可能なため参考情報です）
 - `SLACK_WEBHOOK_URL` env を設定すると、受信した feedback を Slack Incoming Webhook にも転送します
 - `SLACK_IMAGE_MODE` env で Slack 上の screenshot 表示方式を変更できます（`auto` / `link` / `block` / `upload` / `off`）
@@ -274,12 +276,14 @@ receiver はデフォルトでローカルプロトタイプ前提（`127.0.0.1`
 - **HTTPS 終端は reverse proxy（nginx / Caddy / ALB など）で行う**: receiver 自体は HTTP のみです。proxy の背後では `HOST` の bind 先を proxy からのみ届く interface に限定し、rate limit がクライアント IP を正しく見るよう `RECEIVER_TRUST_PROXY=1` を設定します
 - **`RECEIVER_TOKEN` を必ず設定する**: 未設定のまま公開すると inbox・feedback データ・操作系がすべて無認証で露出します
 - **`ALLOWED_ORIGINS` にデモページの origin を列挙する**: widget からの投稿を想定した origin に絞ります
+- **`INGEST_KEYS` を設定し、widget の init に `ingestKey` を渡す**: キーなしの `POST /feedback` を 401 で拒否できます。キーは公開キーなので漏えい前提で、プロジェクトごとに分けてローテーションできるようにしておきます
 - **`PUBLIC_BASE_URL` を `https://` の公開 URL にする**: Slack / GitHub に載せる screenshot link の到達性に加え、セッション cookie の `Secure` 属性がこの URL のスキームで決まります
 - **secrets（`RECEIVER_TOKEN` / `GITHUB_TOKEN` / `SLACK_WEBHOOK_URL` など）は env 注入を推奨**: env は config ファイルより優先されます。config ファイル（`receiver.config.json`）に書く場合は git 管理外・ファイル権限の管理下に置いてください
 - **死活監視は `GET /healthz` に張る**: 認証不要・rate limit 対象外で、store 疎通込みの 200 / 503 を返します。systemd / ALB からの停止は SIGTERM で graceful shutdown します（in-flight 完了を待つため、停止タイムアウトは 10 秒より長めに）
 
 ```sh
 RECEIVER_TOKEN="<long-random-token>" \
+INGEST_KEYS="<per-project-public-key>" \
 ALLOWED_ORIGINS="https://demo.example.com" \
 PUBLIC_BASE_URL="https://feedback.example.com" \
 RECEIVER_TRUST_PROXY=1 \
@@ -350,7 +354,7 @@ GitHub Issue 作成は receiver inbox からの手動操作のみで、自動作
 - Slack App / OAuth 連携
 - 永続 DB
 - pixel-perfect なブラウザ screenshot capture
-- widget↔receiver のペア認証（ingest key。受信面の認証は `RECEIVER_TOKEN` + inbox ログインで対応済み）
+- レビュアー個人の認証（ingest key はプロジェクト単位の公開キーで、個人を識別しない。デモ側ログイン前提の署名付き token は将来スコープ）
 - AI PR 連携
 
 ## License

@@ -19,6 +19,7 @@
   "trustProxy": false,
   "receiverToken": "",
   "allowedOrigins": [],
+  "ingestKeys": [],
   "slackWebhookUrl": "",
   "slackImageMode": "auto",
   "slackBotToken": "",
