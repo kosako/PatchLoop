@@ -17,9 +17,11 @@ const PORT = numberSetting(process.env.PORT, numberSetting(config.port, 4000, "p
 const HOST = process.env.HOST || config.host || "127.0.0.1";
 const LEGACY_STORE_PATH = process.env.FEEDBACK_STORE_PATH || pathFromConfig(config.feedbackStorePath, path.join(__dirname, "feedback.json"));
 const DB_PATH = process.env.FEEDBACK_DB_PATH || pathFromConfig(config.feedbackDbPath, path.join(__dirname, "feedback.db"));
-const MAX_BODY_BYTES = numberSetting(process.env.MAX_BODY_BYTES, numberSetting(config.maxBodyBytes, 3_000_000, "maxBodyBytes (config)"), "MAX_BODY_BYTES (env)");
+const MAX_BODY_BYTES = positiveIntSetting(process.env.MAX_BODY_BYTES, positiveIntSetting(config.maxBodyBytes, 3_000_000, "maxBodyBytes (config)"), "MAX_BODY_BYTES (env)");
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || pathFromConfig(config.screenshotDir, path.join(__dirname, "screenshots"));
-const SCREENSHOT_MAX_BYTES = numberSetting(process.env.SCREENSHOT_MAX_BYTES, numberSetting(config.screenshotMaxBytes, 1_500_000, "screenshotMaxBytes (config)"), "SCREENSHOT_MAX_BYTES (env)");
+// Size caps use positiveIntSetting like the shape limits below: a 0 / negative
+// cap would reject every POST, so it is a misconfiguration, not a setting.
+const SCREENSHOT_MAX_BYTES = positiveIntSetting(process.env.SCREENSHOT_MAX_BYTES, positiveIntSetting(config.screenshotMaxBytes, 1_500_000, "screenshotMaxBytes (config)"), "SCREENSHOT_MAX_BYTES (env)");
 // Defense-in-depth shape limits on accepted payloads. MAX_BODY_BYTES already
 // caps the raw request, but without these a single in-budget request could
 // still smuggle an oversized string (e.g. a multi-MB comment copied verbatim
@@ -351,9 +353,12 @@ function shutdown(signal) {
     console.warn(`[PatchLoop receiver] drain deadline (${SHUTDOWN_TIMEOUT_MS}ms) exceeded, exiting`);
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS).unref();
+  // A signal can arrive while startup is still running (legacy migration,
+  // screenshot dir scan): close() on a non-listening server still invokes the
+  // callback (with an error we can ignore), and the store may not exist yet.
   server.close(async () => {
     try {
-      await store.close();
+      if (store) await store.close();
     } catch (error) {
       console.warn(`[PatchLoop receiver] store close failed: ${error.message}`);
     }
@@ -361,6 +366,11 @@ function shutdown(signal) {
     process.exit(0);
   });
 }
+
+// Registered at load — before the async startup — so a stop during startup
+// drains via the same path instead of dying mid-migration.
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 // Storage is initialized (and the legacy JSON store migrated) before the
 // server accepts requests, so no handler can run against an unready store.
@@ -387,9 +397,6 @@ async function start() {
   console.log(`[PatchLoop receiver] Slack image mode: ${SLACK_IMAGE_MODE}`);
   console.log(`[PatchLoop receiver] Slack file upload: ${SLACK_BOT_TOKEN && SLACK_UPLOAD_CHANNEL_ID ? "enabled" : "disabled"}`);
   console.log(`[PatchLoop receiver] GitHub issues: ${GITHUB_CONFIGURED ? `enabled (${GITHUB_REPO})` : "disabled"}`);
-
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
-  process.on("SIGINT", () => shutdown("SIGINT"));
 
   server.listen(PORT, HOST, () => {
     console.log(`[PatchLoop receiver] listening on http://${HOST}:${PORT}`);

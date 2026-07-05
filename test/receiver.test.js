@@ -1235,10 +1235,12 @@ test("SIGTERM drains: an in-flight request completes and the process exits clean
 });
 
 test("invalid settings warn at startup and the effective values are logged", async (t) => {
-  const receiver = await startReceiver(t, { MAX_IMPORT_ITEMS: "0", RATE_LIMIT_MAX: "abc" });
+  const receiver = await startReceiver(t, { MAX_IMPORT_ITEMS: "0", RATE_LIMIT_MAX: "abc", MAX_BODY_BYTES: "-5" });
 
   assert.match(receiver.logs, /ignored invalid setting MAX_IMPORT_ITEMS \(env\): "0" — using 500/);
   assert.match(receiver.logs, /ignored invalid setting RATE_LIMIT_MAX \(env\): "abc" — using 120/);
+  // Size caps are limits too: 0 / negative would reject every POST.
+  assert.match(receiver.logs, /ignored invalid setting MAX_BODY_BYTES \(env\): "-5" — using 3000000/);
   // The one-block effective summary shows what the server actually runs with.
   assert.match(receiver.logs, /limits: body=3000000B .*importItems=500/);
   assert.match(receiver.logs, /rate limit: 120 req \/ 60000ms per client/);
