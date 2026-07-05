@@ -724,6 +724,28 @@ test("preflight OPTIONS requests are not rate limited", async (t) => {
   assert.equal((await fetch(url)).status, 429);
 });
 
+test("known paths reject unsupported methods with 405 and an Allow header", async (t) => {
+  const receiver = await startReceiver(t);
+
+  const fixed = await fetch(`${receiver.baseUrl}/feedback`, { method: "GET" });
+  assert.equal(fixed.status, 405);
+  assert.equal(fixed.headers.get("allow"), "POST, OPTIONS");
+  assert.deepEqual(await fixed.json(), { ok: false, error: "Method Not Allowed" });
+
+  // Parameterized paths are recognized across methods too.
+  const parameterized = await fetch(`${receiver.baseUrl}/feedback/pl_x`, { method: "PUT" });
+  assert.equal(parameterized.status, 405);
+  assert.equal(parameterized.headers.get("allow"), "DELETE, OPTIONS");
+});
+
+test("unknown paths still return 404", async (t) => {
+  const receiver = await startReceiver(t);
+
+  const response = await fetch(`${receiver.baseUrl}/no-such-route`);
+  assert.equal(response.status, 404);
+  assert.equal(await response.text(), "Not Found");
+});
+
 test("X-Forwarded-For is ignored for rate limiting unless trust proxy is set", async (t) => {
   const receiver = await startReceiver(t, { RATE_LIMIT_MAX: "1" });
   const url = `${receiver.baseUrl}/feedback.json`;

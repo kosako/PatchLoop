@@ -145,6 +145,33 @@ function requireOperationAuth(req, res) {
   return false;
 }
 
+// Every route declares its auth policy so a new endpoint cannot silently
+// skip the check; dispatch applies it in one place instead of per-branch
+// (#43). Auth kinds grow to inbox/ingest (plus per-route CORS) in the
+// follow-up hardening slice.
+const ROUTE_AUTH_KINDS = new Set(["none", "operation"]);
+const ROUTES = [
+  { method: "POST", pattern: /^\/feedback$/, auth: "none", handler: handlePostFeedback },
+  { method: "POST", pattern: /^\/import$/, auth: "operation", handler: handlePostImport },
+  { method: "DELETE", pattern: /^\/feedback\/([^/]+)$/, auth: "operation",
+    handler: (req, res, match) => handleDeleteFeedback(req, res, decodeURIComponent(match[1])) },
+  { method: "POST", pattern: /^\/feedback\/([^/]+)\/status$/, auth: "operation",
+    handler: (req, res, match) => handlePostStatus(req, res, decodeURIComponent(match[1])) },
+  { method: "POST", pattern: /^\/feedback\/([^/]+)\/github-issue$/, auth: "operation",
+    handler: (req, res, match) => handlePostGitHubIssue(req, res, decodeURIComponent(match[1])) },
+  { method: "GET", pattern: /^\/(?:index\.html)?$/, auth: "none", handler: handleGetInbox },
+  { method: "GET", pattern: /^\/feedback\.json$/, auth: "none", handler: handleGetFeedbackJson },
+  { method: "GET", pattern: /^\/widget\.js$/, auth: "none", handler: handleGetWidgetScript },
+  { method: "GET", pattern: /^\/static\//, auth: "none", handler: handleGetStaticAsset },
+  { method: "GET", pattern: /^\/screenshots\//, auth: "none", handler: handleGetScreenshot }
+];
+
+for (const route of ROUTES) {
+  if (!ROUTE_AUTH_KINDS.has(route.auth)) {
+    throw new Error(`Unknown auth kind "${route.auth}" for route ${route.method} ${route.pattern}`);
+  }
+}
+
 const server = http.createServer((req, res) => {
   setCors(res);
 
@@ -169,60 +196,22 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === "POST" && pathname === "/feedback") {
-    handlePostFeedback(req, res);
+  const allowedMethods = new Set();
+  for (const route of ROUTES) {
+    const match = route.pattern.exec(pathname);
+    if (!match) continue;
+    if (route.method !== req.method) {
+      allowedMethods.add(route.method);
+      continue;
+    }
+    if (route.auth === "operation" && !requireOperationAuth(req, res)) return;
+    route.handler(req, res, match);
     return;
   }
 
-  if (req.method === "POST" && pathname === "/import") {
-    if (!requireOperationAuth(req, res)) return;
-    handlePostImport(req, res);
-    return;
-  }
-
-  const deleteMatch = req.method === "DELETE" && /^\/feedback\/([^/]+)$/.exec(pathname);
-  if (deleteMatch) {
-    if (!requireOperationAuth(req, res)) return;
-    handleDeleteFeedback(req, res, decodeURIComponent(deleteMatch[1]));
-    return;
-  }
-
-  const statusMatch = req.method === "POST" && /^\/feedback\/([^/]+)\/status$/.exec(pathname);
-  if (statusMatch) {
-    if (!requireOperationAuth(req, res)) return;
-    handlePostStatus(req, res, decodeURIComponent(statusMatch[1]));
-    return;
-  }
-
-  const githubMatch = req.method === "POST" && /^\/feedback\/([^/]+)\/github-issue$/.exec(pathname);
-  if (githubMatch) {
-    if (!requireOperationAuth(req, res)) return;
-    handlePostGitHubIssue(req, res, decodeURIComponent(githubMatch[1]));
-    return;
-  }
-
-  if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {
-    handleGetInbox(req, res);
-    return;
-  }
-
-  if (req.method === "GET" && pathname === "/feedback.json") {
-    handleGetFeedbackJson(req, res);
-    return;
-  }
-
-  if (req.method === "GET" && pathname === "/widget.js") {
-    handleGetWidgetScript(req, res);
-    return;
-  }
-
-  if (req.method === "GET" && pathname.startsWith("/static/")) {
-    handleGetStaticAsset(req, res);
-    return;
-  }
-
-  if (req.method === "GET" && pathname.startsWith("/screenshots/")) {
-    handleGetScreenshot(req, res);
+  if (allowedMethods.size > 0) {
+    allowedMethods.add("OPTIONS");
+    respondJson(res, 405, { ok: false, error: "Method Not Allowed" }, { "Allow": [...allowedMethods].join(", ") });
     return;
   }
 
