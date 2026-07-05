@@ -2,6 +2,7 @@
 
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
+const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const http = require("node:http");
 const net = require("node:net");
@@ -316,6 +317,30 @@ test("POST /feedback/:id/github-issue serializes concurrent requests (no duplica
 
   const stored = await readStoredFeedback(receiver.dbPath);
   assert.equal(stored[0].integrations.github.status, "created");
+});
+
+test("GitHub issue body degrades the screenshot embed to a link when auth is enabled", async (t) => {
+  const github = await startMockGitHub(t, (res) => {
+    res.writeHead(201, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ number: 8, html_url: "https://github.com/acme/demo/issues/8" }));
+  });
+  const receiver = await startReceiver(t, {
+    RECEIVER_TOKEN: "s3cret",
+    GITHUB_TOKEN: "test-token",
+    GITHUB_REPO: "acme/demo",
+    GITHUB_API_BASE: github.baseUrl
+  });
+  const payload = feedbackPayload("pl_github_auth");
+  await postJson(`${receiver.baseUrl}/feedback`, payload);
+
+  const response = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {}, { Authorization: "Bearer s3cret" });
+  assert.equal(response.status, 201);
+
+  // GitHub's image proxy cannot authenticate, so an inline embed would always
+  // break; the body keeps only the direct link.
+  const body = github.requests[0].body.body;
+  assert.doesNotMatch(body, /!\[PatchLoop screenshot\]/);
+  assert.match(body, /\[Open screenshot\]\(/);
 });
 
 test("POST /feedback/:id/github-issue persists failures and requires configuration", async (t) => {
@@ -984,7 +1009,7 @@ test("POST /feedback keeps omitted screenshot metadata (bytes/maxBytes)", async 
   assert.equal(stored[0].screenshot.maxBytes, 1000);
 });
 
-test("operation endpoints require the shared token when RECEIVER_TOKEN is set", async (t) => {
+test("protected endpoints require the shared token when RECEIVER_TOKEN is set", async (t) => {
   const receiver = await startReceiver(t, { RECEIVER_TOKEN: "s3cret" });
   const payload = feedbackPayload("pl_auth_1");
 
@@ -992,9 +1017,20 @@ test("operation endpoints require the shared token when RECEIVER_TOKEN is set", 
   const ingest = await postJson(`${receiver.baseUrl}/feedback`, payload);
   assert.equal(ingest.status, 201);
 
-  // Reads stay open in this slice (inbox/GET auth is a follow-up, #43).
+  // Reads are protected too: JSON/resources return 401, the inbox page
+  // redirects an unauthenticated browser to the login form.
   const read = await fetch(`${receiver.baseUrl}/feedback.json`);
-  assert.equal(read.status, 200);
+  assert.equal(read.status, 401);
+  const inbox = await fetch(receiver.baseUrl, { redirect: "manual" });
+  assert.equal(inbox.status, 303);
+  assert.equal(inbox.headers.get("location"), "/login");
+  const stored = await readStoredFeedback(receiver.dbPath);
+  const screenshotNoToken = await fetch(stored[0].screenshot.url);
+  assert.equal(screenshotNoToken.status, 401);
+
+  // The widget bundle stays public: demo pages load it cross-origin.
+  const widget = await fetch(`${receiver.baseUrl}/widget.js`);
+  assert.notEqual(widget.status, 401);
 
   // Every operation endpoint rejects a missing token (permission boundary).
   const importNoToken = await postJson(`${receiver.baseUrl}/import`, { kind: "patchloop-feedback-bundle", version: 2, feedback: [feedbackPayload("pl_auth_imp")] });
@@ -1006,11 +1042,139 @@ test("operation endpoints require the shared token when RECEIVER_TOKEN is set", 
   const deleteNoToken = await fetch(`${receiver.baseUrl}/feedback/${payload.id}`, { method: "DELETE" });
   assert.equal(deleteNoToken.status, 401);
 
-  // A wrong token is rejected; the correct bearer token is accepted.
+  // A wrong token is rejected; the correct bearer token is accepted, for
+  // reads and operations alike (curl workflows keep working).
   const badToken = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "accepted" }, { Authorization: "Bearer nope" });
   assert.equal(badToken.status, 401);
+  const readBearer = await fetch(`${receiver.baseUrl}/feedback.json`, { headers: { Authorization: "Bearer s3cret" } });
+  assert.equal(readBearer.status, 200);
   const ok = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "accepted" }, { Authorization: "Bearer s3cret" });
   assert.equal(ok.status, 200);
+});
+
+test("login form issues a session cookie that unlocks the inbox (no raw token in the browser)", async (t) => {
+  const receiver = await startReceiver(t, { RECEIVER_TOKEN: "s3cret" });
+  const payload = feedbackPayload("pl_login_1");
+  await postJson(`${receiver.baseUrl}/feedback`, payload);
+
+  // The login page itself is reachable without credentials.
+  const form = await fetch(`${receiver.baseUrl}/login`);
+  assert.equal(form.status, 200);
+  assert.match(await form.text(), /name="token"/);
+
+  // A wrong token re-renders the form as 401 and sets no cookie.
+  const failed = await fetch(`${receiver.baseUrl}/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: "token=nope"
+  });
+  assert.equal(failed.status, 401);
+  assert.equal(failed.headers.get("set-cookie"), null);
+
+  // The correct token redirects to the inbox with an HttpOnly session cookie
+  // that is derived (expiry + HMAC) — the raw token never reaches the browser.
+  const login = await fetch(`${receiver.baseUrl}/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: "token=s3cret",
+    redirect: "manual"
+  });
+  assert.equal(login.status, 303);
+  assert.equal(login.headers.get("location"), "/");
+  const setCookie = login.headers.get("set-cookie");
+  assert.match(setCookie, /^patchloop_session=\d+\.[0-9a-f]{64}; Max-Age=604800; Path=\/; HttpOnly; SameSite=Lax$/);
+  assert.doesNotMatch(setCookie, /s3cret/);
+  const cookie = setCookie.split(";")[0];
+
+  // The cookie unlocks the inbox page, reads, and operations — the inbox UI's
+  // same-origin fetches need no extra wiring.
+  const inbox = await fetch(receiver.baseUrl, { headers: { Cookie: cookie } });
+  assert.equal(inbox.status, 200);
+  const inboxHtml = await inbox.text();
+  assert.match(inboxHtml, /action="\/logout"/);
+  assert.match(inbox.headers.get("content-security-policy"), /default-src 'none'/);
+  assert.equal(inbox.headers.get("x-content-type-options"), "nosniff");
+  const read = await fetch(`${receiver.baseUrl}/feedback.json`, { headers: { Cookie: cookie } });
+  assert.equal(read.status, 200);
+  const status = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "accepted" }, { Cookie: cookie });
+  assert.equal(status.status, 200);
+
+  // A visit to /login with a valid session bounces back to the inbox.
+  const revisit = await fetch(`${receiver.baseUrl}/login`, { headers: { Cookie: cookie }, redirect: "manual" });
+  assert.equal(revisit.status, 303);
+  assert.equal(revisit.headers.get("location"), "/");
+
+  // Tampered and expired cookies are rejected. The expired one carries a valid
+  // signature over a past expiry, so only the expiry check can catch it.
+  const tampered = await fetch(`${receiver.baseUrl}/feedback.json`, { headers: { Cookie: `${cookie}ff` } });
+  assert.equal(tampered.status, 401);
+  const pastExpiry = Date.now() - 1000;
+  const expiredSignature = crypto.createHmac("sha256", "s3cret").update(String(pastExpiry)).digest("hex");
+  const expired = await fetch(`${receiver.baseUrl}/feedback.json`, {
+    headers: { Cookie: `patchloop_session=${pastExpiry}.${expiredSignature}` }
+  });
+  assert.equal(expired.status, 401);
+
+  // Logout clears the cookie and returns to the login form.
+  const logout = await fetch(`${receiver.baseUrl}/logout`, { method: "POST", headers: { Cookie: cookie }, redirect: "manual" });
+  assert.equal(logout.status, 303);
+  assert.equal(logout.headers.get("location"), "/login");
+  assert.match(logout.headers.get("set-cookie"), /^patchloop_session=; Max-Age=0/);
+});
+
+test("CORS headers are scoped to the ingest route and honor the allowlist", async (t) => {
+  const receiver = await startReceiver(t, { ALLOWED_ORIGINS: "http://demo.example, http://other.example/" });
+  assert.match(receiver.logs, /CORS allowlist: http:\/\/demo\.example, http:\/\/other\.example/);
+
+  // Preflight from an allowlisted origin is granted (origin echoed back).
+  const allowed = await fetch(`${receiver.baseUrl}/feedback`, { method: "OPTIONS", headers: { Origin: "http://demo.example" } });
+  assert.equal(allowed.status, 204);
+  assert.equal(allowed.headers.get("access-control-allow-origin"), "http://demo.example");
+  assert.equal(allowed.headers.get("access-control-allow-methods"), "POST, OPTIONS");
+  assert.equal(allowed.headers.get("vary"), "Origin");
+
+  // An origin outside the list gets no CORS headers, so the browser blocks the
+  // cross-origin POST at the preflight.
+  const denied = await fetch(`${receiver.baseUrl}/feedback`, { method: "OPTIONS", headers: { Origin: "http://evil.example" } });
+  assert.equal(denied.status, 204);
+  assert.equal(denied.headers.get("access-control-allow-origin"), null);
+
+  // Non-ingest endpoints emit no CORS headers at all (same-origin surfaces),
+  // and neither does a 405 on the ingest path (only POST + preflight do).
+  const inbox = await fetch(receiver.baseUrl, { headers: { Origin: "http://demo.example" } });
+  assert.equal(inbox.headers.get("access-control-allow-origin"), null);
+  const read = await fetch(`${receiver.baseUrl}/feedback.json`, { headers: { Origin: "http://demo.example" } });
+  assert.equal(read.headers.get("access-control-allow-origin"), null);
+  const wrongMethod = await fetch(`${receiver.baseUrl}/feedback`, { headers: { Origin: "http://demo.example" } });
+  assert.equal(wrongMethod.status, 405);
+  assert.equal(wrongMethod.headers.get("access-control-allow-origin"), null);
+
+  // The stored record keeps the provenance signal for triage.
+  const fromAllowed = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_cors_ok"), { Origin: "http://demo.example" });
+  assert.equal(fromAllowed.status, 201);
+  const fromDenied = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_cors_ng"), { Origin: "http://evil.example" });
+  assert.equal(fromDenied.status, 201);
+  const fromCurl = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_cors_curl"));
+  assert.equal(fromCurl.status, 201);
+
+  const stored = await readStoredFeedback(receiver.dbPath);
+  const byId = Object.fromEntries(stored.map((item) => [item.id, item.received]));
+  assert.deepEqual(byId.pl_cors_ok, { origin: "http://demo.example", originAllowed: true });
+  assert.deepEqual(byId.pl_cors_ng, { origin: "http://evil.example", originAllowed: false });
+  assert.deepEqual(byId.pl_cors_curl, { origin: null, originAllowed: true });
+});
+
+test("without an allowlist, ingest CORS stays open and startup warns", async (t) => {
+  const receiver = await startReceiver(t);
+  assert.match(receiver.logs, /CORS: every origin may POST \/feedback/);
+
+  const preflight = await fetch(`${receiver.baseUrl}/feedback`, { method: "OPTIONS", headers: { Origin: "http://anywhere.example" } });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+
+  // Even with CORS open, only the ingest route advertises it.
+  const inbox = await fetch(receiver.baseUrl);
+  assert.equal(inbox.headers.get("access-control-allow-origin"), null);
 });
 
 async function startReceiver(t, extraEnv = {}) {

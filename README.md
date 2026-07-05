@@ -196,7 +196,8 @@ feedback は組み込みの `node:sqlite`（`server/feedback.db`）に保存し�
 - `MAX_IMPORT_ITEMS` / `MAX_FIELD_LENGTH` / `MAX_ARRAY_LENGTH` / `MAX_OBJECT_DEPTH` env（または config の `maxImportItems` / `maxFieldLength` / `maxArrayLength` / `maxObjectDepth`）で、受信 payload の形（`POST /import` 1 回の件数・文字列長・配列長・ネスト深さ）の上限を変更できます。未設定でもローカルで困らない緩いデフォルト（`500` / `20000` / `1000` / `32`）が常に有効です（超過は `413`。`screenshot.dataUrl` は `SCREENSHOT_MAX_BYTES` 側で別途上限）
 - `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` / `RATE_LIMIT_MAX_CLIENTS` env（または config の `rateLimitMax` / `rateLimitWindowMs` / `rateLimitMaxClients`）で、IP ごとの固定窓レート制限を変更できます（デフォルト `120` req / `60000` ms、超過は `429` + `Retry-After`）。クライアント識別は既定で socket の remoteAddress。reverse proxy 配下では `RECEIVER_TRUST_PROXY` を `1` にしたときだけ `X-Forwarded-For` 先頭を使います（既定では直アクセスがヘッダーで識別を偽装できないようにするため）
 - `MAX_FEEDBACK_COUNT` env（または config の `maxFeedbackCount`、デフォルト `100000`）を超えると新規保存を `507` で拒否します。`SCREENSHOT_DISK_MAX_BYTES` env（または config の `screenshotDiskMaxBytes`、デフォルト `500000000`）を超える screenshot 書き込みも `507` で拒否します（起動時にディスク使用量を実測し、保存・削除で追跡）
-- `RECEIVER_TOKEN` env（または config の `receiverToken`）を設定すると、操作系 endpoint（`POST /import` / `POST /feedback/:id/status` / `DELETE /feedback/:id` / `POST /feedback/:id/github-issue`）に `Authorization: Bearer <token>` を必須にします。未設定ならローカルは認証なしで動作します（widget の `POST /feedback` と閲覧系 GET は対象外。inbox のブラウザ認証・CORS 制限は別途）
+- `RECEIVER_TOKEN` env（または config の `receiverToken`）を設定すると、操作系 endpoint（`POST /import` / `POST /feedback/:id/status` / `DELETE /feedback/:id` / `POST /feedback/:id/github-issue`）と閲覧系 endpoint（`GET /`（inbox）/ `GET /feedback.json` / `GET /screenshots/:file`）に認証を必須にします。API からは `Authorization: Bearer <token>`、ブラウザからは inbox のログインフォーム（`GET /login`）に同じ token を入力します。ログイン後は HMAC 派生値の HttpOnly cookie（有効期限 7 日、`SameSite=Lax`、`publicBaseUrl` が `https://` のとき `Secure` 付き）でセッションが維持され、生 token はブラウザに保存されません。token を変更すると全端末のセッションが即失効します。未設定ならローカルは認証なしで動作します（widget の `POST /feedback` と `GET /widget.js` は設定時も常に公開）
+- `ALLOWED_ORIGINS` env（または config の `allowedOrigins`、env はカンマ区切り・config は配列）を設定すると、widget の投稿（`POST /feedback`）の CORS を許可 origin（`scheme://host[:port]` の完全一致）に制限します。JSON POST は必ず preflight されるため、リスト外 origin のブラウザ投稿は本体 POST の前にブラウザ側で遮断されます。未設定なら従来通り全 origin 許可（`*`）で、起動ログに警告が出ます。CORS ヘッダーが付くのは `POST /feedback` のみで、inbox・操作系・screenshot は同一オリジン利用のため CORS 自体を返しません。受信した feedback には `received: { origin, originAllowed }` が保存され、inbox の raw payload から確認できます（Origin ヘッダーは偽装可能なため参考情報です）
 - `SLACK_WEBHOOK_URL` env を設定すると、受信した feedback を Slack Incoming Webhook にも転送します
 - `SLACK_IMAGE_MODE` env で Slack 上の screenshot 表示方式を変更できます（`auto` / `link` / `block` / `upload` / `off`）
 - `SLACK_BOT_TOKEN` と `SLACK_UPLOAD_CHANNEL_ID` env を設定すると、保存済み screenshot を Slack file としてアップロードできます
@@ -260,7 +261,25 @@ GITHUB_TOKEN="github_pat_..." GITHUB_REPO="owner/repo" node server/receive.js
 
 設定済みの場合、inbox の各 card に `Create GitHub Issue` ボタンが表示されます。作成された issue には feedback 本文・reviewer・ページ URL・selector・対象位置・viewport・screenshot link・raw payload が含まれます。結果は保存済み payload の `integrations.github` に永続化され、card には issue link（失敗時はエラー）が表示されます。同じ feedback からの二重作成は拒否されます。API から行う場合は `POST /feedback/:id/github-issue` を使います。
 
-screenshot の画像は GitHub から `publicBaseUrl` に到達できる場合のみ issue 上に表示されます（ローカル receiver のままなら link のみ機能します）。
+screenshot の画像は GitHub から `publicBaseUrl` に到達できる場合のみ issue 上に表示されます（ローカル receiver のままなら link のみ機能します）。`RECEIVER_TOKEN` を設定している場合、GitHub の image proxy は認証を通れないため、issue には画像を埋め込まず `[Open screenshot]` リンクのみを載せます（開くには receiver へのログインが必要です）。
+
+### 公開デプロイ（EC2 など）
+
+receiver はデフォルトでローカルプロトタイプ前提（`127.0.0.1` bind・認証なし・CORS `*`）です。インターネットに公開する場合は次を前提にしてください。
+
+- **HTTPS 終端は reverse proxy（nginx / Caddy / ALB など）で行う**: receiver 自体は HTTP のみです。proxy の背後では `HOST` の bind 先を proxy からのみ届く interface に限定し、rate limit がクライアント IP を正しく見るよう `RECEIVER_TRUST_PROXY=1` を設定します
+- **`RECEIVER_TOKEN` を必ず設定する**: 未設定のまま公開すると inbox・feedback データ・操作系がすべて無認証で露出します
+- **`ALLOWED_ORIGINS` にデモページの origin を列挙する**: widget からの投稿を想定した origin に絞ります
+- **`PUBLIC_BASE_URL` を `https://` の公開 URL にする**: Slack / GitHub に載せる screenshot link の到達性に加え、セッション cookie の `Secure` 属性がこの URL のスキームで決まります
+- **secrets（`RECEIVER_TOKEN` / `GITHUB_TOKEN` / `SLACK_WEBHOOK_URL` など）は env 注入を推奨**: env は config ファイルより優先されます。config ファイル（`receiver.config.json`）に書く場合は git 管理外・ファイル権限の管理下に置いてください
+
+```sh
+RECEIVER_TOKEN="<long-random-token>" \
+ALLOWED_ORIGINS="https://demo.example.com" \
+PUBLIC_BASE_URL="https://feedback.example.com" \
+RECEIVER_TRUST_PROXY=1 \
+HOST=127.0.0.1 PORT=4000 node server/receive.js
+```
 
 ## Slack direct mode
 
@@ -326,7 +345,7 @@ GitHub Issue 作成は receiver inbox からの手動操作のみで、自動作
 - Slack App / OAuth 連携
 - 永続 DB
 - pixel-perfect なブラウザ screenshot capture
-- 認証
+- widget↔receiver のペア認証（ingest key。受信面の認証は `RECEIVER_TOKEN` + inbox ログインで対応済み）
 - AI PR 連携
 
 ## License
