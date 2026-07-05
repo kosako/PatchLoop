@@ -73,6 +73,15 @@ const RECEIVER_TOKEN = process.env.RECEIVER_TOKEN || config.receiverToken || "";
 // (Access-Control-Allow-Origin: *) so zero-config local runs keep working; the
 // startup log warns about it. Entries are exact origins (scheme://host[:port]).
 const ALLOWED_ORIGINS = normalizeStringList(process.env.ALLOWED_ORIGINS || config.allowedOrigins).map(trimTrailingSlash);
+// Public ingest keys for widget→receiver pair auth (#44). A key ships inside
+// the public demo page, so this is not a secret-based credential: it exists to
+// identify the project, stop indiscriminate spam, and allow rotation to cut a
+// leaked deploy off. Config entries are either bare "key" strings or
+// { key, projectId } objects — a bound projectId pins what the payload may
+// claim (spoofing guard). The env form is a comma-separated list of bare keys.
+// Unset keeps ingest open (zero-config local dev), noted in the startup log.
+const INGEST_KEYS = normalizeIngestKeys(process.env.INGEST_KEYS || config.ingestKeys);
+const INGEST_KEY_HEADER = "x-patchloop-ingest-key";
 // Browser sessions for the inbox: the cookie value is
 // "<expiresAtMs>.<HMAC(RECEIVER_TOKEN, expiresAtMs)>" — a derived credential,
 // never the raw token, valid for 7 days. Secure is tied to the deploy's public
@@ -179,6 +188,18 @@ function hasValidSessionCookie(req) {
   return safeTokenEqual(signature, sessionSignature(expiry));
 }
 
+// Resolves the request's ingest key header against the configured keys.
+// Returns the matched { key, projectId } entry, or null when the header is
+// missing or matches nothing. Compared timing-safe like the other credentials.
+function ingestKeyEntryFor(req) {
+  const provided = req.headers[INGEST_KEY_HEADER];
+  if (typeof provided !== "string" || !provided) return null;
+  for (const entry of INGEST_KEYS) {
+    if (safeTokenEqual(provided, entry.key)) return entry;
+  }
+  return null;
+}
+
 // Protected endpoints (management + reads) accept either the shared bearer
 // token (curl / API clients) or a valid session cookie (the inbox UI — its
 // same-origin fetches carry the HttpOnly cookie automatically, so inbox.js
@@ -213,15 +234,16 @@ function redirect(res, location) {
 
 // Every route declares its auth and CORS policy so a new endpoint cannot
 // silently skip either check; dispatch applies them in one place instead of
-// per-branch (#43). Auth kinds: "none" (public), "protected" (bearer token or
+// per-branch (#43). Auth kinds: "none" (public), "ingest" (public ingest key
+// when INGEST_KEYS is configured — #44), "protected" (bearer token or
 // session cookie, 401 on failure — APIs and resources), "page" (same
 // credentials, but an unauthenticated browser is redirected to the login form
 // instead of getting raw JSON). CORS headers are only emitted for routes with
 // cors: true — the inbox, management endpoints, and screenshots are same-origin
 // surfaces, so withholding the headers there is a second wall next to auth.
-const ROUTE_AUTH_KINDS = new Set(["none", "protected", "page"]);
+const ROUTE_AUTH_KINDS = new Set(["none", "ingest", "protected", "page"]);
 const ROUTES = [
-  { method: "POST", pattern: /^\/feedback$/, auth: "none", cors: true, handler: handlePostFeedback },
+  { method: "POST", pattern: /^\/feedback$/, auth: "ingest", cors: true, handler: handlePostFeedback },
   { method: "GET", pattern: /^\/healthz$/, auth: "none", rateLimit: false, handler: handleGetHealthz },
   { method: "GET", pattern: /^\/login$/, auth: "none", handler: handleGetLogin },
   { method: "POST", pattern: /^\/login$/, auth: "none", handler: handlePostLogin },
@@ -297,7 +319,17 @@ const server = http.createServer((req, res) => {
   }
 
   if (matched) {
-    if (matched.auth !== "none" && !isAuthorizedRequest(req)) {
+    if (matched.auth === "ingest") {
+      // The key is resolved once here (declared on the route, like the other
+      // auth kinds) and handed to the handler via the request, which needs the
+      // matched entry for projectId binding.
+      const entry = ingestKeyEntryFor(req);
+      if (INGEST_KEYS.length > 0 && !entry) {
+        respondJson(res, 401, { ok: false, error: "Invalid ingest key" });
+        return;
+      }
+      req.patchloopIngestKey = entry;
+    } else if (matched.auth !== "none" && !isAuthorizedRequest(req)) {
       if (matched.auth === "page") {
         redirect(res, "/login");
       } else {
@@ -386,6 +418,7 @@ async function start() {
   console.log(`[PatchLoop receiver] feedback db: ${DB_PATH}`);
   console.log(`[PatchLoop receiver] screenshot dir: ${SCREENSHOT_DIR}`);
   console.log(`[PatchLoop receiver] auth: ${RECEIVER_TOKEN ? "enabled (token + inbox login)" : "disabled (no RECEIVER_TOKEN)"}`);
+  console.log(`[PatchLoop receiver] ingest auth: ${INGEST_KEYS.length > 0 ? `enabled (${INGEST_KEYS.length} key${INGEST_KEYS.length > 1 ? "s" : ""})` : "open (no INGEST_KEYS)"}`);
   if (ALLOWED_ORIGINS.length > 0) {
     console.log(`[PatchLoop receiver] CORS allowlist: ${ALLOWED_ORIGINS.join(", ")}`);
   } else {
@@ -425,7 +458,9 @@ function setCorsHeaders(req, res) {
   }
   res.setHeader("Access-Control-Allow-Origin", allowOrigin);
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  // The ingest key header must be allowlisted here or the browser preflight
+  // rejects every widget POST that carries a key (#44).
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-PatchLoop-Ingest-Key");
 }
 
 function warnIgnoredSetting(label, value, fallback) {
@@ -504,6 +539,28 @@ function normalizeStringList(value) {
   return items.map((item) => String(item).trim()).filter(Boolean);
 }
 
+// Accepts "key" strings and { key, projectId } objects (config), or a
+// comma-separated string (env), and normalizes to { key, projectId|null }.
+function normalizeIngestKeys(value) {
+  const items = Array.isArray(value) ? value : String(value || "").split(",");
+  const keys = [];
+  for (const item of items) {
+    if (item && typeof item === "object") {
+      const key = String(item.key || "").trim();
+      if (!key) {
+        console.warn("[PatchLoop receiver] ignored ingestKeys entry without a key");
+        continue;
+      }
+      const projectId = String(item.projectId || "").trim();
+      keys.push({ key, projectId: projectId || null });
+      continue;
+    }
+    const key = String(item || "").trim();
+    if (key) keys.push({ key, projectId: null });
+  }
+  return keys;
+}
+
 // Rejects new feedback once the store is full, before any screenshot is written
 // (so a rejected request leaves no orphan file). 507 signals the store, not the
 // request, is the problem.
@@ -514,11 +571,23 @@ async function assertFeedbackCapacity(adding) {
   }
 }
 
+// A key bound to a projectId pins what the payload may claim: a mismatch is a
+// misconfigured (or spoofing) widget and is rejected; an omitted projectId is
+// stamped from the key so the stored record is always attributed.
+function enforceIngestProject(payload, keyEntry) {
+  if (!keyEntry || !keyEntry.projectId) return;
+  if (payload.projectId != null && payload.projectId !== keyEntry.projectId) {
+    throw httpError(`feedback.projectId does not match the ingest key's project (${keyEntry.projectId})`, 403);
+  }
+  payload.projectId = keyEntry.projectId;
+}
+
 function handlePostFeedback(req, res) {
   readJsonBody(req, res, async (payload) => {
     let screenshot;
     try {
       validateFeedbackPayload(payload);
+      enforceIngestProject(payload, req.patchloopIngestKey);
       await assertFeedbackCapacity(1);
       screenshot = saveScreenshot(payload.screenshot, payload.id);
     } catch (error) {
@@ -531,11 +600,11 @@ function handlePostFeedback(req, res) {
       schemaVersion: DEFAULT_SCHEMA_VERSION,
       ...payload,
       screenshot,
-      // Weak provenance signal for triage (#44 will add an unforgeable ingest
-      // key): the browser-sent Origin and whether the allowlist would have let
-      // a browser post it. Origin-less clients (curl, scripts) are not subject
-      // to CORS, so they record originAllowed: true. Set after the payload
-      // spread so a crafted payload cannot supply its own value.
+      // Weak provenance signal for triage, alongside the ingest key / project
+      // binding (#44): the browser-sent Origin and whether the allowlist would
+      // have let a browser post it. Origin-less clients (curl, scripts) are not
+      // subject to CORS, so they record originAllowed: true. Set after the
+      // payload spread so a crafted payload cannot supply its own value.
       received: {
         origin: typeof req.headers.origin === "string" ? req.headers.origin : null,
         originAllowed: ALLOWED_ORIGINS.length === 0

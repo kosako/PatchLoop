@@ -9,6 +9,10 @@ const DEFAULTS = {
   projectId: "local-demo",
   demoId: "plain-html",
   endpoint: "",
+  // Public per-project key sent with receiver posts (#44). It ships in the
+  // page, so it identifies the project and blocks indiscriminate spam rather
+  // than acting as a secret. Empty = receiver runs with open ingest.
+  ingestKey: "",
   deliveryMode: "receiver",
   slackWebhookUrl: "",
   showDeliverySettings: false,
@@ -731,9 +735,13 @@ function base64Encode(value) {
 
 async function postFeedback(payload) {
   try {
+    const headers = { "Content-Type": "application/json" };
+    if (state.options.ingestKey) {
+      headers["X-PatchLoop-Ingest-Key"] = state.options.ingestKey;
+    }
     const response = await fetch(state.options.endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(payload)
     });
     payload.delivery = { ok: response.ok, status: response.status };

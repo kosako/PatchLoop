@@ -1177,6 +1177,62 @@ test("without an allowlist, ingest CORS stays open and startup warns", async (t)
   assert.equal(inbox.headers.get("access-control-allow-origin"), null);
 });
 
+test("POST /feedback requires a configured ingest key and rejects wrong ones", async (t) => {
+  const receiver = await startReceiver(t, { INGEST_KEYS: "key-a, key-b" });
+  assert.match(receiver.logs, /ingest auth: enabled \(2 keys\)/);
+
+  // No key / wrong key → rejected before anything is validated or stored.
+  const missing = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_key_none"));
+  assert.equal(missing.status, 401);
+  const wrong = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_key_bad"), { "X-PatchLoop-Ingest-Key": "nope" });
+  assert.equal(wrong.status, 401);
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+
+  // Any configured key is accepted.
+  const ok = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_key_ok"), { "X-PatchLoop-Ingest-Key": "key-b" });
+  assert.equal(ok.status, 201);
+
+  // The preflight must allowlist the key header, or a browser widget carrying
+  // a key would be blocked before the POST is ever sent.
+  const preflight = await fetch(`${receiver.baseUrl}/feedback`, { method: "OPTIONS", headers: { Origin: "http://demo.example" } });
+  assert.match(preflight.headers.get("access-control-allow-headers"), /X-PatchLoop-Ingest-Key/);
+
+  // Other routes are untouched: import stays guarded by RECEIVER_TOKEN (unset
+  // here → open), not by ingest keys.
+  const imported = await postJson(`${receiver.baseUrl}/import`, { kind: "patchloop-feedback-bundle", version: 2, feedback: [feedbackPayload("pl_key_imp")] });
+  assert.equal(imported.status, 201);
+});
+
+test("an ingest key bound to a projectId pins the payload's project", async (t) => {
+  // projectId binding is config-only (env keys are bare strings), so this test
+  // supplies a real config file.
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-ingest-config-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  const configPath = path.join(configDir, "receiver.config.json");
+  await fs.writeFile(configPath, JSON.stringify({ ingestKeys: [{ key: "proj-key", projectId: "proj-a" }] }));
+  const receiver = await startReceiver(t, { PATCHLOOP_RECEIVER_CONFIG: configPath });
+  const withKey = { "X-PatchLoop-Ingest-Key": "proj-key" };
+
+  // A matching projectId passes; a different one is a spoof (or misconfig).
+  const match = await postJson(`${receiver.baseUrl}/feedback`, { ...feedbackPayload("pl_proj_ok"), projectId: "proj-a" }, withKey);
+  assert.equal(match.status, 201);
+  const spoofed = await postJson(`${receiver.baseUrl}/feedback`, { ...feedbackPayload("pl_proj_spoof"), projectId: "proj-b" }, withKey);
+  assert.equal(spoofed.status, 403);
+  assert.match(spoofed.body.error, /does not match the ingest key's project/);
+
+  // An omitted projectId is stamped from the key, so the record is attributed.
+  const omitted = feedbackPayload("pl_proj_stamped");
+  delete omitted.projectId;
+  const stamped = await postJson(`${receiver.baseUrl}/feedback`, omitted, withKey);
+  assert.equal(stamped.status, 201);
+
+  const stored = await readStoredFeedback(receiver.dbPath);
+  const byId = Object.fromEntries(stored.map((item) => [item.id, item.projectId]));
+  assert.equal(byId.pl_proj_ok, "proj-a");
+  assert.equal(byId.pl_proj_stamped, "proj-a");
+  assert.equal(byId.pl_proj_spoof, undefined);
+});
+
 test("GET /healthz reports liveness and is exempt from rate limiting", async (t) => {
   const receiver = await startReceiver(t, { RATE_LIMIT_MAX: "1" });
 
