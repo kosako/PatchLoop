@@ -1117,6 +1117,19 @@ function validateFeedbackPayload(payload) {
   if (payload.page.url != null) requireString(payload.page.url, "feedback.page.url");
   if (payload.page.title != null) requireString(payload.page.title, "feedback.page.title");
 
+  // Git provenance sent by the widget (#96). Optional because older widgets
+  // and hand-posted payloads do not carry it; when present, every field must
+  // be a string so downstream consumers (issue body, coding agents) can rely
+  // on the shape without re-validating.
+  if (payload.sourceContext != null) {
+    requirePlainObject(payload.sourceContext, "feedback.sourceContext");
+    for (const field of ["repo", "branch", "commit", "root", "buildUrl", "previewUrl"]) {
+      if (payload.sourceContext[field] != null) {
+        requireString(payload.sourceContext[field], `feedback.sourceContext.${field}`);
+      }
+    }
+  }
+
   if (!["point", "area"].includes(payload.target.kind)) {
     throw httpError("feedback.target.kind must be point or area", 400);
   }

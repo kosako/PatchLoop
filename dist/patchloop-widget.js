@@ -320,6 +320,48 @@ function samePersistedPage(storedUrl, currentUrl) {
 
 return { normalizePageUrl, samePersistedPage };
 })();
+// --- widget/src/source-context.js ---
+const __pl_widget_src_source_context = (() => {
+// Resolves the payload's sourceContext (#96): which repo/branch/commit the
+// reviewed page was built from, so a coding agent can map feedback selectors
+// back to source. The init option is the source of truth — the embedding side
+// injects real values at build/deploy time. Meta tags are the fallback for
+// hosts that can only stamp static HTML. The receiver's config is deliberately
+// not a source: one receiver serves payloads from many previews, so a
+// per-process value cannot be correct across projects.
+const SOURCE_CONTEXT_FIELDS = [
+  { key: "repo", metaName: "patchloop:repo" },
+  { key: "branch", metaName: "patchloop:branch" },
+  { key: "commit", metaName: "patchloop:commit" },
+  { key: "root", metaName: "patchloop:root" },
+  { key: "buildUrl", metaName: "patchloop:build-url" },
+  { key: "previewUrl", metaName: "patchloop:preview-url" }
+];
+
+function resolveSourceContext(configured, doc) {
+  const options = configured && typeof configured === "object" ? configured : {};
+  const context = {};
+  for (const { key, metaName } of SOURCE_CONTEXT_FIELDS) {
+    const value = cleanValue(options[key]) || metaContent(doc, metaName);
+    if (value) context[key] = value;
+  }
+  return Object.keys(context).length > 0 ? context : null;
+}
+
+function metaContent(doc, metaName) {
+  const node = doc.querySelector(`meta[name="${metaName}"]`);
+  return node ? cleanValue(node.content) : "";
+}
+
+// Only trimmed non-empty strings count; anything else (numbers, objects, a
+// blank template placeholder like "" left unfilled) is treated as absent so
+// the payload never carries junk values into stored records or issues.
+function cleanValue(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+return { resolveSourceContext };
+})();
 // --- shared/format.js ---
 const __pl_shared_format = (() => {
 // Formatting helpers shared by the widget (bundled into dist) and the
@@ -386,6 +428,7 @@ const { pointAnchorOffsets, areaAnchorOffsets, roundedAnchor, geometryFromAnchor
 const { selectorFor, textFor } = __pl_widget_src_selector;
 const { freezeViewportUnits, flattenRulesForSnapshot } = __pl_widget_src_snapshot_css;
 const { samePersistedPage } = __pl_widget_src_url;
+const { resolveSourceContext } = __pl_widget_src_source_context;
 const { truncateText, present, escapeHtml, escapeXml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } = __pl_shared_format;
 
 const DEFAULTS = {
@@ -396,6 +439,11 @@ const DEFAULTS = {
   // page, so it identifies the project and blocks indiscriminate spam rather
   // than acting as a secret. Empty = receiver runs with open ingest.
   ingestKey: "",
+  // Git provenance of the page under review (#96): { repo, branch, commit,
+  // root, buildUrl, previewUrl }, all optional strings. The embedding side
+  // injects real values at build/deploy time; <meta name="patchloop:..."> tags
+  // fill any missing field.
+  sourceContext: null,
   deliveryMode: "receiver",
   slackWebhookUrl: "",
   showDeliverySettings: false,
@@ -418,7 +466,8 @@ const FEEDBACK_STORAGE_VERSION = 1;
 // Version of the feedback payload schema itself (distinct from the storage
 // envelope and export bundle versions). Bump when the payload shape changes
 // so the receiver can branch on it as the schema grows for team use.
-const PAYLOAD_SCHEMA_VERSION = 1;
+// v2 adds the optional sourceContext block (#96).
+const PAYLOAD_SCHEMA_VERSION = 2;
 
 const state = {
   options: { ...DEFAULTS },
@@ -450,6 +499,9 @@ function init(options = {}) {
   removeSelectionBox();
   state.options = { ...DEFAULTS, ...options };
   state.options.reviewer = initialReviewer(state.options);
+  // Resolved once here (option first, meta tags as fallback) so every payload
+  // built later carries the same provenance without re-reading the DOM.
+  state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
   injectStyles();
   renderShell();
   bindGlobalCapture();
@@ -881,6 +933,7 @@ function buildPayload(comment, reviewer, target) {
       url: window.location.href,
       title: document.title
     },
+    sourceContext: state.options.sourceContext,
     target: {
       kind: target.kind || "point",
       x: round(target.x),

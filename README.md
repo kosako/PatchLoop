@@ -95,6 +95,7 @@ PatchLoop は、普通の HTML に `script` tag で埋め込める standalone wi
 
 - `projectId` (string) — payload に乗せるプロジェクト識別子
 - `demoId` (string) — payload に乗せるデモ識別子
+- `sourceContext` (object, optional) — レビュー対象ページの git 由来情報 `{ repo, branch, commit, root, buildUrl, previewUrl }`（すべて string・任意）。埋め込み側がビルド/デプロイ時に実値を注入するのが正で、AI agent が feedback をソースコードに対応付けるための情報。未指定のフィールドは `<meta name="patchloop:repo">` / `patchloop:branch` / `patchloop:commit` / `patchloop:root` / `patchloop:build-url` / `patchloop:preview-url` の meta タグから補完されます
 - `reviewer` (string, optional) — コメントフォームに初期表示する投稿者名。未指定の場合は保存済み reviewer を `localStorage` から復元し、保存値もなければ空欄
 - `reviewerStorageKey` (string, optional) — reviewer 名を保存する `localStorage` key。デフォルトは `patchloop:reviewer`
 - `persistFeedback` (boolean, optional) — feedback list を `localStorage` に保存し、同じ project / demo / page URL の reload 後に復元するか。デフォルトは `true`
@@ -140,6 +141,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 - `reviewer`
 - `page.url`
 - `page.title`
+- `sourceContext` — レビュー対象ページの git 由来情報（`repo` / `branch` / `commit` / `root` / `buildUrl` / `previewUrl`）。init オプションと meta タグのどちらにも無ければ `null`
 - `target.kind`
 - `target.x`
 - `target.y`
