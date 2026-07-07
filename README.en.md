@@ -95,6 +95,7 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 
 - `projectId` (string) — identifier carried in the payload
 - `demoId` (string) — identifier carried in the payload
+- `sourceContext` (object, optional) — git provenance of the page under review: `{ repo, branch, commit, root, buildUrl, previewUrl }`, all optional strings. The embedding side injects real values at build/deploy time; this is what lets an AI agent map feedback back to source code. Fields left unset are filled from `<meta name="patchloop:repo">` / `patchloop:branch` / `patchloop:commit` / `patchloop:root` / `patchloop:build-url` / `patchloop:preview-url` meta tags
 - `reviewer` (string, optional) — pre-fills the reviewer field in the comment form. When omitted, the widget restores a saved reviewer from `localStorage`; otherwise the field starts empty
 - `reviewerStorageKey` (string, optional) — `localStorage` key used to persist the reviewer name; defaults to `patchloop:reviewer`
 - `persistFeedback` (boolean, optional) — save the feedback list to `localStorage` and restore it after reloads on the same project / demo / page URL; defaults to `true`
@@ -140,6 +141,7 @@ Main payload fields:
 - `reviewer`
 - `page.url`
 - `page.title`
+- `sourceContext` — git provenance of the reviewed page (`repo` / `branch` / `commit` / `root` / `buildUrl` / `previewUrl`); `null` when neither the init option nor meta tags provide any field
 - `target.kind`
 - `target.x`
 - `target.y`

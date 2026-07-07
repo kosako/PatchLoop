@@ -59,6 +59,43 @@ test("POST /feedback rejects malformed feedback payloads", async (t) => {
   assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
 });
 
+test("POST /feedback stores the sourceContext block as sent (#96)", async (t) => {
+  const receiver = await startReceiver(t);
+  const payload = feedbackPayload("pl_source_context");
+  payload.sourceContext = {
+    repo: "acme/shop",
+    branch: "feature/checkout",
+    commit: "abc1234",
+    root: "apps/web",
+    buildUrl: "https://ci.example/build/1",
+    previewUrl: "https://preview.example/pr-1"
+  };
+
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+
+  assert.equal(response.status, 201);
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.deepEqual(stored[0].sourceContext, payload.sourceContext);
+});
+
+test("POST /feedback validates the sourceContext shape", async (t) => {
+  const receiver = await startReceiver(t);
+
+  const notAnObject = feedbackPayload("pl_source_context_string");
+  notAnObject.sourceContext = "acme/shop@abc1234";
+  const objectResponse = await postJson(`${receiver.baseUrl}/feedback`, notAnObject);
+  assert.equal(objectResponse.status, 400);
+  assert.match(objectResponse.body.error, /feedback\.sourceContext must be an object/);
+
+  const badField = feedbackPayload("pl_source_context_field");
+  badField.sourceContext = { repo: "acme/shop", commit: 1234 };
+  const fieldResponse = await postJson(`${receiver.baseUrl}/feedback`, badField);
+  assert.equal(fieldResponse.status, 400);
+  assert.match(fieldResponse.body.error, /feedback\.sourceContext\.commit must be a string/);
+
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+});
+
 test("POST /import stores bundle feedback and strips delivery metadata", async (t) => {
   const receiver = await startReceiver(t);
   const payload = {

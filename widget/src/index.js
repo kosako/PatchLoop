@@ -3,6 +3,7 @@ import { pointAnchorOffsets, areaAnchorOffsets, roundedAnchor, geometryFromAncho
 import { selectorFor, textFor } from "./selector.js";
 import { freezeViewportUnits, flattenRulesForSnapshot } from "./snapshot-css.js";
 import { samePersistedPage } from "./url.js";
+import { resolveSourceContext } from "./source-context.js";
 import { truncateText, present, escapeHtml, escapeXml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } from "../../shared/format.js";
 
 const DEFAULTS = {
@@ -13,6 +14,11 @@ const DEFAULTS = {
   // page, so it identifies the project and blocks indiscriminate spam rather
   // than acting as a secret. Empty = receiver runs with open ingest.
   ingestKey: "",
+  // Git provenance of the page under review (#96): { repo, branch, commit,
+  // root, buildUrl, previewUrl }, all optional strings. The embedding side
+  // injects real values at build/deploy time; <meta name="patchloop:..."> tags
+  // fill any missing field.
+  sourceContext: null,
   deliveryMode: "receiver",
   slackWebhookUrl: "",
   showDeliverySettings: false,
@@ -35,7 +41,8 @@ const FEEDBACK_STORAGE_VERSION = 1;
 // Version of the feedback payload schema itself (distinct from the storage
 // envelope and export bundle versions). Bump when the payload shape changes
 // so the receiver can branch on it as the schema grows for team use.
-const PAYLOAD_SCHEMA_VERSION = 1;
+// v2 adds the optional sourceContext block (#96).
+const PAYLOAD_SCHEMA_VERSION = 2;
 
 const state = {
   options: { ...DEFAULTS },
@@ -67,6 +74,9 @@ function init(options = {}) {
   removeSelectionBox();
   state.options = { ...DEFAULTS, ...options };
   state.options.reviewer = initialReviewer(state.options);
+  // Resolved once here (option first, meta tags as fallback) so every payload
+  // built later carries the same provenance without re-reading the DOM.
+  state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
   injectStyles();
   renderShell();
   bindGlobalCapture();
@@ -498,6 +508,7 @@ function buildPayload(comment, reviewer, target) {
       url: window.location.href,
       title: document.title
     },
+    sourceContext: state.options.sourceContext,
     target: {
       kind: target.kind || "point",
       x: round(target.x),
