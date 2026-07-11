@@ -1237,7 +1237,6 @@ const PUBLIC_ORIGIN = (() => {
 })();
 const INBOX_CSP = `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'${PUBLIC_ORIGIN ? ` ${PUBLIC_ORIGIN}` : ""}; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`;
 const { renderInbox, renderLoginPage } = createInboxView({
-  screenshotUrlFor,
   formatScreenshotStatus,
   safeLinkUrl,
   GITHUB_CONFIGURED,
