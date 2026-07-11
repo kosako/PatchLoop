@@ -42,6 +42,30 @@ function parseBindingList(raw, context) {
     });
 }
 
+function hasTopLevelComma(line) {
+  const depths = { "(": 0, "[": 0, "{": 0 };
+  const closing = { ")": "(", "]": "[", "}": "{" };
+  let quote = null;
+  let escaped = false;
+
+  for (const char of line) {
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char in depths) depths[char] += 1;
+    else if (char in closing) depths[closing[char]] -= 1;
+    else if (char === "," && Object.values(depths).every((depth) => depth === 0)) return true;
+  }
+  return false;
+}
+
 // Parses one module into { imports, exports, bodyLines }. Import statements
 // are removed from the body; `export` keywords are stripped in place.
 function parseModule(filePath) {
@@ -75,7 +99,11 @@ function parseModule(filePath) {
         });
         return;
       }
-      const declMatch = EXPORT_DECL_RE.exec(line) || EXPORT_VAR_RE.exec(line);
+      const varMatch = EXPORT_VAR_RE.exec(line);
+      if (varMatch && hasTopLevelComma(line)) {
+        fail(`${where}: multiple declarators in an export declaration are not supported`);
+      }
+      const declMatch = EXPORT_DECL_RE.exec(line) || varMatch;
       if (!declMatch) {
         fail(`${where}: only named export declarations and export lists are supported`);
       }

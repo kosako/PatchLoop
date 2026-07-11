@@ -4,6 +4,13 @@
 // link hardening (safeLinkUrl / mdLinkUrl) and the screenshot status texts
 // stay in their respective owners because their semantics differ per side.
 
+export function safeFilePart(value) {
+  return String(value || "feedback")
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "feedback";
+}
+
 export function truncateText(value, max) {
   const text = String(value ?? "");
   return text.length > max ? `${text.slice(0, max)}…` : text;
