@@ -217,6 +217,92 @@ function textFor(element) {
 
 return { cssEscape, selectorFor, textFor };
 })();
+// --- widget/src/source-context.js ---
+const __pl_widget_src_source_context = (() => {
+// Resolves the payload's sourceContext (#96): which repo/branch/commit the
+// reviewed page was built from, so a coding agent can map feedback selectors
+// back to source. The init option is the source of truth — the embedding side
+// injects real values at build/deploy time. Meta tags are the fallback for
+// hosts that can only stamp static HTML. The receiver's config is deliberately
+// not a source: one receiver serves payloads from many previews, so a
+// per-process value cannot be correct across projects.
+const SOURCE_CONTEXT_FIELDS = [
+  { key: "repo", metaName: "patchloop:repo" },
+  { key: "branch", metaName: "patchloop:branch" },
+  { key: "commit", metaName: "patchloop:commit" },
+  { key: "root", metaName: "patchloop:root" },
+  { key: "buildUrl", metaName: "patchloop:build-url" },
+  { key: "previewUrl", metaName: "patchloop:preview-url" }
+];
+
+function resolveSourceContext(configured, doc) {
+  const options = configured && typeof configured === "object" ? configured : {};
+  const context = {};
+  for (const { key, metaName } of SOURCE_CONTEXT_FIELDS) {
+    const value = cleanValue(options[key]) || metaContent(doc, metaName);
+    if (value) context[key] = value;
+  }
+  return Object.keys(context).length > 0 ? context : null;
+}
+
+function metaContent(doc, metaName) {
+  const node = doc.querySelector(`meta[name="${metaName}"]`);
+  return node ? cleanValue(node.content) : "";
+}
+
+// Only trimmed non-empty strings count; anything else (numbers, objects, a
+// blank template placeholder like "" left unfilled) is treated as absent so
+// the payload never carries junk values into stored records or issues.
+function cleanValue(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+return { resolveSourceContext };
+})();
+// --- widget/src/state.js ---
+const __pl_widget_src_state = (() => {
+const DEFAULTS = {
+  projectId: "local-demo",
+  demoId: "plain-html",
+  endpoint: "",
+  // Public per-project key sent with receiver posts (#44). It ships in the
+  // page, so it identifies the project and blocks indiscriminate spam rather
+  // than acting as a secret. Empty = receiver runs with open ingest.
+  ingestKey: "",
+  // Git provenance of the page under review (#96): { repo, branch, commit,
+  // root, buildUrl, previewUrl }, all optional strings. The embedding side
+  // injects real values at build/deploy time; <meta name="patchloop:..."> tags
+  // fill any missing field.
+  sourceContext: null,
+  deliveryMode: "receiver",
+  slackWebhookUrl: "",
+  showDeliverySettings: false,
+  reviewer: "",
+  reviewerStorageKey: "patchloop:reviewer",
+  persistFeedback: true,
+  feedbackStorageKey: "patchloop:feedback",
+  position: "bottom-right",
+  captureScreenshot: true,
+  screenshotMaxBytes: 1_200_000,
+  onSubmit: null
+};
+
+const state = {
+  options: { ...DEFAULTS },
+  active: false,
+  pendingTarget: null,
+  drag: null,
+  suppressNextClick: false,
+  feedback: [],
+  feedbackMarkers: new Map(),
+  approximateIds: new Set(),
+  resizeTimer: null,
+  editingId: null,
+  collapsed: true
+};
+
+return { DEFAULTS, state };
+})();
 // --- widget/src/snapshot-css.js ---
 const __pl_widget_src_snapshot_css = (() => {
 // CSS processing for the SVG snapshot. Media conditions are injected as a
@@ -287,81 +373,6 @@ function flattenRulesForSnapshot(rules, mediaMatches) {
 
 return { freezeViewportUnits, flattenRulesForSnapshot };
 })();
-// --- widget/src/url.js ---
-const __pl_widget_src_url = (() => {
-// Page-identity helpers for persisted feedback.
-//
-// Saved feedback is keyed by the page it was left on. Using the full
-// `location.href` (which includes the query string and hash) is too strict:
-// after anchor navigation (`#section`), tracking params (`?utm=...`), or a
-// normalizing redirect, the URL no longer matches byte-for-byte and the saved
-// feedback is silently dropped — and then overwritten. The envelope is already
-// scoped by projectId/demoId, so comparing only origin + pathname is enough.
-
-function normalizePageUrl(url, base) {
-  try {
-    const parsed = new URL(url, base);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch (_) {
-    return "";
-  }
-}
-
-function samePersistedPage(storedUrl, currentUrl) {
-  if (typeof storedUrl !== "string" || storedUrl === "") return false;
-  // The stored pageUrl is always a full href (the save side writes
-  // window.location.href). Parse both WITHOUT a base so a missing, empty,
-  // relative, or otherwise malformed stored value cannot be resolved against
-  // the current page and falsely match it.
-  const stored = normalizePageUrl(storedUrl, undefined);
-  const current = normalizePageUrl(currentUrl, undefined);
-  return stored !== "" && stored === current;
-}
-
-return { normalizePageUrl, samePersistedPage };
-})();
-// --- widget/src/source-context.js ---
-const __pl_widget_src_source_context = (() => {
-// Resolves the payload's sourceContext (#96): which repo/branch/commit the
-// reviewed page was built from, so a coding agent can map feedback selectors
-// back to source. The init option is the source of truth — the embedding side
-// injects real values at build/deploy time. Meta tags are the fallback for
-// hosts that can only stamp static HTML. The receiver's config is deliberately
-// not a source: one receiver serves payloads from many previews, so a
-// per-process value cannot be correct across projects.
-const SOURCE_CONTEXT_FIELDS = [
-  { key: "repo", metaName: "patchloop:repo" },
-  { key: "branch", metaName: "patchloop:branch" },
-  { key: "commit", metaName: "patchloop:commit" },
-  { key: "root", metaName: "patchloop:root" },
-  { key: "buildUrl", metaName: "patchloop:build-url" },
-  { key: "previewUrl", metaName: "patchloop:preview-url" }
-];
-
-function resolveSourceContext(configured, doc) {
-  const options = configured && typeof configured === "object" ? configured : {};
-  const context = {};
-  for (const { key, metaName } of SOURCE_CONTEXT_FIELDS) {
-    const value = cleanValue(options[key]) || metaContent(doc, metaName);
-    if (value) context[key] = value;
-  }
-  return Object.keys(context).length > 0 ? context : null;
-}
-
-function metaContent(doc, metaName) {
-  const node = doc.querySelector(`meta[name="${metaName}"]`);
-  return node ? cleanValue(node.content) : "";
-}
-
-// Only trimmed non-empty strings count; anything else (numbers, objects, a
-// blank template placeholder like "" left unfilled) is treated as absent so
-// the payload never carries junk values into stored records or issues.
-function cleanValue(value) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-return { resolveSourceContext };
-})();
 // --- shared/format.js ---
 const __pl_shared_format = (() => {
 // Formatting helpers shared by the widget (bundled into dist) and the
@@ -430,65 +441,444 @@ function formatTarget(target) {
 
 return { safeFilePart, truncateText, present, escapeHtml, escapeXml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget };
 })();
-const { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarget, rectFromStoredArea, round, numberOrNull } = __pl_widget_src_geometry;
-const { pointAnchorOffsets, areaAnchorOffsets, roundedAnchor, geometryFromAnchor, viewportDiffersFromCreation } = __pl_widget_src_anchoring;
-const { selectorFor, textFor } = __pl_widget_src_selector;
+// --- widget/src/screenshot.js ---
+const __pl_widget_src_screenshot = (() => {
+const { state } = __pl_widget_src_state;
 const { freezeViewportUnits, flattenRulesForSnapshot } = __pl_widget_src_snapshot_css;
-const { samePersistedPage } = __pl_widget_src_url;
-const { resolveSourceContext } = __pl_widget_src_source_context;
-const { truncateText, present, escapeHtml, escapeXml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } = __pl_shared_format;
+const { escapeHtml, escapeXml } = __pl_shared_format;
 
-const DEFAULTS = {
-  projectId: "local-demo",
-  demoId: "plain-html",
-  endpoint: "",
-  // Public per-project key sent with receiver posts (#44). It ships in the
-  // page, so it identifies the project and blocks indiscriminate spam rather
-  // than acting as a secret. Empty = receiver runs with open ingest.
-  ingestKey: "",
-  // Git provenance of the page under review (#96): { repo, branch, commit,
-  // root, buildUrl, previewUrl }, all optional strings. The embedding side
-  // injects real values at build/deploy time; <meta name="patchloop:..."> tags
-  // fill any missing field.
-  sourceContext: null,
-  deliveryMode: "receiver",
-  slackWebhookUrl: "",
-  showDeliverySettings: false,
-  reviewer: "",
-  reviewerStorageKey: "patchloop:reviewer",
-  persistFeedback: true,
-  feedbackStorageKey: "patchloop:feedback",
-  position: "bottom-right",
-  captureScreenshot: true,
-  screenshotMaxBytes: 1_200_000,
-  onSubmit: null
-};
+function captureScreenshot(target) {
+  if (!state.options.captureScreenshot) return null;
 
-const EXPORT_KIND = "patchloop-feedback-bundle";
-// v2 carries an array of feedback (batch export). v1 wrapped a single
-// payload; the receiver still accepts that shape for files exported before
-// the switch to batch download.
-const EXPORT_VERSION = 2;
-const FEEDBACK_STORAGE_VERSION = 1;
+  try {
+    const width = Math.max(document.documentElement.clientWidth, window.innerWidth, 1);
+    const height = Math.max(document.documentElement.clientHeight, window.innerHeight, 1);
+    const documentWidth = Math.max(document.documentElement.scrollWidth, width);
+    const documentHeight = Math.max(document.documentElement.scrollHeight, height);
+    const overlay = screenshotOverlayFor(target);
+    const svg = buildScreenshotSvg({
+      width,
+      height,
+      documentWidth,
+      documentHeight,
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+      overlay
+    });
+    const bytes = byteLength(svg);
+    const maxBytes = Number(state.options.screenshotMaxBytes || 0);
+
+    if (maxBytes > 0 && bytes > maxBytes) {
+      return {
+        status: "omitted",
+        reason: "too-large",
+        kind: "viewport-svg",
+        mimeType: "image/svg+xml",
+        width,
+        height,
+        bytes,
+        maxBytes,
+        targetOverlay: overlay
+      };
+    }
+
+    return {
+      status: "captured",
+      kind: "viewport-svg",
+      mimeType: "image/svg+xml",
+      width,
+      height,
+      scrollX: Math.round(window.scrollX),
+      scrollY: Math.round(window.scrollY),
+      devicePixelRatio: window.devicePixelRatio || 1,
+      bytes,
+      targetOverlay: overlay,
+      dataUrl: `data:image/svg+xml;base64,${base64Encode(svg)}`
+    };
+  } catch (error) {
+    return {
+      status: "failed",
+      error: error.message
+    };
+  }
+}
+
+function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scrollX, scrollY, overlay }) {
+  const bodyClone = document.body.cloneNode(true);
+  bodyClone.querySelectorAll("[data-patchloop-root], [data-patchloop-pin], [data-patchloop-area], [data-patchloop-selection], script").forEach((node) => node.remove());
+  bodyClone.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
+
+  const bodyStyle = window.getComputedStyle(document.body);
+  // A transparent body paints the html (or default white) background; the
+  // snapshot must do the same instead of losing the page background.
+  const background = visibleBackground(bodyStyle.backgroundColor)
+    || visibleBackground(window.getComputedStyle(document.documentElement).backgroundColor)
+    || "#ffffff";
+  const color = bodyStyle.color || "#14211d";
+  const font = bodyStyle.font || bodyStyle.fontFamily || "system-ui, sans-serif";
+  const htmlClassAttr = snapshotClassAttr(document.documentElement);
+  const bodyClassAttr = snapshotClassAttr(document.body);
+  // The <body> tag is regenerated, so its inline style must be carried
+  // over; the snapshot's own layout overrides come after and win.
+  const bodyInlineStyle = String(document.body.getAttribute("style") || "").trim();
+  const bodyStylePrefix = bodyInlineStyle ? bodyInlineStyle.replace(/;?$/, ";") : "";
+  const styles = `${freezeViewportUnits(collectReadableStyles(), width, height)}\n* { box-sizing: border-box; }\n`;
+  const overlayMarkup = renderScreenshotOverlay(overlay);
+  const bodyMarkup = serializeAsXhtml(bodyClone);
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+<rect width="100%" height="100%" fill="${escapeXml(background)}"/>
+<foreignObject x="0" y="0" width="${width}" height="${height}">
+  <html xmlns="http://www.w3.org/1999/xhtml"${htmlClassAttr} style="width:${width}px;height:${height}px;overflow:hidden;background:${escapeHtml(background)};">
+    <head>
+      <style><![CDATA[${styles.replaceAll("]]>", "]]]]><![CDATA[>")}]]></style>
+    </head>
+    <body${bodyClassAttr} style="${escapeHtml(bodyStylePrefix)}margin:0;width:${documentWidth}px;min-height:${documentHeight}px;background:${escapeHtml(background)};color:${escapeHtml(color)};font:${escapeHtml(font)};transform:translate(${-Math.round(scrollX)}px, ${-Math.round(scrollY)}px);transform-origin:top left;">
+      ${bodyMarkup}
+    </body>
+  </html>
+</foreignObject>
+<rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" fill="none" stroke="#d9e1dd"/>
+${overlayMarkup}
+</svg>`;
+}
+
+function visibleBackground(value) {
+  if (!value || value === "transparent" || value === "rgba(0, 0, 0, 0)") return "";
+  return value;
+}
+
+function snapshotClassAttr(element) {
+  // The widget's own mode class (crosshair cursor) is capture-state, not
+  // page state, and must not leak into the snapshot.
+  const value = String(element.getAttribute("class") || "")
+    .split(/\s+/)
+    .filter((token) => token && token !== "pl-feedback-active")
+    .join(" ");
+  return value ? ` class="${escapeHtml(value)}"` : "";
+}
+
+// The SVG is parsed as XML, so the clone must be serialized as XHTML:
+// innerHTML emits HTML syntax (unclosed void elements like <br>, named
+// entities like &nbsp;) that breaks XML parsing and renders the whole
+// snapshot as a broken image. XMLSerializer self-closes void elements and
+// emits characters instead of HTML-only entities.
+function serializeAsXhtml(root) {
+  const serializer = new XMLSerializer();
+  return Array.from(root.childNodes)
+    .map((node) => {
+      try {
+        return serializer.serializeToString(node);
+      } catch (_) {
+        return "";
+      }
+    })
+    .join("");
+}
+
+// Media queries inside the snapshot re-evaluate against the SVG's rendered
+// size (e.g. a scaled-down inbox preview), reflowing the clone away from the
+// captured layout while overlay coordinates stay fixed. Resolve media
+// conditions at capture time instead: inline the rules that match the
+// current viewport and drop the rest, so the snapshot keeps the captured
+// layout at any display size.
+function collectReadableStyles() {
+  const chunks = [];
+  const mediaMatches = (mediaText) => window.matchMedia(mediaText).matches;
+  const sheets = [...Array.from(document.styleSheets), ...Array.from(document.adoptedStyleSheets || [])];
+  sheets.forEach((sheet) => {
+    try {
+      if (sheet.ownerNode?.dataset?.patchloopStyle) return;
+      if (sheet.disabled) return;
+      if (sheet.media && sheet.media.mediaText && !mediaMatches(sheet.media.mediaText)) return;
+      const flattened = flattenRulesForSnapshot(sheet.cssRules, mediaMatches);
+      if (flattened) chunks.push(flattened);
+    } catch (_) {
+      // Cross-origin stylesheets cannot be read. The snapshot still includes DOM and overlay context.
+    }
+  });
+  return chunks.join("\n");
+}
+
+// Overlay coordinates must be viewport-relative at capture time, so derive
+// them from the page-pixel position (kept fresh by re-anchoring) and the
+// current scroll instead of the click-time client coordinates.
+function screenshotOverlayFor(target) {
+  if (target.kind === "area" && target.area) {
+    return {
+      kind: "area",
+      x: Math.round(target.area.pageX - window.scrollX),
+      y: Math.round(target.area.pageY - window.scrollY),
+      width: Math.round(target.area.clientWidth),
+      height: Math.round(target.area.clientHeight)
+    };
+  }
+
+  return {
+    kind: "point",
+    x: Math.round(target.pageX - window.scrollX),
+    y: Math.round(target.pageY - window.scrollY)
+  };
+}
+
+function renderScreenshotOverlay(overlay) {
+  if (!overlay) return "";
+  if (overlay.kind === "area") {
+    const x = Math.max(0, overlay.x);
+    const y = Math.max(0, overlay.y);
+    const width = Math.max(1, overlay.width);
+    const height = Math.max(1, overlay.height);
+    return `
+<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="6" fill="rgba(209, 73, 91, 0.16)" stroke="#d1495b" stroke-width="3"/>
+<circle cx="${x + 18}" cy="${y + 18}" r="14" fill="#d1495b" stroke="#ffffff" stroke-width="3"/>
+<text x="${x + 18}" y="${y + 23}" text-anchor="middle" fill="#ffffff" font-family="system-ui, sans-serif" font-size="13" font-weight="900">!</text>`;
+  }
+
+  return `
+<circle cx="${overlay.x}" cy="${overlay.y}" r="18" fill="#d1495b" stroke="#ffffff" stroke-width="4"/>
+<circle cx="${overlay.x}" cy="${overlay.y}" r="30" fill="none" stroke="#d1495b" stroke-width="3" opacity="0.35"/>`;
+}
+
+function byteLength(value) {
+  if (window.Blob) return new Blob([value]).size;
+  return base64Encode(value).length;
+}
+
+function base64Encode(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 8192) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  }
+  return btoa(binary);
+}
+
+return { captureScreenshot, byteLength, base64Encode };
+})();
+// --- widget/src/payload.js ---
+const __pl_widget_src_payload = (() => {
+const { round } = __pl_widget_src_geometry;
+const { roundedAnchor } = __pl_widget_src_anchoring;
+const { state } = __pl_widget_src_state;
+const { captureScreenshot } = __pl_widget_src_screenshot;
+
 // Version of the feedback payload schema itself (distinct from the storage
 // envelope and export bundle versions). Bump when the payload shape changes
 // so the receiver can branch on it as the schema grows for team use.
 // v2 adds the optional sourceContext block (#96).
 const PAYLOAD_SCHEMA_VERSION = 2;
 
-const state = {
-  options: { ...DEFAULTS },
-  active: false,
-  pendingTarget: null,
-  drag: null,
-  suppressNextClick: false,
-  feedback: [],
-  feedbackMarkers: new Map(),
-  approximateIds: new Set(),
-  resizeTimer: null,
-  editingId: null,
-  collapsed: true
-};
+function buildPayload(comment, reviewer, target) {
+  return {
+    schemaVersion: PAYLOAD_SCHEMA_VERSION,
+    id: generateFeedbackId(),
+    projectId: state.options.projectId,
+    demoId: state.options.demoId,
+    comment,
+    reviewer,
+    page: {
+      url: window.location.href,
+      title: document.title
+    },
+    sourceContext: state.options.sourceContext,
+    target: {
+      kind: target.kind || "point",
+      x: round(target.x),
+      y: round(target.y),
+      clientX: Math.round(target.clientX),
+      clientY: Math.round(target.clientY),
+      pageX: Math.round(target.pageX),
+      pageY: Math.round(target.pageY),
+      documentX: round(target.documentX),
+      documentY: round(target.documentY),
+      area: target.area || null,
+      selector: target.selector,
+      text: target.elementText,
+      anchor: roundedAnchor(target.anchor)
+    },
+    environment: {
+      viewport: {
+        width: window.innerWidth,
+        height: window.innerHeight
+      },
+      browser: navigator.userAgent,
+      language: navigator.language
+    },
+    screenshot: captureScreenshot(target),
+    createdAt: new Date().toISOString()
+  };
+}
+
+// Date.now() alone collides across tabs/reviewers within the same
+// millisecond, which also collides marker Map keys and orphans nodes.
+function generateFeedbackId() {
+  const random = globalThis.crypto && typeof globalThis.crypto.randomUUID === "function"
+    ? globalThis.crypto.randomUUID().slice(0, 8)
+    : Math.random().toString(36).slice(2, 10);
+  return `pl_${Date.now()}_${random}`;
+}
+
+return { buildPayload };
+})();
+// --- widget/src/url.js ---
+const __pl_widget_src_url = (() => {
+// Page-identity helpers for persisted feedback.
+//
+// Saved feedback is keyed by the page it was left on. Using the full
+// `location.href` (which includes the query string and hash) is too strict:
+// after anchor navigation (`#section`), tracking params (`?utm=...`), or a
+// normalizing redirect, the URL no longer matches byte-for-byte and the saved
+// feedback is silently dropped — and then overwritten. The envelope is already
+// scoped by projectId/demoId, so comparing only origin + pathname is enough.
+
+function normalizePageUrl(url, base) {
+  try {
+    const parsed = new URL(url, base);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch (_) {
+    return "";
+  }
+}
+
+function samePersistedPage(storedUrl, currentUrl) {
+  if (typeof storedUrl !== "string" || storedUrl === "") return false;
+  // The stored pageUrl is always a full href (the save side writes
+  // window.location.href). Parse both WITHOUT a base so a missing, empty,
+  // relative, or otherwise malformed stored value cannot be resolved against
+  // the current page and falsely match it.
+  const stored = normalizePageUrl(storedUrl, undefined);
+  const current = normalizePageUrl(currentUrl, undefined);
+  return stored !== "" && stored === current;
+}
+
+return { normalizePageUrl, samePersistedPage };
+})();
+// --- widget/src/persistence.js ---
+const __pl_widget_src_persistence = (() => {
+const { state } = __pl_widget_src_state;
+const { samePersistedPage } = __pl_widget_src_url;
+
+const FEEDBACK_STORAGE_VERSION = 1;
+
+function loadStoredReviewer(storageKey) {
+  if (!storageKey) return "";
+  try {
+    return String(window.localStorage.getItem(storageKey) || "").trim();
+  } catch (_) {
+    return "";
+  }
+}
+
+function saveReviewer(reviewer) {
+  state.options.reviewer = reviewer;
+  if (!state.options.reviewerStorageKey) return;
+  try {
+    window.localStorage.setItem(state.options.reviewerStorageKey, reviewer);
+  } catch (_) {
+    // Storage can be unavailable in privacy-restricted contexts.
+  }
+}
+
+function loadPersistedFeedback() {
+  if (!state.options.feedbackStorageKey) return [];
+
+  try {
+    const raw = window.localStorage.getItem(state.options.feedbackStorageKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!isMatchingFeedbackEnvelope(parsed)) return [];
+    return Array.isArray(parsed.feedback)
+      ? parsed.feedback.map(normalizePersistedFeedback).filter(Boolean)
+      : [];
+  } catch (error) {
+    console.warn("[PatchLoop] persisted feedback ignored", error);
+    return [];
+  }
+}
+
+function persistFeedbackList() {
+  if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return;
+
+  const envelope = feedbackStorageEnvelope(state.feedback);
+  try {
+    window.localStorage.setItem(state.options.feedbackStorageKey, JSON.stringify(envelope));
+  } catch (error) {
+    const compactEnvelope = feedbackStorageEnvelope(state.feedback, { omitScreenshotDataUrl: true });
+    try {
+      window.localStorage.setItem(state.options.feedbackStorageKey, JSON.stringify(compactEnvelope));
+      console.warn("[PatchLoop] persisted feedback without screenshot dataUrl", error);
+    } catch (retryError) {
+      console.warn("[PatchLoop] unable to persist feedback", retryError);
+    }
+  }
+}
+
+function clearPersistedFeedback() {
+  if (!state.options.feedbackStorageKey) return;
+
+  try {
+    window.localStorage.removeItem(state.options.feedbackStorageKey);
+  } catch (_) {
+    // Storage can be unavailable in privacy-restricted contexts.
+  }
+}
+
+function feedbackStorageEnvelope(feedback, options = {}) {
+  return {
+    version: FEEDBACK_STORAGE_VERSION,
+    projectId: state.options.projectId,
+    demoId: state.options.demoId,
+    pageUrl: window.location.href,
+    savedAt: new Date().toISOString(),
+    feedback: feedback.map((item) => serializeFeedbackForStorage(item, options)).filter(Boolean)
+  };
+}
+
+function serializeFeedbackForStorage(item, options = {}) {
+  try {
+    const copy = JSON.parse(JSON.stringify(item));
+    if (options.omitScreenshotDataUrl && copy.screenshot) {
+      delete copy.screenshot.dataUrl;
+      copy.screenshot.persistedWithoutDataUrl = true;
+    }
+    return copy;
+  } catch (_) {
+    return null;
+  }
+}
+
+function normalizePersistedFeedback(item) {
+  if (!item || typeof item !== "object") return null;
+  if (!item.id || !item.target || typeof item.target !== "object") return null;
+  return item;
+}
+
+function isMatchingFeedbackEnvelope(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (value.version !== FEEDBACK_STORAGE_VERSION) return false;
+  if (value.projectId !== state.options.projectId) return false;
+  if (value.demoId !== state.options.demoId) return false;
+  if (!samePersistedPage(value.pageUrl, window.location.href)) return false;
+  return Array.isArray(value.feedback);
+}
+
+return { FEEDBACK_STORAGE_VERSION, loadStoredReviewer, saveReviewer, loadPersistedFeedback, persistFeedbackList, clearPersistedFeedback, serializeFeedbackForStorage, normalizePersistedFeedback, isMatchingFeedbackEnvelope };
+})();
+const { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarget, rectFromStoredArea, round, numberOrNull } = __pl_widget_src_geometry;
+const { pointAnchorOffsets, areaAnchorOffsets, geometryFromAnchor, viewportDiffersFromCreation } = __pl_widget_src_anchoring;
+const { selectorFor, textFor } = __pl_widget_src_selector;
+const { resolveSourceContext } = __pl_widget_src_source_context;
+const { DEFAULTS, state } = __pl_widget_src_state;
+const { buildPayload } = __pl_widget_src_payload;
+const { loadStoredReviewer, saveReviewer, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback } = __pl_widget_src_persistence;
+const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } = __pl_shared_format;
+
+const EXPORT_KIND = "patchloop-feedback-bundle";
+// v2 carries an array of feedback (batch export). v1 wrapped a single
+// payload; the receiver still accepts that shape for files exported before
+// the switch to batch download.
+const EXPORT_VERSION = 2;
 
 function init(options = {}) {
   // From <head> there is no body yet to mount into; retry once the DOM is ready.
@@ -928,254 +1318,6 @@ async function submitComment(event) {
   }
 }
 
-function buildPayload(comment, reviewer, target) {
-  return {
-    schemaVersion: PAYLOAD_SCHEMA_VERSION,
-    id: generateFeedbackId(),
-    projectId: state.options.projectId,
-    demoId: state.options.demoId,
-    comment,
-    reviewer,
-    page: {
-      url: window.location.href,
-      title: document.title
-    },
-    sourceContext: state.options.sourceContext,
-    target: {
-      kind: target.kind || "point",
-      x: round(target.x),
-      y: round(target.y),
-      clientX: Math.round(target.clientX),
-      clientY: Math.round(target.clientY),
-      pageX: Math.round(target.pageX),
-      pageY: Math.round(target.pageY),
-      documentX: round(target.documentX),
-      documentY: round(target.documentY),
-      area: target.area || null,
-      selector: target.selector,
-      text: target.elementText,
-      anchor: roundedAnchor(target.anchor)
-    },
-    environment: {
-      viewport: {
-        width: window.innerWidth,
-        height: window.innerHeight
-      },
-      browser: navigator.userAgent,
-      language: navigator.language
-    },
-    screenshot: captureScreenshot(target),
-    createdAt: new Date().toISOString()
-  };
-}
-
-function captureScreenshot(target) {
-  if (!state.options.captureScreenshot) return null;
-
-  try {
-    const width = Math.max(document.documentElement.clientWidth, window.innerWidth, 1);
-    const height = Math.max(document.documentElement.clientHeight, window.innerHeight, 1);
-    const documentWidth = Math.max(document.documentElement.scrollWidth, width);
-    const documentHeight = Math.max(document.documentElement.scrollHeight, height);
-    const overlay = screenshotOverlayFor(target);
-    const svg = buildScreenshotSvg({
-      width,
-      height,
-      documentWidth,
-      documentHeight,
-      scrollX: window.scrollX,
-      scrollY: window.scrollY,
-      overlay
-    });
-    const bytes = byteLength(svg);
-    const maxBytes = Number(state.options.screenshotMaxBytes || 0);
-
-    if (maxBytes > 0 && bytes > maxBytes) {
-      return {
-        status: "omitted",
-        reason: "too-large",
-        kind: "viewport-svg",
-        mimeType: "image/svg+xml",
-        width,
-        height,
-        bytes,
-        maxBytes,
-        targetOverlay: overlay
-      };
-    }
-
-    return {
-      status: "captured",
-      kind: "viewport-svg",
-      mimeType: "image/svg+xml",
-      width,
-      height,
-      scrollX: Math.round(window.scrollX),
-      scrollY: Math.round(window.scrollY),
-      devicePixelRatio: window.devicePixelRatio || 1,
-      bytes,
-      targetOverlay: overlay,
-      dataUrl: `data:image/svg+xml;base64,${base64Encode(svg)}`
-    };
-  } catch (error) {
-    return {
-      status: "failed",
-      error: error.message
-    };
-  }
-}
-
-function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scrollX, scrollY, overlay }) {
-  const bodyClone = document.body.cloneNode(true);
-  bodyClone.querySelectorAll("[data-patchloop-root], [data-patchloop-pin], [data-patchloop-area], [data-patchloop-selection], script").forEach((node) => node.remove());
-  bodyClone.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
-
-  const bodyStyle = window.getComputedStyle(document.body);
-  // A transparent body paints the html (or default white) background; the
-  // snapshot must do the same instead of losing the page background.
-  const background = visibleBackground(bodyStyle.backgroundColor)
-    || visibleBackground(window.getComputedStyle(document.documentElement).backgroundColor)
-    || "#ffffff";
-  const color = bodyStyle.color || "#14211d";
-  const font = bodyStyle.font || bodyStyle.fontFamily || "system-ui, sans-serif";
-  const htmlClassAttr = snapshotClassAttr(document.documentElement);
-  const bodyClassAttr = snapshotClassAttr(document.body);
-  // The <body> tag is regenerated, so its inline style must be carried
-  // over; the snapshot's own layout overrides come after and win.
-  const bodyInlineStyle = String(document.body.getAttribute("style") || "").trim();
-  const bodyStylePrefix = bodyInlineStyle ? bodyInlineStyle.replace(/;?$/, ";") : "";
-  const styles = `${freezeViewportUnits(collectReadableStyles(), width, height)}\n* { box-sizing: border-box; }\n`;
-  const overlayMarkup = renderScreenshotOverlay(overlay);
-  const bodyMarkup = serializeAsXhtml(bodyClone);
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-<rect width="100%" height="100%" fill="${escapeXml(background)}"/>
-<foreignObject x="0" y="0" width="${width}" height="${height}">
-  <html xmlns="http://www.w3.org/1999/xhtml"${htmlClassAttr} style="width:${width}px;height:${height}px;overflow:hidden;background:${escapeHtml(background)};">
-    <head>
-      <style><![CDATA[${styles.replaceAll("]]>", "]]]]><![CDATA[>")}]]></style>
-    </head>
-    <body${bodyClassAttr} style="${escapeHtml(bodyStylePrefix)}margin:0;width:${documentWidth}px;min-height:${documentHeight}px;background:${escapeHtml(background)};color:${escapeHtml(color)};font:${escapeHtml(font)};transform:translate(${-Math.round(scrollX)}px, ${-Math.round(scrollY)}px);transform-origin:top left;">
-      ${bodyMarkup}
-    </body>
-  </html>
-</foreignObject>
-<rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" fill="none" stroke="#d9e1dd"/>
-${overlayMarkup}
-</svg>`;
-}
-
-function visibleBackground(value) {
-  if (!value || value === "transparent" || value === "rgba(0, 0, 0, 0)") return "";
-  return value;
-}
-
-function snapshotClassAttr(element) {
-  // The widget's own mode class (crosshair cursor) is capture-state, not
-  // page state, and must not leak into the snapshot.
-  const value = String(element.getAttribute("class") || "")
-    .split(/\s+/)
-    .filter((token) => token && token !== "pl-feedback-active")
-    .join(" ");
-  return value ? ` class="${escapeHtml(value)}"` : "";
-}
-
-// The SVG is parsed as XML, so the clone must be serialized as XHTML:
-// innerHTML emits HTML syntax (unclosed void elements like <br>, named
-// entities like &nbsp;) that breaks XML parsing and renders the whole
-// snapshot as a broken image. XMLSerializer self-closes void elements and
-// emits characters instead of HTML-only entities.
-function serializeAsXhtml(root) {
-  const serializer = new XMLSerializer();
-  return Array.from(root.childNodes)
-    .map((node) => {
-      try {
-        return serializer.serializeToString(node);
-      } catch (_) {
-        return "";
-      }
-    })
-    .join("");
-}
-
-// Media queries inside the snapshot re-evaluate against the SVG's rendered
-// size (e.g. a scaled-down inbox preview), reflowing the clone away from the
-// captured layout while overlay coordinates stay fixed. Resolve media
-// conditions at capture time instead: inline the rules that match the
-// current viewport and drop the rest, so the snapshot keeps the captured
-// layout at any display size.
-function collectReadableStyles() {
-  const chunks = [];
-  const mediaMatches = (mediaText) => window.matchMedia(mediaText).matches;
-  const sheets = [...Array.from(document.styleSheets), ...Array.from(document.adoptedStyleSheets || [])];
-  sheets.forEach((sheet) => {
-    try {
-      if (sheet.ownerNode?.dataset?.patchloopStyle) return;
-      if (sheet.disabled) return;
-      if (sheet.media && sheet.media.mediaText && !mediaMatches(sheet.media.mediaText)) return;
-      const flattened = flattenRulesForSnapshot(sheet.cssRules, mediaMatches);
-      if (flattened) chunks.push(flattened);
-    } catch (_) {
-      // Cross-origin stylesheets cannot be read. The snapshot still includes DOM and overlay context.
-    }
-  });
-  return chunks.join("\n");
-}
-
-// Overlay coordinates must be viewport-relative at capture time, so derive
-// them from the page-pixel position (kept fresh by re-anchoring) and the
-// current scroll instead of the click-time client coordinates.
-function screenshotOverlayFor(target) {
-  if (target.kind === "area" && target.area) {
-    return {
-      kind: "area",
-      x: Math.round(target.area.pageX - window.scrollX),
-      y: Math.round(target.area.pageY - window.scrollY),
-      width: Math.round(target.area.clientWidth),
-      height: Math.round(target.area.clientHeight)
-    };
-  }
-
-  return {
-    kind: "point",
-    x: Math.round(target.pageX - window.scrollX),
-    y: Math.round(target.pageY - window.scrollY)
-  };
-}
-
-function renderScreenshotOverlay(overlay) {
-  if (!overlay) return "";
-  if (overlay.kind === "area") {
-    const x = Math.max(0, overlay.x);
-    const y = Math.max(0, overlay.y);
-    const width = Math.max(1, overlay.width);
-    const height = Math.max(1, overlay.height);
-    return `
-<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="6" fill="rgba(209, 73, 91, 0.16)" stroke="#d1495b" stroke-width="3"/>
-<circle cx="${x + 18}" cy="${y + 18}" r="14" fill="#d1495b" stroke="#ffffff" stroke-width="3"/>
-<text x="${x + 18}" y="${y + 23}" text-anchor="middle" fill="#ffffff" font-family="system-ui, sans-serif" font-size="13" font-weight="900">!</text>`;
-  }
-
-  return `
-<circle cx="${overlay.x}" cy="${overlay.y}" r="18" fill="#d1495b" stroke="#ffffff" stroke-width="4"/>
-<circle cx="${overlay.x}" cy="${overlay.y}" r="30" fill="none" stroke="#d1495b" stroke-width="3" opacity="0.35"/>`;
-}
-
-function byteLength(value) {
-  if (window.Blob) return new Blob([value]).size;
-  return base64Encode(value).length;
-}
-
-function base64Encode(value) {
-  const bytes = new TextEncoder().encode(value);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 8192) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
-  }
-  return btoa(binary);
-}
-
 async function postFeedback(payload) {
   try {
     const headers = { "Content-Type": "application/json" };
@@ -1194,25 +1336,6 @@ async function postFeedback(payload) {
   console.info("[PatchLoop] delivery", payload.id, payload.delivery);
 }
 
-function loadStoredReviewer(storageKey) {
-  if (!storageKey) return "";
-  try {
-    return String(window.localStorage.getItem(storageKey) || "").trim();
-  } catch (_) {
-    return "";
-  }
-}
-
-function saveReviewer(reviewer) {
-  state.options.reviewer = reviewer;
-  if (!state.options.reviewerStorageKey) return;
-  try {
-    window.localStorage.setItem(state.options.reviewerStorageKey, reviewer);
-  } catch (_) {
-    // Storage can be unavailable in privacy-restricted contexts.
-  }
-}
-
 function restorePersistedFeedback() {
   removeCommittedMarkers();
   state.feedbackMarkers.clear();
@@ -1226,89 +1349,6 @@ function restorePersistedFeedback() {
   state.feedback = stored;
   restoreFeedbackMarkers();
   persistFeedbackList();
-}
-
-function loadPersistedFeedback() {
-  if (!state.options.feedbackStorageKey) return [];
-
-  try {
-    const raw = window.localStorage.getItem(state.options.feedbackStorageKey);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!isMatchingFeedbackEnvelope(parsed)) return [];
-    return Array.isArray(parsed.feedback)
-      ? parsed.feedback.map(normalizePersistedFeedback).filter(Boolean)
-      : [];
-  } catch (error) {
-    console.warn("[PatchLoop] persisted feedback ignored", error);
-    return [];
-  }
-}
-
-function persistFeedbackList() {
-  if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return;
-
-  const envelope = feedbackStorageEnvelope(state.feedback);
-  try {
-    window.localStorage.setItem(state.options.feedbackStorageKey, JSON.stringify(envelope));
-  } catch (error) {
-    const compactEnvelope = feedbackStorageEnvelope(state.feedback, { omitScreenshotDataUrl: true });
-    try {
-      window.localStorage.setItem(state.options.feedbackStorageKey, JSON.stringify(compactEnvelope));
-      console.warn("[PatchLoop] persisted feedback without screenshot dataUrl", error);
-    } catch (retryError) {
-      console.warn("[PatchLoop] unable to persist feedback", retryError);
-    }
-  }
-}
-
-function clearPersistedFeedback() {
-  if (!state.options.feedbackStorageKey) return;
-
-  try {
-    window.localStorage.removeItem(state.options.feedbackStorageKey);
-  } catch (_) {
-    // Storage can be unavailable in privacy-restricted contexts.
-  }
-}
-
-function feedbackStorageEnvelope(feedback, options = {}) {
-  return {
-    version: FEEDBACK_STORAGE_VERSION,
-    projectId: state.options.projectId,
-    demoId: state.options.demoId,
-    pageUrl: window.location.href,
-    savedAt: new Date().toISOString(),
-    feedback: feedback.map((item) => serializeFeedbackForStorage(item, options)).filter(Boolean)
-  };
-}
-
-function serializeFeedbackForStorage(item, options = {}) {
-  try {
-    const copy = JSON.parse(JSON.stringify(item));
-    if (options.omitScreenshotDataUrl && copy.screenshot) {
-      delete copy.screenshot.dataUrl;
-      copy.screenshot.persistedWithoutDataUrl = true;
-    }
-    return copy;
-  } catch (_) {
-    return null;
-  }
-}
-
-function normalizePersistedFeedback(item) {
-  if (!item || typeof item !== "object") return null;
-  if (!item.id || !item.target || typeof item.target !== "object") return null;
-  return item;
-}
-
-function isMatchingFeedbackEnvelope(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  if (value.version !== FEEDBACK_STORAGE_VERSION) return false;
-  if (value.projectId !== state.options.projectId) return false;
-  if (value.demoId !== state.options.demoId) return false;
-  if (!samePersistedPage(value.pageUrl, window.location.href)) return false;
-  return Array.isArray(value.feedback);
 }
 
 function shouldDeliverFeedback() {
@@ -1397,13 +1437,6 @@ function updateDownloadAllButton() {
   button.hidden = false;
   button.disabled = unsent === 0;
   button.textContent = unsent > 0 ? `未送信をまとめてDL（${unsent}）` : "未送信はありません";
-}
-
-function safeFilePart(value) {
-  return String(value || "feedback")
-    .replace(/[^a-zA-Z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "feedback";
 }
 
 async function postSlackWebhook(payload) {
@@ -2067,15 +2100,6 @@ function addArea(rect) {
   area.append(label);
   document.body.append(area);
   return { node: area, label };
-}
-
-// Date.now() alone collides across tabs/reviewers within the same
-// millisecond, which also collides marker Map keys and orphans nodes.
-function generateFeedbackId() {
-  const random = globalThis.crypto && typeof globalThis.crypto.randomUUID === "function"
-    ? globalThis.crypto.randomUUID().slice(0, 8)
-    : Math.random().toString(36).slice(2, 10);
-  return `pl_${Date.now()}_${random}`;
 }
 
 function getRoot() {
