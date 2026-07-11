@@ -15,6 +15,7 @@
 //   delete(id)         -> item|null returns the removed item (for screenshot cleanup)
 //   count()            -> number
 //   close()
+// Exported FEEDBACK_STATUSES is the shared status allowlist used by the receiver.
 //
 // A new backend (e.g. createMysqlStore) just needs to implement this shape and
 // be wired into createStore() below; the receiver code stays unchanged.
@@ -38,10 +39,10 @@ function isUniqueViolation(error) {
   return /UNIQUE constraint failed/i.test(error && error.message);
 }
 
-const VALID_STATUSES = ["new", "accepted", "fixed", "ignored"];
+const FEEDBACK_STATUSES = ["new", "accepted", "fixed", "ignored"];
 
 function normalizeStatus(value) {
-  return VALID_STATUSES.includes(value) ? value : "new";
+  return FEEDBACK_STATUSES.includes(value) ? value : "new";
 }
 
 // Columns extracted from each feedback object for indexed filtering. The full
@@ -218,4 +219,4 @@ function createStore(config = {}) {
   throw new Error(`Unknown store backend: ${backend}`);
 }
 
-module.exports = { createStore };
+module.exports = { createStore, FEEDBACK_STATUSES };

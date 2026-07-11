@@ -370,6 +370,13 @@ const __pl_shared_format = (() => {
 // link hardening (safeLinkUrl / mdLinkUrl) and the screenshot status texts
 // stay in their respective owners because their semantics differ per side.
 
+function safeFilePart(value) {
+  return String(value || "feedback")
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "feedback";
+}
+
 function truncateText(value, max) {
   const text = String(value ?? "");
   return text.length > max ? `${text.slice(0, max)}…` : text;
@@ -421,7 +428,7 @@ function formatTarget(target) {
   return `${target.kind || "point"} at ${present(target.clientX)},${present(target.clientY)}`;
 }
 
-return { truncateText, present, escapeHtml, escapeXml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget };
+return { safeFilePart, truncateText, present, escapeHtml, escapeXml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget };
 })();
 const { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarget, rectFromStoredArea, round, numberOrNull } = __pl_widget_src_geometry;
 const { pointAnchorOffsets, areaAnchorOffsets, roundedAnchor, geometryFromAnchor, viewportDiffersFromCreation } = __pl_widget_src_anchoring;

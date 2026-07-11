@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  safeFilePart,
   truncateText,
   present,
   escapeHtml,
@@ -14,6 +15,15 @@ const {
   formatViewport,
   formatTarget
 } = require("../shared/format.js");
+
+test("safeFilePart creates a bounded filesystem-safe component", () => {
+  assert.equal(safeFilePart("feedback_123"), "feedback_123");
+  assert.equal(safeFilePart(" --hello, world!!-- "), "hello-world");
+  assert.equal(safeFilePart(""), "feedback");
+  assert.equal(safeFilePart(null), "feedback");
+  assert.equal(safeFilePart(false), "feedback");
+  assert.equal(safeFilePart("x".repeat(81)), "x".repeat(80));
+});
 
 test("truncateText coerces and appends an ellipsis past the limit", () => {
   assert.equal(truncateText("hello", 10), "hello");

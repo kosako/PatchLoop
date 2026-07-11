@@ -6,8 +6,8 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-const { truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } = require("../shared/format.js");
-const { createStore } = require("./store.js");
+const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } = require("../shared/format.js");
+const { createStore, FEEDBACK_STATUSES } = require("./store.js");
 
 const CONFIG_PATH = process.env.PATCHLOOP_RECEIVER_CONFIG || path.join(__dirname, "receiver.config.json");
 const config = loadConfig(CONFIG_PATH);
@@ -95,7 +95,6 @@ const IMPORT_BUNDLE_KIND = "patchloop-feedback-bundle";
 // Both are accepted so files exported before the batch-download switch still
 // import.
 const SUPPORTED_IMPORT_BUNDLE_VERSIONS = new Set([1, 2]);
-const FEEDBACK_STATUSES = ["new", "accepted", "fixed", "ignored"];
 // Default applied to payloads received before the widget sent schemaVersion,
 // so every stored item carries a version going forward.
 const DEFAULT_SCHEMA_VERSION = 1;
@@ -1494,13 +1493,6 @@ function contentTypeForPath(filePath) {
   if (ext === ".css") return "text/css; charset=utf-8";
   if (ext === ".js") return "text/javascript; charset=utf-8";
   return "application/octet-stream";
-}
-
-function safeFilePart(value) {
-  return String(value || "feedback")
-    .replace(/[^a-zA-Z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "feedback";
 }
 
 function httpError(message, statusCode) {
