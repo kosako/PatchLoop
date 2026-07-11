@@ -5,7 +5,7 @@ import { resolveSourceContext } from "./source-context.js";
 import { DEFAULTS, state } from "./state.js";
 import { buildPayload } from "./payload.js";
 import { loadStoredReviewer, saveReviewer, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback } from "./persistence.js";
-import { truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } from "../../shared/format.js";
+import { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } from "../../shared/format.js";
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
 // v2 carries an array of feedback (batch export). v1 wrapped a single
@@ -570,13 +570,6 @@ function updateDownloadAllButton() {
   button.hidden = false;
   button.disabled = unsent === 0;
   button.textContent = unsent > 0 ? `未送信をまとめてDL（${unsent}）` : "未送信はありません";
-}
-
-function safeFilePart(value) {
-  return String(value || "feedback")
-    .replace(/[^a-zA-Z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "feedback";
 }
 
 async function postSlackWebhook(payload) {
