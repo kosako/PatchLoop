@@ -1454,11 +1454,12 @@ function waitForExit(child) {
   });
 }
 
-async function postJson(url, body, headers = {}) {
+async function postJson(url, body, headers = {}, signal) {
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...headers },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal
   });
   const text = await response.text();
 
@@ -1533,3 +1534,251 @@ function feedbackPayload(id) {
 function testSvg() {
   return "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><rect width=\"1\" height=\"1\" fill=\"#fff\"/></svg>";
 }
+
+for (const first of ["slack", "github"]) {
+  test(`integration updates preserve each other and triage when ${first} finishes first`, { timeout: 5000 }, async (t) => {
+    const slackResponse = Promise.withResolvers();
+    const githubResponse = Promise.withResolvers();
+    const slack = await startMockGitHub(t, (res) => slackResponse.resolve(res));
+    const github = await startMockGitHub(t, (res) => githubResponse.resolve(res));
+    const receiver = await startReceiver(t, {
+      SLACK_WEBHOOK_URL: slack.baseUrl,
+      GITHUB_TOKEN: "test-token",
+      GITHUB_REPO: "acme/demo",
+      GITHUB_API_BASE: github.baseUrl
+    });
+    const payload = feedbackPayload(`pl_integrations_${first}`);
+    const ingest = postJson(`${receiver.baseUrl}/feedback`, payload);
+    const slackRes = await slackResponse.promise;
+    const create = postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {});
+    const githubRes = await githubResponse.promise;
+    await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "accepted" });
+    const finishGitHub = () => {
+      githubRes.writeHead(201, { "Content-Type": "application/json" });
+      githubRes.end(JSON.stringify({ number: 7, html_url: "https://github.com/acme/demo/issues/7" }));
+    };
+    if (first === "slack") {
+      slackRes.end("ok");
+      assert.equal((await ingest).status, 201);
+      finishGitHub();
+      assert.equal((await create).status, 201);
+    } else {
+      finishGitHub();
+      assert.equal((await create).status, 201);
+      slackRes.end("ok");
+      assert.equal((await ingest).status, 201);
+    }
+    const [item] = await readStoredFeedback(receiver.dbPath);
+    assert.equal(item.status, "accepted");
+    assert.equal(item.integrations.slack.status, "sent");
+    assert.equal(item.integrations.github.issueNumber, 7);
+    assert.equal((await postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {})).status, 409);
+    assert.equal(github.requests.length, 1);
+  });
+}
+
+test("a truncated GitHub response fails promptly and releases its operation lock", async (t) => {
+  const github = await startMockGitHub(t, (res) => {
+    if (github.requests.length === 1) {
+      truncateResponse(res);
+    } else {
+      res.writeHead(201, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ number: 9, html_url: "https://github.com/acme/demo/issues/9" }));
+    }
+  });
+  const receiver = await startReceiver(t, {
+    GITHUB_TOKEN: "test-token", GITHUB_REPO: "acme/demo", GITHUB_API_BASE: github.baseUrl,
+    GITHUB_TIMEOUT_MS: "100"
+  });
+  const payload = feedbackPayload("pl_truncated_github");
+  await postJson(`${receiver.baseUrl}/feedback`, payload);
+  const failed = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {}, {}, globalThis.AbortSignal.timeout(2000));
+  assert.equal(failed.status, 502);
+  assert.equal((await readStoredFeedback(receiver.dbPath))[0].integrations.github.status, "failed");
+  const retried = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {});
+  assert.equal(retried.status, 201);
+  assert.equal(github.requests.length, 2);
+});
+
+test("a truncated Slack webhook response does not strand feedback ingestion", async (t) => {
+  const slack = await startMockGitHub(t, truncateResponse);
+  const receiver = await startReceiver(t, { SLACK_WEBHOOK_URL: slack.baseUrl, SLACK_TIMEOUT_MS: "100" });
+  const response = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_truncated_slack"), {}, globalThis.AbortSignal.timeout(2000));
+  assert.equal(response.status, 201);
+  assert.equal(response.body.slack.status, "failed");
+  assert.equal((await readStoredFeedback(receiver.dbPath))[0].integrations.slack.status, "failed");
+});
+
+for (const stage of ["init", "upload", "complete"]) {
+  test(`a truncated Slack ${stage} response completes ingestion with an image failure`, async (t) => {
+    const fakeSlack = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        const current = req.url.endsWith("getUploadURLExternal") ? "init"
+          : req.url.endsWith("completeUploadExternal") ? "complete" : "upload";
+        if (current === stage) {
+          truncateResponse(res);
+        } else if (current === "init") {
+          res.end(JSON.stringify({ ok: true, file_id: "F_TEST", upload_url: `http://127.0.0.1:${fakeSlack.address().port}/upload` }));
+        } else {
+          res.end(JSON.stringify({ ok: true }));
+        }
+      });
+    });
+    await new Promise((resolve) => fakeSlack.listen(0, "127.0.0.1", resolve));
+    t.after(() => new Promise((resolve) => fakeSlack.close(resolve)));
+    const fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-slack-redirect-"));
+    t.after(() => fs.rm(fixtureDir, { recursive: true, force: true }));
+    const preload = path.join(fixtureDir, "redirect-slack.cjs");
+    // Only the receiver child sees this redirect; no real Slack endpoint is contacted.
+    await fs.writeFile(preload, `
+      const https = require("node:https");
+      const http = require("node:http");
+      https.request = (target, options, callback) => {
+        const url = new URL(target);
+        if (url.hostname !== "slack.com") throw new Error("Unexpected external request in Slack test");
+        return http.request("http://127.0.0.1:${fakeSlack.address().port}" + url.pathname, options, callback);
+      };
+    `);
+    const receiver = await startReceiver(t, {
+      NODE_OPTIONS: `--require ${JSON.stringify(preload)}`,
+      SLACK_IMAGE_MODE: "upload", SLACK_BOT_TOKEN: "test-token", SLACK_UPLOAD_CHANNEL_ID: "C_TEST",
+      SLACK_TIMEOUT_MS: "100"
+    });
+    const response = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload(`pl_slack_abort_${stage}`), {}, globalThis.AbortSignal.timeout(2000));
+    assert.equal(response.status, 201);
+    assert.equal(response.body.slack.status, "failed");
+    assert.equal(response.body.slack.image.status, "failed");
+  });
+}
+
+function truncateResponse(res) {
+  res.writeHead(201, { "Content-Type": "application/json", "Content-Length": "1000" });
+  res.write("{");
+  setTimeout(() => res.destroy(), 20);
+}
+
+test("import capacity counts new unique ids and skips duplicates before screenshot writes", async (t) => {
+  const receiver = await startReceiver(t, {
+    MAX_FEEDBACK_COUNT: "2", SCREENSHOT_DISK_MAX_BYTES: String(Buffer.byteLength(testSvg()) * 2)
+  });
+  const existing = feedbackPayload("pl_capacity_existing");
+  const added = feedbackPayload("pl_capacity_new");
+  await postJson(`${receiver.baseUrl}/feedback`, existing);
+  const response = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle", version: 2, feedback: [existing, added, added]
+  });
+  assert.equal(response.status, 201);
+  assert.deepEqual(response.body.ids, [added.id]);
+  assert.deepEqual(response.body.duplicates, [existing.id, added.id]);
+  assert.equal(response.body.count, 2);
+  assert.equal((await fs.readdir(receiver.screenshotDir)).length, 2);
+  const full = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle", version: 2, feedback: [existing, added]
+  });
+  assert.equal(full.status, 409);
+  assert.deepEqual(full.body.duplicates, [existing.id, added.id]);
+  assert.deepEqual(full.body.failed, []);
+  assert.equal((await fs.readdir(receiver.screenshotDir)).length, 2);
+});
+
+test("failed screenshot deletion retains the feedback and can be retried", async (t) => {
+  const receiver = await startReceiver(t);
+  const payload = feedbackPayload("pl_delete_retry");
+  await postJson(`${receiver.baseUrl}/feedback`, payload);
+  const [item] = await readStoredFeedback(receiver.dbPath);
+  const screenshotPath = item.screenshot.path;
+  const savedPath = path.join(receiver.tempDir, "saved-screenshot");
+  await fs.rename(screenshotPath, savedPath);
+  await fs.mkdir(screenshotPath);
+  await fs.writeFile(path.join(screenshotPath, "occupied"), "synthetic");
+  const failed = await fetch(`${receiver.baseUrl}/feedback/${payload.id}`, { method: "DELETE" });
+  assert.equal(failed.status, 500);
+  assert.equal((await readStoredFeedback(receiver.dbPath)).length, 1);
+  await fs.rm(screenshotPath, { recursive: true });
+  await fs.rename(savedPath, screenshotPath);
+  const retry = await fetch(`${receiver.baseUrl}/feedback/${payload.id}`, { method: "DELETE" });
+  assert.equal(retry.status, 200);
+  assert.equal((await readStoredFeedback(receiver.dbPath)).length, 0);
+  await assert.rejects(fs.access(screenshotPath), /ENOENT/);
+});
+
+test("deleting feedback succeeds when its screenshot is already absent", async (t) => {
+  const receiver = await startReceiver(t);
+  const payload = feedbackPayload("pl_delete_missing_screenshot");
+  await postJson(`${receiver.baseUrl}/feedback`, payload);
+  const [item] = await readStoredFeedback(receiver.dbPath);
+  await fs.unlink(item.screenshot.path);
+  const response = await fetch(`${receiver.baseUrl}/feedback/${payload.id}`, { method: "DELETE" });
+  assert.equal(response.status, 200);
+  assert.equal((await readStoredFeedback(receiver.dbPath)).length, 0);
+});
+
+test("GitHub creation prevents deletion until its result is persisted", async (t) => {
+  const responseReady = Promise.withResolvers();
+  const github = await startMockGitHub(t, (res) => responseReady.resolve(res));
+  const receiver = await startReceiver(t, {
+    GITHUB_TOKEN: "test-token", GITHUB_REPO: "acme/demo", GITHUB_API_BASE: github.baseUrl
+  });
+  const payload = feedbackPayload("pl_delete_during_github");
+  await postJson(`${receiver.baseUrl}/feedback`, payload);
+  const create = postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {});
+  const pending = await responseReady.promise;
+  const deletion = await fetch(`${receiver.baseUrl}/feedback/${payload.id}`, { method: "DELETE" });
+  assert.equal(deletion.status, 409);
+  assert.equal((await readStoredFeedback(receiver.dbPath)).length, 1);
+  pending.writeHead(201, { "Content-Type": "application/json" });
+  pending.end(JSON.stringify({ number: 1, html_url: "https://github.com/acme/demo/issues/1" }));
+  assert.equal((await create).status, 201);
+  assert.equal((await readStoredFeedback(receiver.dbPath))[0].integrations.github.status, "created");
+  const retry = await fetch(`${receiver.baseUrl}/feedback/${payload.id}`, { method: "DELETE" });
+  assert.equal(retry.status, 200);
+});
+
+test("an in-flight deletion rejects same-id GitHub creation and another deletion", async (t) => {
+  const github = await startMockGitHub(t, (res) => res.end("unexpected"));
+  const receiver = await startReceiver(t, {
+    GITHUB_TOKEN: "test-token", GITHUB_REPO: "acme/demo", GITHUB_API_BASE: github.baseUrl
+  });
+  const payload = feedbackPayload("pl_github_during_delete");
+  await postJson(`${receiver.baseUrl}/feedback`, payload);
+  const socket = net.connect(receiver.port, "127.0.0.1");
+  const raw = await new Promise((resolve, reject) => {
+    let response = "";
+    socket.once("connect", () => {
+      socket.write([
+        `DELETE /feedback/${payload.id} HTTP/1.1`, "Host: 127.0.0.1", "", "",
+        `POST /feedback/${payload.id}/github-issue HTTP/1.1`, "Host: 127.0.0.1",
+        "Content-Type: application/json", "Content-Length: 2", "", "{}",
+        `DELETE /feedback/${payload.id} HTTP/1.1`, "Host: 127.0.0.1", "Connection: close", "", ""
+      ].join("\r\n"));
+    });
+    socket.on("data", (chunk) => { response += chunk; });
+    socket.once("end", () => resolve(response));
+    socket.once("error", reject);
+  });
+  assert.deepEqual([...raw.matchAll(/HTTP\/1\.1 (\d+)/g)].map((match) => Number(match[1])), [200, 409, 409]);
+  assert.equal(github.requests.length, 0);
+  assert.equal((await readStoredFeedback(receiver.dbPath)).length, 0);
+});
+
+test("a database deletion failure can retry after the screenshot was removed", async (t) => {
+  const receiver = await startReceiver(t);
+  const payload = feedbackPayload("pl_delete_database_retry");
+  await postJson(`${receiver.baseUrl}/feedback`, payload);
+  const [item] = await readStoredFeedback(receiver.dbPath);
+  const db = new DatabaseSync(receiver.dbPath);
+  try {
+    db.exec("CREATE TRIGGER reject_delete BEFORE DELETE ON feedback BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END");
+    const failed = await fetch(`${receiver.baseUrl}/feedback/${payload.id}`, { method: "DELETE" });
+    assert.equal(failed.status, 500);
+    assert.equal((await readStoredFeedback(receiver.dbPath)).length, 1);
+    await assert.rejects(fs.access(item.screenshot.path), /ENOENT/);
+    db.exec("DROP TRIGGER reject_delete");
+    const retry = await fetch(`${receiver.baseUrl}/feedback/${payload.id}`, { method: "DELETE" });
+    assert.equal(retry.status, 200);
+    assert.equal((await readStoredFeedback(receiver.dbPath)).length, 0);
+  } finally {
+    db.close();
+  }
+});

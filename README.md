@@ -188,11 +188,13 @@ node server/receive.js
 - `GET /healthz` で死活監視ができます（store 疎通込みで 200 / 異常・シャットダウン中は 503。認証不要・rate limit 対象外）
 - SIGTERM / SIGINT で graceful shutdown します（新規接続を止め、処理中のリクエスト完了と store の close を待ってから終了。10 秒で強制終了）
 
+削除は screenshot とDB行の両方を削除してから `200` を返します。画像またはDBの削除に失敗した場合は `500` を返し、feedback を残して再試行できます。画像がすでに存在しなくても再試行は成功します。同じ feedback の削除中・GitHub Issue 作成中に、削除またはIssue作成を重ねると `409` を返します。
+
 ### ストレージ
 
-feedback は組み込みの `node:sqlite`（`server/feedback.db`）に保存します。バックエンドは `server/store.js` の小さな非同期インターフェース（`init` / `insert` / `get` / `list` / `update` / `delete` / `count`）の背後に隔離してあり、将来 MySQL 等の別バックエンドに差し替えても receiver 本体は変更不要です。
+feedback は組み込みの `node:sqlite`（`server/feedback.db`）に保存します。バックエンドは `server/store.js` の小さな非同期インターフェース（`init` / `insert` / `get` / `list` / `update` / `updateIntegration` / `delete` / `count`）の背後に隔離してあり、将来 MySQL 等の別バックエンドに差し替えても receiver 本体は変更不要です。
 
-起動時に旧形式の `server/feedback.json` が残っていれば一度だけ sqlite に取り込み、元ファイルは `feedback.json.migrated-<timestamp>` に退避します（壊れていれば `feedback.json.corrupt-<timestamp>` に退避して空で起動）。db ファイルのパスは `FEEDBACK_DB_PATH`、移行元の JSON は `FEEDBACK_STORE_PATH` で指定できます。
+起動時に、未移行の空DBへ旧形式の `server/feedback.json` を一度だけ取り込み、元ファイルを `feedback.json.migrated-<timestamp>` に退避します（壊れていれば `feedback.json.corrupt-<timestamp>` に退避して空で起動）。移行完了はDBにも記録するため、退避に失敗して元ファイルが残っても、全件削除後の再起動で再取込しません。すでに feedback がある旧DBはそのデータを維持し、legacy JSON を取り込まず移行済みとして扱います。db ファイルのパスは `FEEDBACK_DB_PATH`、移行元の JSON は `FEEDBACK_STORE_PATH` で指定できます。
 - `PORT` / `HOST` env で変更可能（デフォルトは `127.0.0.1:4000`）
 - `FEEDBACK_DB_PATH` env で sqlite DB の保存先を変更できます（`FEEDBACK_STORE_PATH` は保存先ではなく、旧 `feedback.json` の移行元です）
 - `SCREENSHOT_DIR` env で screenshot 保存先を変更できます
@@ -200,7 +202,7 @@ feedback は組み込みの `node:sqlite`（`server/feedback.db`）に保存し�
 - `MAX_BODY_BYTES` / `SCREENSHOT_MAX_BYTES` env で payload / screenshot の上限を変更できます
 - `MAX_IMPORT_ITEMS` / `MAX_FIELD_LENGTH` / `MAX_ARRAY_LENGTH` / `MAX_OBJECT_DEPTH` env（または config の `maxImportItems` / `maxFieldLength` / `maxArrayLength` / `maxObjectDepth`）で、受信 payload の形（`POST /import` 1 回の件数・文字列長・配列長・ネスト深さ）の上限を変更できます。未設定でもローカルで困らない緩いデフォルト（`500` / `20000` / `1000` / `32`）が常に有効です（超過は `413`。`screenshot.dataUrl` は `SCREENSHOT_MAX_BYTES` 側で別途上限）
 - `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` / `RATE_LIMIT_MAX_CLIENTS` env（または config の `rateLimitMax` / `rateLimitWindowMs` / `rateLimitMaxClients`）で、IP ごとの固定窓レート制限を変更できます（デフォルト `120` req / `60000` ms、超過は `429` + `Retry-After`）。クライアント識別は既定で socket の remoteAddress。reverse proxy 配下では `RECEIVER_TRUST_PROXY` を `1` にしたときだけ `X-Forwarded-For` 先頭を使います（既定では直アクセスがヘッダーで識別を偽装できないようにするため）
-- `MAX_FEEDBACK_COUNT` env（または config の `maxFeedbackCount`、デフォルト `100000`）を超えると新規保存を `507` で拒否します。`SCREENSHOT_DISK_MAX_BYTES` env（または config の `screenshotDiskMaxBytes`、デフォルト `500000000`）を超える screenshot 書き込みも `507` で拒否します（起動時にディスク使用量を実測し、保存・削除で追跡）
+- `MAX_FEEDBACK_COUNT` env（または config の `maxFeedbackCount`、デフォルト `100000`）を超えると新規保存を `507` で拒否します。import の追加件数には、保存済みIDとbundle内の重複IDを含めません。`SCREENSHOT_DISK_MAX_BYTES` env（または config の `screenshotDiskMaxBytes`、デフォルト `500000000`）を超える screenshot 書き込みも `507` で拒否します（起動時にディスク使用量を実測し、保存・削除で追跡）
 - `RECEIVER_TOKEN` env（または config の `receiverToken`）を設定すると、操作系 endpoint（`POST /import` / `POST /feedback/:id/status` / `DELETE /feedback/:id` / `POST /feedback/:id/github-issue`）と閲覧系 endpoint（`GET /`（inbox）/ `GET /feedback.json` / `GET /screenshots/:file`）に認証を必須にします。API からは `Authorization: Bearer <token>`、ブラウザからは inbox のログインフォーム（`GET /login`）に同じ token を入力します。ログイン後は HMAC 派生値の HttpOnly cookie（有効期限 7 日、`SameSite=Lax`、`publicBaseUrl` が `https://` のとき `Secure` 付き）でセッションが維持され、生 token はブラウザに保存されません。token を変更すると全端末のセッションが即失効します。未設定ならローカルは認証なしで動作します（widget の `POST /feedback` と `GET /widget.js` は設定時も常に公開）
 - `INGEST_KEYS` env（カンマ区切り）または config の `ingestKeys`（配列）を設定すると、widget の投稿（`POST /feedback`）に `X-PatchLoop-Ingest-Key` ヘッダーの一致を必須にします（不一致・欠落は `401`）。config では `"key文字列"` に加えて `{ "key": "...", "projectId": "..." }` 形式で **key と projectId を紐付け**でき、紐付いた key での投稿は payload の `projectId` 詐称を `403` で拒否し、省略時は key の projectId を補完します。キーはデモページに埋め込まれる公開キーで、秘密による認証ではありません（プロジェクト識別・spam 抑止・ローテーション失効が目的）。未設定なら従来通り誰でも投稿できます
 - `ALLOWED_ORIGINS` env（または config の `allowedOrigins`、env はカンマ区切り・config は配列）を設定すると、widget の投稿（`POST /feedback`）の CORS を許可 origin（`scheme://host[:port]` の完全一致）に制限します。JSON POST は必ず preflight されるため、リスト外 origin のブラウザ投稿は本体 POST の前にブラウザ側で遮断されます。未設定なら従来通り全 origin 許可（`*`）で、起動ログに警告が出ます。CORS ヘッダーが付くのは `POST /feedback` のみで、inbox・操作系・screenshot は同一オリジン利用のため CORS 自体を返しません。受信した feedback には `received: { origin, originAllowed }` が保存され、inbox の raw payload から確認できます（Origin ヘッダーは偽装可能なため参考情報です）
