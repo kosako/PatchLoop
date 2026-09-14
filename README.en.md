@@ -107,12 +107,12 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 - `showDeliverySettings` (boolean, optional) — show the delivery target controls in the drawer; defaults to `false`
 - `captureScreenshot` (boolean, optional) — include a viewport snapshot in the payload; defaults to `true`
 - `screenshotMaxBytes` (number, optional) — widget-side byte limit before omitting the snapshot; defaults to `1200000`
-- `onSubmit(payload)` (function, optional) — called on every submit
+- `onSubmit(payload)` (function, optional) — called on every submit. Synchronous exceptions and rejections from a returned Promise are reported in the console; receiver / Slack delivery continues independently of the callback's success or completion
 
 ### window.PatchLoop API
 
 - `PatchLoop.init(options)` — mount the widget and start capturing
-- `PatchLoop.destroy()` — remove the widget DOM, markers, and highlights
+- `PatchLoop.destroy()` — remove the widget DOM, markers, and highlights, and cancel initialization waiting for DOM readiness. If `init()` is called repeatedly before the body exists, only the latest options are used
 - `PatchLoop.setFeedbackMode(boolean)` — toggle comment mode programmatically
 - `PatchLoop.getFeedback()` — return a copy of the current feedback list (newest first)
 

@@ -12,11 +12,17 @@ const EXPORT_KIND = "patchloop-feedback-bundle";
 // payload; the receiver still accepts that shape for files exported before
 // the switch to batch download.
 const EXPORT_VERSION = 2;
+let pendingInit = null;
 
 function init(options = {}) {
+  cancelPendingInit();
   // From <head> there is no body yet to mount into; retry once the DOM is ready.
   if (!document.body) {
-    document.addEventListener("DOMContentLoaded", () => init(options), { once: true });
+    pendingInit = () => {
+      pendingInit = null;
+      init(options);
+    };
+    document.addEventListener("DOMContentLoaded", pendingInit, { once: true });
     return api;
   }
   // Re-init while comment mode is on must not leave stale mode state
@@ -42,6 +48,7 @@ function init(options = {}) {
 }
 
 function destroy() {
+  cancelPendingInit();
   document.documentElement.classList.remove("pl-feedback-active");
   document.querySelector("[data-patchloop-style]")?.remove();
   document.removeEventListener("mousedown", handleDocumentMouseDown, true);
@@ -61,6 +68,12 @@ function destroy() {
   state.drag = null;
   state.feedbackMarkers.clear();
   state.editingId = null;
+}
+
+function cancelPendingInit() {
+  if (!pendingInit) return;
+  document.removeEventListener("DOMContentLoaded", pendingInit);
+  pendingInit = null;
 }
 
 function initialReviewer(options) {
@@ -441,7 +454,11 @@ async function submitComment(event) {
   document.dispatchEvent(new CustomEvent("patchloop:feedback", { detail: payload }));
 
   if (typeof state.options.onSubmit === "function") {
-    state.options.onSubmit(payload);
+    try {
+      Promise.resolve(state.options.onSubmit(payload)).catch(reportSubmitCallbackError);
+    } catch (error) {
+      reportSubmitCallbackError(error);
+    }
   }
 
   if (shouldDeliverFeedback()) {
@@ -449,6 +466,10 @@ async function submitComment(event) {
     persistFeedbackList();
     renderFeedbackList();
   }
+}
+
+function reportSubmitCallbackError(error) {
+  console.warn("[PatchLoop] onSubmit failed", error);
 }
 
 async function postFeedback(payload) {
