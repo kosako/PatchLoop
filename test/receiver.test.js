@@ -1782,3 +1782,22 @@ test("a database deletion failure can retry after the screenshot was removed", a
     db.close();
   }
 });
+
+test("authenticated inbox screenshots use the current receiver despite a stale public URL", async (t) => {
+  const receiver = await startReceiver(t, {
+    PUBLIC_BASE_URL: "https://previous.example", RECEIVER_TOKEN: "test-token"
+  });
+  await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_current_origin"));
+  const headers = { Authorization: "Bearer test-token" };
+  const inbox = await fetch(`${receiver.baseUrl}/`, { headers });
+  assert.equal(inbox.status, 200);
+  const html = await inbox.text();
+  const imagePath = html.match(/<img src="([^"]+)"/)[1];
+  assert.match(imagePath, /^\/screenshots\//);
+  const image = await fetch(receiver.baseUrl + imagePath, { headers });
+  assert.equal(image.status, 200);
+  assert.equal(await image.text(), testSvg());
+  assert.equal(image.headers.get("content-security-policy"), "default-src 'none'; sandbox");
+  const [stored] = await readStoredFeedback(receiver.dbPath);
+  assert.match(stored.screenshot.url, /^https:\/\/previous\.example\//);
+});

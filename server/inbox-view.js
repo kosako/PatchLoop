@@ -46,7 +46,7 @@ function createInboxView(deps) {
           <span class="kind kind-${kind}">${kind}</span>
           <span class="reviewer">${reviewer || "(no name)"}</span>
           <label class="status-control">
-            <select data-status-select data-feedback-id="${escapeHtml(item.id || "")}">${statusOptions}</select>
+            <select data-status-select data-feedback-id="${escapeHtml(item.id || "")}" aria-label="フィードバックのステータス">${statusOptions}</select>
           </label>
           <time>${receivedAt}</time>
           <button type="button" class="delete-feedback" data-delete-feedback data-feedback-id="${escapeHtml(item.id || "")}" title="この feedback を削除">削除</button>
@@ -82,11 +82,12 @@ function createInboxView(deps) {
 </head>
 <body>
   <h1>PatchLoop Inbox</h1>
-  <p class="meta">${items.length} feedback received · <a href="/feedback.json">raw JSON</a></p>
+  <p class="meta"><span data-total-count>${items.length}</span> feedback received · <a href="/feedback.json">raw JSON</a></p>
   ${RECEIVER_TOKEN ? '<form class="logout-form" method="post" action="/logout"><button type="submit">ログアウト</button></form>' : ""}
   ${renderImportPanel()}
   ${items.length === 0 ? "" : renderFilterPanel(items)}
-  ${items.length === 0 ? '<p class="empty">まだフィードバックはありません。widget からコメントを送ると、ここに表示されます。</p>' : cards.join("")}
+  ${cards.join("")}
+  <p class="empty" data-inbox-empty${items.length === 0 ? "" : " hidden"}>まだフィードバックはありません。widget からコメントを送ると、ここに表示されます。</p>
   <p class="empty" data-filter-empty hidden>絞り込みに一致する feedback はありません。</p>
   <script src="/static/inbox.js"></script>
 </body>
@@ -101,9 +102,9 @@ function createInboxView(deps) {
       <p>Download mode で保存した .patchloop-feedback.json を読み込みます。</p>
     </div>
     <form class="import-form" data-import-form>
-      <input type="file" accept=".json,application/json" data-import-file />
+      <input type="file" accept=".json,application/json" data-import-file aria-label="インポートするフィードバックのJSONファイル" />
       <button type="submit">Import</button>
-      <span class="import-status" data-import-status></span>
+      <span class="import-status" data-import-status role="status" aria-live="polite" aria-atomic="true"></span>
     </form>
   </section>`;
   }
@@ -122,15 +123,15 @@ function createInboxView(deps) {
 
     return `
   <section class="filter-panel" data-filter-panel>
-    <input type="search" placeholder="検索（コメント / reviewer / selector / URL）" data-filter-text />
-    <select data-filter-key="status">${optionList(FEEDBACK_STATUSES, "Status: all")}</select>
-    <select data-filter-key="kind">${optionList(["point", "area"], "Kind: all")}</select>
-    <select data-filter-key="project">${optionList(projects, "Project: all")}</select>
-    <select data-filter-key="demo">${optionList(demos, "Demo: all")}</select>
-    <select data-filter-key="reviewer">${optionList(reviewers, "Reviewer: all")}</select>
-    <select data-filter-key="source">${optionList(sources, "Source: all")}</select>
-    <select data-filter-key="slack">${optionList(slackStatuses, "Slack: all")}</select>
-    <select data-filter-key="github">${optionList(githubStatuses, "GitHub: all")}</select>
+    <input type="search" placeholder="検索（コメント / reviewer / selector / URL）" data-filter-text aria-label="フィードバックを検索" />
+    <select data-filter-key="status" aria-label="ステータスで絞り込み">${optionList(FEEDBACK_STATUSES, "Status: all")}</select>
+    <select data-filter-key="kind" aria-label="指摘の種類で絞り込み">${optionList(["point", "area"], "Kind: all")}</select>
+    <select data-filter-key="project" aria-label="プロジェクトで絞り込み">${optionList(projects, "Project: all")}</select>
+    <select data-filter-key="demo" aria-label="デモで絞り込み">${optionList(demos, "Demo: all")}</select>
+    <select data-filter-key="reviewer" aria-label="投稿者で絞り込み">${optionList(reviewers, "Reviewer: all")}</select>
+    <select data-filter-key="source" aria-label="受信元で絞り込み">${optionList(sources, "Source: all")}</select>
+    <select data-filter-key="slack" aria-label="Slack通知結果で絞り込み">${optionList(slackStatuses, "Slack: all")}</select>
+    <select data-filter-key="github" aria-label="GitHub Issueの作成状況で絞り込み">${optionList(githubStatuses, "GitHub: all")}</select>
     <span class="filter-count" data-filter-count></span>
   </section>`;
   }
@@ -156,8 +157,8 @@ function createInboxView(deps) {
 
   function renderScreenshotPreview(screenshot) {
     if (!screenshot) return "";
-    if (screenshot.status === "saved" && safeLinkUrl(screenshot.url)) {
-      const url = escapeHtml(safeLinkUrl(screenshot.url));
+    if (screenshot.status === "saved" && typeof screenshot.fileName === "string" && screenshot.fileName) {
+      const url = escapeHtml(`/screenshots/${encodeURIComponent(screenshot.fileName)}`);
       const size = screenshot.width && screenshot.height
         ? `${screenshot.width}×${screenshot.height}`
         : "";
