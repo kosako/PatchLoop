@@ -18,7 +18,7 @@ http://localhost:4173/examples/plain-html/
 
 ## Development
 
-Node.js 22.12 or later is required (the receiver loads the shared ES module via `require()`).
+Node.js 22.x from 22.13.0, or 23.4.0 or later, is required (the receiver uses `node:sqlite` and loads the shared ES module via `require()`). CI checks the minimum supported version, 22.13.0, and the development runtime, 24.x.
 
 Install dependencies.
 
@@ -349,12 +349,12 @@ The receiver validates the bundle version (both the single-feedback v1 and the a
 
 ## Current Boundary
 
-GitHub Issue creation is a manual action from the receiver inbox only; there is no automatic creation or two-way sync. Slack support is currently a local-receiver Incoming Webhook prototype. Received feedback is stored by the local receiver. The widget feedback list can be persisted in browser `localStorage`, but there is still no shared long-term database. Use a receiver `endpoint` or download mode when you need to collect feedback outside the current browser.
+GitHub Issue creation is a manual action from the receiver inbox only; there is no automatic creation or two-way sync. Slack support is currently a local-receiver Incoming Webhook prototype. The local receiver persists received feedback in SQLite. The widget feedback list can be persisted in browser `localStorage`. Team user and permission management, scheduled backups, and retention management are not implemented. Use a receiver `endpoint` or download mode when you need to collect feedback outside the current browser.
 
 Not included yet:
 
 - Slack App / OAuth integration
-- Persistent database
+- Team user and permission management, scheduled backups, and retention management
 - Pixel-perfect browser screenshot capture
 - Per-reviewer authentication (the ingest key is a per-project public key and does not identify individuals; signed tokens issued behind a demo-side login are future scope)
 - AI PR integration

@@ -18,7 +18,7 @@ http://localhost:4173/examples/plain-html/
 
 ## 開発
 
-Node.js 22.12 以上が必要です（receiver が共有 ES module を `require()` で読み込むため）。
+Node.js 22.13.0 以上の 22.x、または 23.4.0 以上が必要です（receiver が `node:sqlite` と、共有 ES module の `require()` を使用するため）。CI は最低対応の 22.13.0 と開発環境の 24.x で検証します。
 
 依存を入れます。
 
@@ -349,12 +349,12 @@ receiver は bundle version（v1 の単一 feedback / v2 の配列の両方）�
 
 ## 現在の境界
 
-GitHub Issue 作成は receiver inbox からの手動操作のみで、自動作成や issue との双方向同期はありません。Slack は local receiver 経由の Incoming Webhook prototype として扱います。受信したフィードバックはローカル receiver に保存されます。widget 内の feedback list はブラウザの `localStorage` に保存できますが、チーム共有や長期保存用の永続 DB はまだありません。feedback を回収したい場合は `endpoint` 経由で receiver に送るか、download mode で bundle を保存してください。
+GitHub Issue 作成は receiver inbox からの手動操作のみで、自動作成や issue との双方向同期はありません。Slack は local receiver 経由の Incoming Webhook prototype として扱います。受信したフィードバックはローカル receiver の SQLite DB に永続化されます。widget 内の feedback list はブラウザの `localStorage` に保存できます。チーム向けのユーザー管理・権限管理や、定期バックアップ・保存期間の自動管理は未対応です。feedback を回収したい場合は `endpoint` 経由で receiver に送るか、download mode で bundle を保存してください。
 
 未対応:
 
 - Slack App / OAuth 連携
-- 永続 DB
+- チーム向けのユーザー・権限管理、定期バックアップ・保存期間の自動管理
 - pixel-perfect なブラウザ screenshot capture
 - レビュアー個人の認証（ingest key はプロジェクト単位の公開キーで、個人を識別しない。デモ側ログイン前提の署名付き token は将来スコープ）
 - AI PR 連携
