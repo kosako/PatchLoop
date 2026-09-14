@@ -82,7 +82,11 @@
       button.disabled = true;
       button.textContent = "Creating...";
       try {
-        const response = await fetch("/feedback/" + encodeURIComponent(button.dataset.feedbackId) + "/github-issue", { method: "POST" });
+        const response = await fetch("/feedback/" + encodeURIComponent(button.dataset.feedbackId) + "/github-issue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}"
+        });
         const result = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(result.error || "GitHub issue creation failed");
       } catch (error) {

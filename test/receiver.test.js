@@ -78,6 +78,124 @@ test("POST /feedback stores the sourceContext block as sent (#96)", async (t) =>
   assert.deepEqual(stored[0].sourceContext, payload.sourceContext);
 });
 
+test("live ingest cannot assert receiver history or local delivery markers", async (t) => {
+  const receiver = await startReceiver(t);
+  const payload = {
+    ...feedbackPayload("pl_receiver_owned"),
+    receivedAt: "2000-01-01T00:00:00.000Z", importedAt: "2000-01-01T00:00:00.000Z",
+    source: "import", received: { origin: "https://other.example", originAllowed: true },
+    status: "ignored", statusUpdatedAt: "2000-01-01T00:00:00.000Z",
+    integrations: { github: { status: "created", issueNumber: 1 } },
+    delivery: { ok: true }, exported: true, exportedAt: "old", exportedFileName: "old.json"
+  };
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, payload)).status, 201);
+  const [stored] = await readStoredFeedback(receiver.dbPath);
+  assert.equal(stored.source, undefined); // Live records use the receiver default.
+  assert.equal(stored.status, "new");
+  assert.notEqual(stored.receivedAt, payload.receivedAt);
+  assert.deepEqual(stored.received, { origin: null, originAllowed: true });
+  assert.deepEqual(stored.integrations, { slack: { status: "disabled" } });
+  for (const field of ["importedAt", "statusUpdatedAt", "delivery", "exported", "exportedAt", "exportedFileName"]) {
+    assert.equal(stored[field], undefined, field);
+  }
+});
+
+test("live and import reject malformed known metadata before persisting", async (t) => {
+  const receiver = await startReceiver(t);
+  const cases = [
+    ["environment", "viewport", { width: { toString: 1 }, height: 720 }],
+    ["environment", "browser", {}],
+    ["target", "clientX", "100"],
+    ["target", "area", { clientWidth: [] }],
+    ["target", "anchor", { selector: {} }],
+    ["screenshot", "width", {}],
+    ["screenshot", "error", []]
+  ];
+  for (const [group, field, value] of cases) {
+    const payload = feedbackPayload(`pl_invalid_${group}_${field}`);
+    payload[group][field] = value;
+    for (const route of ["feedback", "import"]) {
+      const response = await postJson(`${receiver.baseUrl}/${route}`, payload);
+      assert.equal(response.status, 400, `${route}: ${group}.${field}`);
+    }
+  }
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+  await assert.rejects(fs.access(receiver.screenshotDir), { code: "ENOENT" });
+});
+
+test("JSON mutations require JSON media type with session or API authentication", async (t) => {
+  const receiver = await startReceiver(t, { RECEIVER_TOKEN: "test-session-token" });
+  const payload = feedbackPayload("pl_json_contract");
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, payload)).status, 201);
+  const login = await fetch(`${receiver.baseUrl}/login`, {
+    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: "token=test-session-token", redirect: "manual"
+  });
+  assert.equal(login.status, 303);
+  const cookie = login.headers.get("set-cookie").split(";")[0];
+  const requests = [
+    ["/feedback", feedbackPayload("pl_simple_ingest")],
+    ["/import", feedbackPayload("pl_simple_import")],
+    [`/feedback/${payload.id}/status`, { status: "fixed" }],
+    [`/feedback/${payload.id}/github-issue`, {}]
+  ];
+  for (const [route, body] of requests) {
+    for (const mediaType of ["text/plain", "application/x-www-form-urlencoded", "multipart/form-data"]) {
+      const response = await fetch(`${receiver.baseUrl}${route}`, {
+        method: "POST", headers: { Cookie: cookie, "Content-Type": mediaType, Origin: "http://demo.example" },
+        body: JSON.stringify(body)
+      });
+      assert.equal(response.status, 415, `${route}: ${mediaType}`);
+    }
+    const missingType = await fetch(`${receiver.baseUrl}${route}`, {
+      method: "POST", headers: { Authorization: "Bearer test-session-token" }
+    });
+    assert.equal(missingType.status, 415, `${route}: no media type`);
+  }
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0].status, "new");
+  const accepted = await postJson(`${receiver.baseUrl}/feedback/${payload.id}/status`, { status: "fixed" }, {
+    Cookie: cookie, "Content-Type": "Application/JSON; charset=UTF-8"
+  });
+  assert.equal(accepted.status, 200);
+});
+
+test("malformed encoded feedback IDs return 400 without stopping the receiver", async (t) => {
+  const receiver = await startReceiver(t);
+  for (const [method, suffix] of [["DELETE", ""], ["POST", "/status"], ["POST", "/github-issue"]]) {
+    const response = await fetch(`${receiver.baseUrl}/feedback/%ZZ${suffix}`, {
+      method, headers: { "Content-Type": "application/json" }, body: "{}"
+    });
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /Invalid feedback ID encoding/);
+    assert.equal((await fetch(`${receiver.baseUrl}/healthz`)).status, 200);
+  }
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_after_bad_id"))).status, 201);
+});
+
+test("legacy malformed metadata cannot prevent the Inbox from showing other records", async (t) => {
+  const receiver = await startReceiver(t);
+  const invalid = feedbackPayload("pl_legacy_invalid");
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, invalid)).status, 201);
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_legacy_healthy"))).status, 201);
+  invalid.environment.viewport.width = { toString: 1 };
+  invalid.reviewer = { toString: 1 };
+  const db = new DatabaseSync(receiver.dbPath);
+  try {
+    db.prepare("UPDATE feedback SET data = ? WHERE id = ?").run(JSON.stringify(invalid), invalid.id);
+  } finally {
+    db.close();
+  }
+  const response = await fetch(receiver.baseUrl);
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /保存済みメタデータの形式が不正/);
+  assert.match(html, /data-feedback-id="pl_legacy_invalid"/);
+  assert.match(html, /data-feedback-id="pl_legacy_healthy"/);
+  assert.match(html, /&quot;toString&quot;: 1/);
+});
+
 test("POST /feedback validates the sourceContext shape", async (t) => {
   const receiver = await startReceiver(t);
 
@@ -489,7 +607,7 @@ test("POST /feedback/:id/status rejects unknown statuses and ids", async (t) => 
   assert.match(missing.body.error, /Unknown feedback id/);
 
   const stored = await readStoredFeedback(receiver.dbPath);
-  assert.equal(stored[0].status, undefined);
+  assert.equal(stored[0].status, "new");
 });
 
 test("corrupt legacy feedback store is backed up, not migrated, during startup", async (t) => {
@@ -1190,14 +1308,14 @@ test("CORS headers are scoped to the ingest route and honor the allowlist", asyn
   const fromAllowed = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_cors_ok"), { Origin: "http://demo.example" });
   assert.equal(fromAllowed.status, 201);
   const fromDenied = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_cors_ng"), { Origin: "http://evil.example" });
-  assert.equal(fromDenied.status, 201);
+  assert.equal(fromDenied.status, 403);
   const fromCurl = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_cors_curl"));
   assert.equal(fromCurl.status, 201);
 
   const stored = await readStoredFeedback(receiver.dbPath);
   const byId = Object.fromEntries(stored.map((item) => [item.id, item.received]));
   assert.deepEqual(byId.pl_cors_ok, { origin: "http://demo.example", originAllowed: true });
-  assert.deepEqual(byId.pl_cors_ng, { origin: "http://evil.example", originAllowed: false });
+  assert.equal(byId.pl_cors_ng, undefined);
   assert.deepEqual(byId.pl_cors_curl, { origin: null, originAllowed: true });
 });
 
