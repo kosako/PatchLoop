@@ -35,5 +35,6 @@ export const state = {
   approximateIds: new Set(),
   resizeTimer: null,
   editingId: null,
+  commentReturnFocus: null,
   collapsed: true
 };

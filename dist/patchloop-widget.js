@@ -298,6 +298,7 @@ const state = {
   approximateIds: new Set(),
   resizeTimer: null,
   editingId: null,
+  commentReturnFocus: null,
   collapsed: true
 };
 
@@ -899,6 +900,7 @@ function init(options = {}) {
   state.drag = null;
   state.pendingTarget = null;
   state.editingId = null;
+  state.commentReturnFocus = null;
   removeSelectionBox();
   state.options = { ...DEFAULTS, ...options };
   state.options.reviewer = initialReviewer(state.options);
@@ -935,6 +937,7 @@ function destroy() {
   state.drag = null;
   state.feedbackMarkers.clear();
   state.editingId = null;
+  state.commentReturnFocus = null;
 }
 
 function cancelPendingInit() {
@@ -974,7 +977,7 @@ function renderShell() {
         </div>
       </div>
     </section>
-    <div class="pl-tooltip" data-pl-tooltip hidden></div>
+    <div class="pl-tooltip" id="pl-feedback-tooltip" role="tooltip" data-pl-tooltip hidden></div>
     <form class="pl-comment" data-pl-comment hidden>
       <label>
         コメント
@@ -1199,6 +1202,10 @@ function setFeedbackMode(nextValue) {
 
 function openCommentForm(point, options = {}) {
   const form = getRoot().querySelector("[data-pl-comment]");
+  if (form.hidden) {
+    const focused = document.activeElement;
+    state.commentReturnFocus = focused !== document.body && focused !== document.documentElement ? focused : null;
+  }
   form.hidden = false;
   clearFormError(form);
   form.style.left = `${Math.max(8, Math.min(point.clientX + 14, window.innerWidth - 340))}px`;
@@ -1214,12 +1221,28 @@ function openCommentForm(point, options = {}) {
 
 function closeCommentForm() {
   const form = getRoot().querySelector("[data-pl-comment]");
+  const wasOpen = !form.hidden;
   clearFormError(form);
   form.hidden = true;
   state.pendingTarget = null;
+  const returnFocus = state.commentReturnFocus;
+  state.commentReturnFocus = null;
+  if (!wasOpen) return;
+  if (returnFocus?.isConnected && !form.contains(returnFocus)) {
+    returnFocus.focus({ preventScroll: true });
+    if (document.activeElement === returnFocus) return;
+  }
+  getRoot().querySelector("[data-pl-collapse]")?.focus({ preventScroll: true });
 }
 
 function handleCommentKeydown(event) {
+  if (event.isComposing) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    cancelPendingComment();
+    return;
+  }
   if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) return;
   event.preventDefault();
   const form = event.currentTarget;
@@ -1300,6 +1323,7 @@ async function submitComment(event) {
       }
       saveReviewer(reviewer);
       persistFeedbackList();
+      renumberMarkers();
       renderFeedbackList();
     }
     state.editingId = null;
@@ -1312,7 +1336,7 @@ async function submitComment(event) {
   saveReviewer(reviewer);
   const payload = buildPayload(comment, reviewer, state.pendingTarget);
   state.feedback.unshift(payload);
-  finalizePendingMarker(payload.id);
+  finalizePendingMarker(payload);
   persistFeedbackList();
   renderFeedbackList();
   expandPanel();
@@ -1566,6 +1590,7 @@ function addPin(point) {
   pin.style.left = `${point.pageX}px`;
   pin.style.top = `${point.pageY}px`;
   pin.textContent = "…";
+  pin.setAttribute("aria-label", "コメント入力中の位置");
   document.body.append(pin);
   return { node: pin, label: pin };
 }
@@ -1577,7 +1602,7 @@ function restoreFeedbackMarkers() {
   state.feedback.slice().reverse().forEach((item, index) => {
     const marker = markerFromFeedback(item);
     if (!marker) return;
-    marker.label.textContent = String(index + 1);
+    updateMarkerLabel(marker, item, index + 1);
     marker.node.dataset.patchloopFeedbackId = item.id;
     state.feedbackMarkers.set(item.id, marker);
     bindMarkerHover(marker, item.id);
@@ -1824,22 +1849,20 @@ function clearPins() {
   renderFeedbackList();
 }
 
-function finalizePendingMarker(feedbackId) {
+function finalizePendingMarker(item) {
   if (!state.pendingTarget) return;
-  if (state.pendingTarget.markerLabelNode) {
-    state.pendingTarget.markerLabelNode.textContent = String(state.feedback.length);
-  }
   if (state.pendingTarget.targetElement) {
     unhighlightTarget(state.pendingTarget.targetElement);
   }
-  if (feedbackId && state.pendingTarget.markerNode) {
-    state.pendingTarget.markerNode.dataset.patchloopFeedbackId = feedbackId;
+  if (state.pendingTarget.markerNode) {
+    state.pendingTarget.markerNode.dataset.patchloopFeedbackId = item.id;
     const marker = {
       node: state.pendingTarget.markerNode,
       label: state.pendingTarget.markerLabelNode
     };
-    state.feedbackMarkers.set(feedbackId, marker);
-    bindMarkerHover(marker, feedbackId);
+    updateMarkerLabel(marker, item, state.feedback.length);
+    state.feedbackMarkers.set(item.id, marker);
+    bindMarkerHover(marker, item.id);
   }
 }
 
@@ -1965,9 +1988,15 @@ function renumberMarkers() {
   ordered.forEach((item, i) => {
     const marker = state.feedbackMarkers.get(item.id);
     if (marker && marker.label) {
-      marker.label.textContent = String(i + 1);
+      updateMarkerLabel(marker, item, i + 1);
     }
   });
+}
+
+function updateMarkerLabel(marker, item, number) {
+  marker.label.textContent = String(number);
+  const kind = item.target?.kind === "area" ? "範囲" : "点";
+  marker.label.setAttribute("aria-label", `${kind}のフィードバック ${number}: ${truncateText(item.comment || "", 140)}`);
 }
 
 function handleListClick(event) {
@@ -2032,8 +2061,24 @@ function bindMarkerHover(marker, feedbackId) {
       positionTooltip(event);
     });
     el.addEventListener("mouseleave", () => {
-      hideTooltip();
+      if (document.activeElement !== marker.label) hideTooltip();
     });
+  });
+  marker.label.setAttribute("aria-describedby", "pl-feedback-tooltip");
+  marker.label.addEventListener("focus", () => {
+    const item = state.feedback.find((f) => f.id === feedbackId);
+    if (!item) return;
+    const rect = marker.label.getBoundingClientRect();
+    showTooltip({ clientX: rect.right, clientY: rect.top }, item);
+  });
+  marker.label.addEventListener("blur", () => {
+    if (!marker.node.matches(":hover")) hideTooltip();
+  });
+  marker.label.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    hideTooltip();
   });
 }
 
@@ -2116,8 +2161,10 @@ function addArea(rect) {
     width: `${rect.widthPx}px`,
     height: `${rect.heightPx}px`
   });
-  const label = document.createElement("span");
+  const label = document.createElement("button");
+  label.type = "button";
   label.textContent = "…";
+  label.setAttribute("aria-label", "コメント入力中の範囲");
   area.append(label);
   document.body.append(area);
   return { node: area, label };
@@ -2140,10 +2187,10 @@ function injectStyles() {
     .pl-title { flex: 1; min-width: 0; }
     .pl-handle { min-width: 32px; height: 32px; padding: 0; border: 0; background: transparent; cursor: pointer; font-size: 20px; color: #14211d; border-radius: 6px; font-weight: 700; transition: background 150ms ease, color 150ms ease; }
     .pl-handle:hover { background: #f0f3ef; }
-    .pl-handle.pl-mode-on { background: #d1495b; color: #fff; }
-    .pl-handle.pl-mode-on:hover { background: #b83d4d; }
+    .pl-handle.pl-mode-on { background: #b83d4d; color: #fff; }
+    .pl-handle.pl-mode-on:hover { background: #9f3442; }
     .pl-mode { min-height: 30px; padding: 0 12px; border-radius: 999px; border: 1px solid #0f7b63; background: #0f7b63; color: #fff; font-weight: 800; font-size: 12px; cursor: pointer; }
-    .pl-mode[aria-pressed="true"] { background: #d1495b; border-color: #d1495b; }
+    .pl-mode[aria-pressed="true"] { background: #b83d4d; border-color: #b83d4d; }
     .pl-panel.pl-collapsed { transform: translateX(calc(100% - 44px)); }
     .pl-panel.pl-collapsed header { border-bottom: 0; }
     .pl-panel.pl-collapsed .pl-title,
@@ -2164,33 +2211,33 @@ function injectStyles() {
     .pl-feedback-item { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; padding: 10px; border: 1px solid #d9e1dd; border-radius: 8px; background: #fff; align-items: start; }
     .pl-feedback-num { width: 24px; height: 24px; min-width: 24px; min-height: 24px; box-sizing: border-box; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 900; font-size: 11px; line-height: 1; }
     .pl-feedback-num.kind-point { background: #0f7b63; }
-    .pl-feedback-num.kind-area { background: #d1495b; }
+    .pl-feedback-num.kind-area { background: #b83d4d; }
     .pl-feedback-body { display: grid; gap: 4px; min-width: 0; }
     .pl-feedback-meta { color: #65716d; font-weight: 700; font-size: 11px; }
     .pl-feedback-text { color: #14211d; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
     .pl-feedback-actions { display: flex; gap: 4px; }
     .pl-feedback-actions button { min-height: 24px; padding: 0 8px; font-size: 11px; border-radius: 6px; border: 1px solid #d9e1dd; background: #fff; color: #14211d; cursor: pointer; font-weight: 700; }
-    .pl-feedback-actions [data-pl-delete] { border-color: #d1495b; color: #d1495b; }
+    .pl-feedback-actions [data-pl-delete] { border-color: #b83d4d; color: #b83d4d; }
     .pl-feedback-status { font-weight: 900; }
     .pl-feedback-status-ok { color: #0f7b63; }
-    .pl-feedback-status-fail { color: #d1495b; }
-    .pl-feedback-status-unknown { color: #8a9590; }
+    .pl-feedback-status-fail { color: #b83d4d; }
+    .pl-feedback-status-unknown { color: #65716d; }
     .pl-feedback-exported { color: #0f7b63; font-weight: 900; font-size: 10px; border: 1px solid #0f7b63; border-radius: 999px; padding: 1px 6px; margin-left: 2px; }
-    .pl-feedback-item-exported { opacity: 0.72; }
+    .pl-feedback-item-exported { background: #f7f8f5; }
     .pl-tooltip { position: fixed; max-width: 280px; background: #14211d; color: #fff; padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.4; pointer-events: none; z-index: 2147483002; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.32); white-space: pre-wrap; word-break: break-word; }
     .pl-comment { position: fixed; z-index: 2147483001; width: min(320px, calc(100vw - 24px)); display: grid; gap: 10px; padding: 14px; background: #fff; border: 1px solid #d9e1dd; border-radius: 8px; box-shadow: 0 22px 70px rgba(20, 33, 29, 0.24); }
     .pl-comment label { display: grid; gap: 6px; color: #65716d; font-size: 12px; font-weight: 800; }
     .pl-comment textarea, .pl-comment input { width: 100%; border: 1px solid #d9e1dd; border-radius: 8px; padding: 9px 10px; color: #14211d; font: inherit; resize: vertical; }
     .pl-form-error { margin: -2px 0 0; padding: 0; color: #b83d4d; font-size: 12px; font-weight: 800; }
     .pl-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
-    .pl-pin { position: absolute; z-index: 2147482999; transform: translate(-50%, -50%); width: 30px; height: 30px; min-width: 30px; min-height: 30px; max-width: 30px; max-height: 30px; box-sizing: border-box; display: grid; place-items: center; padding: 0; line-height: 1; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font: 900 13px/1 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); cursor: pointer; }
+    .pl-pin { position: absolute; z-index: 2147482999; transform: translate(-50%, -50%); width: 30px; height: 30px; min-width: 30px; min-height: 30px; max-width: 30px; max-height: 30px; box-sizing: border-box; display: grid; place-items: center; padding: 0; line-height: 1; border-radius: 50%; border: 3px solid #fff; background: #b83d4d; color: #fff; font: 900 13px/1 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); cursor: pointer; }
     .pl-selection { position: fixed; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; }
     .pl-area { position: absolute; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.16); }
-    .pl-area span { position: absolute; top: 6px; left: 6px; width: 30px; height: 30px; box-sizing: border-box; display: grid; place-items: center; border-radius: 50%; border: 3px solid #fff; background: #d1495b; color: #fff; font-weight: 900; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); pointer-events: auto; cursor: pointer; }
-    .pl-feedback-active [data-patchloop-pin], .pl-feedback-active .pl-area span { pointer-events: none; }
+    .pl-area button { position: absolute; top: 6px; left: 6px; width: 30px; height: 30px; min-width: 30px; min-height: 30px; padding: 0; box-sizing: border-box; display: grid; place-items: center; border-radius: 50%; border: 3px solid #fff; background: #b83d4d; color: #fff; font: 900 13px/1 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); pointer-events: auto; cursor: pointer; }
+    .pl-feedback-active [data-patchloop-pin], .pl-feedback-active .pl-area button { pointer-events: none; }
     .pl-target-highlight { outline: 2px dashed #d1495b; outline-offset: 2px; }
     .pl-marker-approx { outline: 3px dashed #f2a33c !important; outline-offset: 2px; }
-    .pl-feedback-approx { color: #f2a33c; font-weight: 900; cursor: help; margin-left: 2px; }
+    .pl-feedback-approx { color: #986000; font-weight: 900; cursor: help; margin-left: 2px; }
     .pl-feedback-active, .pl-feedback-active * { cursor: crosshair !important; }
   `;
   document.head.append(style);

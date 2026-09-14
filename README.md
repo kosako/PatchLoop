@@ -130,6 +130,8 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 
 投稿者名は送信後に `localStorage` へ保存され、次回以降の widget 起動時に復元されます。feedback list もデフォルトで `localStorage` に保存され、同じ project / demo / page URL の reload 後に drawer list と pin / area overlay が復元されます。drawer の「フィードバックを消す」は、表示中の marker と保存済み feedback の両方を削除します。永続化を使わず memory-only にしたい場合は `persistFeedback: false` を指定してください。
 
+コメントのマーカーは Tab でフォーカスしても内容を確認でき、Escape で tooltip を閉じられます。コメントフォームでは Escape で入力・編集を取り消し、元の操作位置へフォーカスを戻します。
+
 ## Payload
 
 主な payload 項目:

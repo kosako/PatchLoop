@@ -130,6 +130,8 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 
 The reviewer name is saved to `localStorage` after submit and restored the next time the widget starts. The feedback list is also saved to `localStorage` by default and restored after reloads on the same project / demo / page URL, including pins and area overlays. The drawer's clear action removes both visible markers and saved feedback. Set `persistFeedback: false` for memory-only behavior.
 
+Tab to a comment marker to read its tooltip, and press Escape to dismiss it. In the comment form, Escape cancels the entry or edit and restores focus to the previous control.
+
 ## Payload
 
 Main payload fields:
