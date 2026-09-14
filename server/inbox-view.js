@@ -2,6 +2,7 @@
 
 const { escapeHtml } = require("../shared/format.js");
 const { FEEDBACK_STATUSES } = require("./store.js");
+const { feedbackForExport } = require("./feedback-export.js");
 
 function createInboxView(deps) {
   const { formatScreenshotStatus, safeLinkUrl, GITHUB_CONFIGURED, RECEIVER_TOKEN } = deps;
@@ -81,7 +82,7 @@ function createInboxView(deps) {
         </dl>
         <details>
           <summary>raw payload</summary>
-          <pre>${escapeHtml(JSON.stringify(item, null, 2))}</pre>
+          <pre>${escapeHtml(JSON.stringify(feedbackForExport(item), null, 2))}</pre>
         </details>
       </article>
     `;

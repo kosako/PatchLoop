@@ -9,6 +9,7 @@ const crypto = require("crypto");
 const { safeFilePart, truncateText, present, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } = require("../shared/format.js");
 const { createStore, FEEDBACK_STATUSES } = require("./store.js");
 const { createInboxView } = require("./inbox-view.js");
+const { feedbackForExport } = require("./feedback-export.js");
 
 const CONFIG_PATH = process.env.PATCHLOOP_RECEIVER_CONFIG || path.join(__dirname, "receiver.config.json");
 const config = loadConfig(CONFIG_PATH);
@@ -960,7 +961,7 @@ function gitHubIssueBody(item) {
 
   lines.push("<details><summary>Raw payload</summary>", "");
   lines.push("```json");
-  lines.push(JSON.stringify(item, null, 2));
+  lines.push(JSON.stringify(feedbackForExport(item), null, 2));
   lines.push("```");
   lines.push("", "</details>", "");
   lines.push("---");
@@ -1341,7 +1342,8 @@ async function handleGetFeedbackJson(req, res) {
     if (projectId != null) filter.projectId = projectId;
     if (demoId != null) filter.demoId = demoId;
     if (status != null) filter.status = status;
-    respondJson(res, 200, await store.list(filter));
+    const items = await store.list(filter);
+    respondJson(res, 200, items.map(feedbackForExport));
   } catch (error) {
     respondJson(res, 500, { ok: false, error: error.message });
   }

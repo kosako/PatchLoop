@@ -251,7 +251,7 @@ cp server/receiver.config.example.json server/receiver.config.json
 SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..." node server/receive.js
 ```
 
-Slack 転送に失敗しても、receiver は payload を保存します。Slack の結果は保存済み payload の `integrations.slack` と inbox の `Slack` 行で確認できます。screenshot の `dataUrl` は receiver でファイル保存されたあと payload から取り除かれ、`screenshot.url` として参照されます。
+Slack 転送に失敗しても、receiver は payload を保存します。Slack の結果は保存済み payload の `integrations.slack` と inbox の `Slack` 行で確認できます。screenshot の `dataUrl` は receiver でファイル保存されたあと payload から取り除かれ、`screenshot.url` として参照されます。画像ファイルの内部パス `screenshot.path` は保存時だけ保持し、JSON API・inbox の raw payload・GitHub Issue 本文には含めません。
 
 ### GitHub Issue 作成
 
