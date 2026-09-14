@@ -99,7 +99,7 @@ PatchLoop は、普通の HTML に `script` tag で埋め込める standalone wi
 - `reviewer` (string, optional) — コメントフォームに初期表示する投稿者名。未指定の場合は保存済み reviewer を `localStorage` から復元し、保存値もなければ空欄
 - `reviewerStorageKey` (string, optional) — reviewer 名を保存する `localStorage` key。デフォルトは `patchloop:reviewer`
 - `persistFeedback` (boolean, optional) — feedback list を `localStorage` に保存し、同じ project / demo / page URL の reload 後に復元するか。デフォルトは `true`
-- `feedbackStorageKey` (string, optional) — feedback list を保存する `localStorage` key。デフォルトは `patchloop:feedback`
+- `feedbackStorageKey` (string, optional) — feedback list を保存する `localStorage` key のnamespace。デフォルトは `patchloop:feedback`。この値と project / demo / ページの origin + pathname ごとに保存先を分離します（query / hash は同じページとして扱います）。旧単一keyのデータはscopeが一致したときだけ移行し、新しい保存先へのコピーに失敗した場合は旧データを保持します
 - `deliveryMode` (`"receiver"` | `"slack-webhook"` | `"download"` | `"none"`, optional) — 送信方式。デフォルトは `"receiver"`
 - `endpoint` (string, optional) — payload を `POST` する URL。未設定なら送信しない
 - `ingestKey` (string, optional) — receiver に `X-PatchLoop-Ingest-Key` ヘッダーで送るプロジェクトごとの公開キー。receiver 側で `INGEST_KEYS` / `ingestKeys` を設定している場合は必須。ページに埋め込まれるため秘密ではなく、プロジェクト識別・無差別 spam の抑止・ローテーションによる失効が目的

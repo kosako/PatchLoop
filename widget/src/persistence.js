@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { samePersistedPage } from "./url.js";
+import { normalizePageUrl, samePersistedPage } from "./url.js";
 
 export const FEEDBACK_STORAGE_VERSION = 1;
 
@@ -26,10 +26,22 @@ export function loadPersistedFeedback() {
   if (!state.options.feedbackStorageKey) return [];
 
   try {
-    const raw = window.localStorage.getItem(state.options.feedbackStorageKey);
+    const storageKey = scopedFeedbackStorageKey();
+    const scoped = window.localStorage.getItem(storageKey);
+    const raw = scoped ?? window.localStorage.getItem(state.options.feedbackStorageKey);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!isMatchingFeedbackEnvelope(parsed)) return [];
+    if (scoped === null) {
+      try {
+        // Keep the only legacy copy until the scoped write succeeds, including
+        // when a full localStorage prevents temporarily holding both copies.
+        window.localStorage.setItem(storageKey, raw);
+        window.localStorage.removeItem(state.options.feedbackStorageKey);
+      } catch (error) {
+        console.warn("[PatchLoop] legacy feedback migration deferred", error);
+      }
+    }
     return Array.isArray(parsed.feedback)
       ? parsed.feedback.map(normalizePersistedFeedback).filter(Boolean)
       : [];
@@ -43,12 +55,13 @@ export function persistFeedbackList() {
   if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return;
 
   const envelope = feedbackStorageEnvelope(state.feedback);
+  const storageKey = scopedFeedbackStorageKey();
   try {
-    window.localStorage.setItem(state.options.feedbackStorageKey, JSON.stringify(envelope));
+    window.localStorage.setItem(storageKey, JSON.stringify(envelope));
   } catch (error) {
     const compactEnvelope = feedbackStorageEnvelope(state.feedback, { omitScreenshotDataUrl: true });
     try {
-      window.localStorage.setItem(state.options.feedbackStorageKey, JSON.stringify(compactEnvelope));
+      window.localStorage.setItem(storageKey, JSON.stringify(compactEnvelope));
       console.warn("[PatchLoop] persisted feedback without screenshot dataUrl", error);
     } catch (retryError) {
       console.warn("[PatchLoop] unable to persist feedback", retryError);
@@ -60,10 +73,22 @@ export function clearPersistedFeedback() {
   if (!state.options.feedbackStorageKey) return;
 
   try {
-    window.localStorage.removeItem(state.options.feedbackStorageKey);
+    window.localStorage.removeItem(scopedFeedbackStorageKey());
+    const legacy = window.localStorage.getItem(state.options.feedbackStorageKey);
+    if (legacy && isMatchingFeedbackEnvelope(JSON.parse(legacy))) {
+      window.localStorage.removeItem(state.options.feedbackStorageKey);
+    }
   } catch (_) {
     // Storage can be unavailable in privacy-restricted contexts.
   }
+}
+
+function scopedFeedbackStorageKey() {
+  return `${state.options.feedbackStorageKey}:${JSON.stringify([
+    state.options.projectId,
+    state.options.demoId,
+    normalizePageUrl(window.location.href, undefined)
+  ])}`;
 }
 
 function feedbackStorageEnvelope(feedback, options = {}) {
