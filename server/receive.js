@@ -1303,6 +1303,7 @@ const { renderInbox, renderLoginPage } = createInboxView({
 async function handleGetInbox(req, res) {
   try {
     const items = await store.list({});
+    const html = renderInbox(items);
     res.writeHead(200, {
       "Content-Type": "text/html; charset=utf-8",
       // Everything on the page is same-origin (script, styles, fetches); a
@@ -1311,7 +1312,7 @@ async function handleGetInbox(req, res) {
       "X-Content-Type-Options": "nosniff",
       "Content-Security-Policy": INBOX_CSP
     });
-    res.end(renderInbox(items));
+    res.end(html);
   } catch (error) {
     res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Internal Server Error");

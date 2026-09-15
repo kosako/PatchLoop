@@ -216,6 +216,43 @@ for (const headersSent of [false, true]) {
   });
 }
 
+test("Inbox rendering failures return 500 without stopping the receiver", async (t) => {
+  const fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-inbox-fault-"));
+  t.after(() => fs.rm(fixtureDir, { recursive: true, force: true }));
+  const preload = path.join(fixtureDir, "fail-render.cjs");
+  // Fail only the first render in the child; the production HTTP route, store,
+  // and native response are unchanged.
+  await fs.writeFile(preload, `
+    const inboxView = require(${JSON.stringify(path.join(path.dirname(RECEIVER_PATH), "inbox-view.js"))});
+    const createInboxView = inboxView.createInboxView;
+    inboxView.createInboxView = (deps) => {
+      const view = createInboxView(deps);
+      let faulted = false;
+      return { ...view, renderInbox(items) {
+        if (!faulted) {
+          faulted = true;
+          throw new Error("Synthetic inbox render failure");
+        }
+        return view.renderInbox(items);
+      } };
+    };
+  `);
+  const receiver = await startReceiver(t, { NODE_OPTIONS: `--require ${JSON.stringify(preload)}` });
+  let stderr = "";
+  receiver.child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const failed = await fetch(receiver.baseUrl);
+  assert.equal(failed.status, 500);
+  assert.equal(await failed.text(), "Internal Server Error");
+  assert.equal((await fetch(`${receiver.baseUrl}/healthz`)).status, 200);
+  const retried = await fetch(receiver.baseUrl);
+  assert.equal(retried.status, 200);
+  assert.match(await retried.text(), /<html/);
+  receiver.child.kill();
+  await waitForExit(receiver.child);
+  assert.match(stderr, /inbox render failed: Synthetic inbox render failure/);
+  assert.doesNotMatch(stderr, /ERR_HTTP_HEADERS_SENT/);
+});
+
 test("legacy malformed metadata cannot prevent the Inbox from showing other records", async (t) => {
   const receiver = await startReceiver(t);
   const invalid = feedbackPayload("pl_legacy_invalid");
