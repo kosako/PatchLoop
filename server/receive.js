@@ -1233,18 +1233,12 @@ function respondLoginPage(res, status, failed) {
   res.end(renderLoginPage(failed));
 }
 
-// The inbox renders screenshots via their public URL, which can differ from the
-// origin the browser used to reach the inbox (e.g. publicBaseUrl behind a
-// tunnel), so img-src lists it next to 'self'.
-const PUBLIC_ORIGIN = (() => {
-  try {
-    return new URL(PUBLIC_BASE_URL).origin;
-  } catch (_) {
-    console.warn(`[PatchLoop receiver] publicBaseUrl is not a valid URL, screenshot previews may be blocked by CSP: ${PUBLIC_BASE_URL}`);
-    return "";
-  }
-})();
-const INBOX_CSP = `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'${PUBLIC_ORIGIN ? ` ${PUBLIC_ORIGIN}` : ""}; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`;
+try {
+  new URL(PUBLIC_BASE_URL);
+} catch (_) {
+  console.warn("[PatchLoop receiver] publicBaseUrl is not a valid URL; screenshot links sent to Slack/GitHub may be unreachable");
+}
+const INBOX_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 const { renderInbox, renderLoginPage } = createInboxView({
   formatScreenshotStatus,
   safeLinkUrl,

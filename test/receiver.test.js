@@ -32,6 +32,7 @@ test("POST /feedback stores valid feedback and saves screenshot data URLs", asyn
   assert.equal(stored[0].screenshot.mimeType, "image/svg+xml");
   assert.equal(stored[0].screenshot.bytes, Buffer.byteLength(testSvg()));
   assert.equal(stored[0].screenshot.dataUrl, undefined);
+  assert.equal(stored[0].screenshot.fileName, path.basename(stored[0].screenshot.path));
 
   const screenshotFile = await fs.readFile(stored[0].screenshot.path, "utf8");
   assert.equal(screenshotFile, testSvg());
@@ -1328,12 +1329,13 @@ test("SIGTERM drains: an in-flight request completes and the process exits clean
 });
 
 test("invalid settings warn at startup and the effective values are logged", async (t) => {
-  const receiver = await startReceiver(t, { MAX_IMPORT_ITEMS: "0", RATE_LIMIT_MAX: "abc", MAX_BODY_BYTES: "-5" });
+  const receiver = await startReceiver(t, { MAX_IMPORT_ITEMS: "0", RATE_LIMIT_MAX: "abc", MAX_BODY_BYTES: "-5", PUBLIC_BASE_URL: "invalid-url" });
 
   assert.match(receiver.logs, /ignored invalid setting MAX_IMPORT_ITEMS \(env\): "0" — using 500/);
   assert.match(receiver.logs, /ignored invalid setting RATE_LIMIT_MAX \(env\): "abc" — using 120/);
   // Size caps are limits too: 0 / negative would reject every POST.
   assert.match(receiver.logs, /ignored invalid setting MAX_BODY_BYTES \(env\): "-5" — using 3000000/);
+  assert.match(receiver.logs, /publicBaseUrl is not a valid URL; screenshot links sent to Slack\/GitHub may be unreachable/);
   // The one-block effective summary shows what the server actually runs with.
   assert.match(receiver.logs, /limits: body=3000000B .*importItems=500/);
   assert.match(receiver.logs, /rate limit: 120 req \/ 60000ms per client/);
@@ -1791,6 +1793,7 @@ test("authenticated inbox screenshots use the current receiver despite a stale p
   const headers = { Authorization: "Bearer test-token" };
   const inbox = await fetch(`${receiver.baseUrl}/`, { headers });
   assert.equal(inbox.status, 200);
+  assert.equal(inbox.headers.get("content-security-policy").split(";").map((directive) => directive.trim()).find((directive) => directive.startsWith("img-src ")), "img-src 'self'");
   const html = await inbox.text();
   const imagePath = html.match(/<img src="([^"]+)"/)[1];
   assert.match(imagePath, /^\/screenshots\//);
