@@ -4,7 +4,7 @@
   "private": true,
   "description": "Browser feedback widget and local receiver prototype.",
   "engines": {
-    "node": ">=22.12"
+    "node": ">=22.13.0 <23 || >=23.4.0"
   },
   "scripts": {
     "start": "node server/receive.js",
