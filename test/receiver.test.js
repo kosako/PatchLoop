@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
+const { once } = require("node:events");
 const fs = require("node:fs/promises");
 const http = require("node:http");
 const net = require("node:net");
@@ -1011,6 +1012,70 @@ test("POST /feedback rejects a duplicate id instead of overwriting", async (t) =
   assert.equal(files.length, 1);
 });
 
+for (const failure of ["duplicate", "database"]) {
+  test(`POST /feedback preserves the ${failure} insert error when screenshot cleanup fails`, async (t) => {
+    const fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-cleanup-failure-"));
+    t.after(() => fs.rm(fixtureDir, { recursive: true, force: true }));
+    const triggerPath = path.join(fixtureDir, "fail-cleanup");
+    const preload = path.join(fixtureDir, "block-cleanup.cjs");
+    // Replace only the rejected upload with a nonempty directory. unlink then
+    // fails with a real I/O error even when CI runs with elevated permissions.
+    await fs.writeFile(preload, `
+      const fs = require("node:fs");
+      const path = require("node:path");
+      const writeFile = fs.writeFileSync;
+      fs.writeFileSync = (filePath, ...args) => {
+        const result = writeFile(filePath, ...args);
+        if (path.dirname(filePath) === process.env.SCREENSHOT_DIR && fs.existsSync(${JSON.stringify(triggerPath)})) {
+          fs.renameSync(filePath, filePath + ".retained");
+          fs.mkdirSync(filePath);
+          fs.renameSync(filePath + ".retained", path.join(filePath, "retained.svg"));
+        }
+        return result;
+      };
+    `);
+    const slack = await startMockGitHub(t, (res) => res.end("ok"));
+    const receiver = await startReceiver(t, {
+      NODE_OPTIONS: `--require ${JSON.stringify(preload)}`,
+      SLACK_WEBHOOK_URL: slack.baseUrl
+    });
+    const errors = [];
+    receiver.child.stderr.on("data", (chunk) => errors.push(chunk.toString()));
+    const existing = feedbackPayload(`pl_cleanup_${failure}`);
+    assert.equal((await postJson(`${receiver.baseUrl}/feedback`, existing)).status, 201);
+    const before = await readStoredFeedback(receiver.dbPath);
+    await fs.writeFile(triggerPath, "enabled");
+    const rejected = feedbackPayload(failure === "duplicate" ? existing.id : "pl_cleanup_db_rejected");
+    const db = new DatabaseSync(receiver.dbPath);
+    try {
+      if (failure === "database") {
+        db.exec("CREATE TRIGGER reject_insert BEFORE INSERT ON feedback BEGIN SELECT RAISE(ABORT, 'injected insert failure'); END");
+      }
+      const response = await postJson(`${receiver.baseUrl}/feedback`, rejected);
+      assert.equal(response.status, failure === "duplicate" ? 409 : 500);
+      assert.deepEqual(response.body, {
+        ok: false,
+        error: failure === "duplicate" ? `feedback id already exists: ${existing.id}` : "injected insert failure"
+      });
+      assert.deepEqual(await readStoredFeedback(receiver.dbPath), before);
+      assert.equal(slack.requests.length, 1);
+      const entries = await fs.readdir(receiver.screenshotDir, { withFileTypes: true });
+      const blocked = entries.find((entry) => entry.isDirectory());
+      assert.ok(blocked);
+      const blockedPath = path.join(receiver.screenshotDir, blocked.name);
+      assert.equal((await fs.readFile(path.join(blockedPath, "retained.svg"))).length, before[0].screenshot.bytes);
+      const closed = once(receiver.child, "close");
+      receiver.child.kill();
+      await closed;
+      assert.match(errors.join(""), /failed to clean up screenshot/);
+      assert.ok(errors.join("").includes(rejected.id));
+      assert.ok(errors.join("").includes(blockedPath));
+    } finally {
+      db.close();
+    }
+  });
+}
+
 test("POST /feedback 409 cleanup cannot delete another record's screenshot", async (t) => {
   const receiver = await startReceiver(t);
   await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_victim"));
@@ -1658,6 +1723,27 @@ function truncateResponse(res) {
   setTimeout(() => res.destroy(), 20);
 }
 
+test("POST /import reports stored-row read failures as server errors before writing", async (t) => {
+  const receiver = await startReceiver(t);
+  const existing = feedbackPayload("pl_import_corrupt_row");
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, existing)).status, 201);
+  const db = new DatabaseSync(receiver.dbPath);
+  try {
+    db.prepare("UPDATE feedback SET data = ? WHERE id = ?").run("{", existing.id);
+    const files = await fs.readdir(receiver.screenshotDir);
+    const response = await postJson(`${receiver.baseUrl}/import`, {
+      kind: "patchloop-feedback-bundle", version: 2,
+      feedback: [feedbackPayload("pl_import_before_read_failure"), existing]
+    });
+    assert.equal(response.status, 500);
+    assert.equal(response.body.ok, false);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM feedback").get().n, 1);
+    assert.deepEqual(await fs.readdir(receiver.screenshotDir), files);
+  } finally {
+    db.close();
+  }
+});
+
 test("import capacity counts new unique ids and skips duplicates before screenshot writes", async (t) => {
   const receiver = await startReceiver(t, {
     MAX_FEEDBACK_COUNT: "2", SCREENSHOT_DISK_MAX_BYTES: String(Buffer.byteLength(testSvg()) * 2)
@@ -1684,6 +1770,8 @@ test("import capacity counts new unique ids and skips duplicates before screensh
 
 test("failed screenshot deletion retains the feedback and can be retried", async (t) => {
   const receiver = await startReceiver(t);
+  const errors = [];
+  receiver.child.stderr.on("data", (chunk) => errors.push(chunk.toString()));
   const payload = feedbackPayload("pl_delete_retry");
   await postJson(`${receiver.baseUrl}/feedback`, payload);
   const [item] = await readStoredFeedback(receiver.dbPath);
@@ -1694,6 +1782,7 @@ test("failed screenshot deletion retains the feedback and can be retried", async
   await fs.writeFile(path.join(screenshotPath, "occupied"), "synthetic");
   const failed = await fetch(`${receiver.baseUrl}/feedback/${payload.id}`, { method: "DELETE" });
   assert.equal(failed.status, 500);
+  assert.deepEqual(await failed.json(), { ok: false, error: "Unable to delete feedback" });
   assert.equal((await readStoredFeedback(receiver.dbPath)).length, 1);
   await fs.rm(screenshotPath, { recursive: true });
   await fs.rename(savedPath, screenshotPath);
@@ -1701,6 +1790,11 @@ test("failed screenshot deletion retains the feedback and can be retried", async
   assert.equal(retry.status, 200);
   assert.equal((await readStoredFeedback(receiver.dbPath)).length, 0);
   await assert.rejects(fs.access(screenshotPath), /ENOENT/);
+  const closed = once(receiver.child, "close");
+  receiver.child.kill();
+  await closed;
+  assert.match(errors.join(""), /failed to delete feedback/);
+  assert.ok(errors.join("").includes(screenshotPath));
 });
 
 test("deleting feedback succeeds when its screenshot is already absent", async (t) => {

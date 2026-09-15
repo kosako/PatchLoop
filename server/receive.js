@@ -620,7 +620,11 @@ function handlePostFeedback(req, res) {
     try {
       await store.insert(stored);
     } catch (error) {
-      await deleteScreenshotFile(screenshot);
+      try {
+        await deleteScreenshotFile(screenshot);
+      } catch (cleanupError) {
+        console.warn(`[PatchLoop receiver] failed to clean up screenshot for feedback id=${stored.id}:`, cleanupError);
+      }
       respondJson(res, error.statusCode || 500, { ok: false, error: error.message });
       return;
     }
@@ -642,10 +646,17 @@ function handlePostFeedback(req, res) {
 
 function handlePostImport(req, res) {
   readJsonBody(req, res, async (body) => {
+    let normalized;
+    try {
+      normalized = normalizeImportedBundle(body);
+    } catch (error) {
+      respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
+      return;
+    }
+
     let importedList;
     const duplicates = [];
     try {
-      const normalized = normalizeImportedBundle(body);
       const seen = new Set();
       importedList = [];
       for (const imported of normalized) {
@@ -658,7 +669,7 @@ function handlePostImport(req, res) {
       }
       await assertFeedbackCapacity(importedList.length);
     } catch (error) {
-      respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
+      respondJson(res, error.statusCode || 500, { ok: false, error: error.message });
       return;
     }
 
@@ -746,7 +757,8 @@ async function handleDeleteFeedback(req, res, id) {
     console.log(`[PatchLoop receiver] deleted feedback id=${id}`);
     respondJson(res, 200, { ok: true, id, count: await store.count() });
   } catch (error) {
-    respondJson(res, error.statusCode || 500, { ok: false, error: error.message });
+    console.error(`[PatchLoop receiver] failed to delete feedback id=${id}:`, error);
+    respondJson(res, 500, { ok: false, error: "Unable to delete feedback" });
   } finally {
     feedbackOperationsInFlight.delete(id);
   }
