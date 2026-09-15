@@ -69,8 +69,8 @@ const GITHUB_CONFIGURED = Boolean(GITHUB_TOKEN && GITHUB_REPO);
 // the token itself, so rotating the token invalidates every session at once).
 const RECEIVER_TOKEN = process.env.RECEIVER_TOKEN || config.receiverToken || "";
 // CORS allowlist for the widget ingest route (POST /feedback). Cross-origin
-// JSON POSTs always preflight, so origins outside the list are blocked by the
-// browser before the payload is sent. Unset keeps the historical open default
+// JSON POSTs preflight in browsers; the ingest handler also rejects a supplied
+// origin outside the list. Unset keeps the historical open default
 // (Access-Control-Allow-Origin: *) so zero-config local runs keep working; the
 // startup log warns about it. Entries are exact origins (scheme://host[:port]).
 const ALLOWED_ORIGINS = normalizeStringList(process.env.ALLOWED_ORIGINS || config.allowedOrigins).map(trimTrailingSlash);
@@ -320,6 +320,12 @@ const server = http.createServer((req, res) => {
 
   if (matched) {
     if (matched.auth === "ingest") {
+      if (req.headers.origin !== undefined && ALLOWED_ORIGINS.length > 0
+        && !ALLOWED_ORIGINS.includes(req.headers.origin)) {
+        req.resume();
+        respondJson(res, 403, { ok: false, error: "Origin is not allowed" });
+        return;
+      }
       // The key is resolved once here (declared on the route, like the other
       // auth kinds) and handed to the handler via the request, which needs the
       // matched entry for projectId binding.
@@ -337,7 +343,21 @@ const server = http.createServer((req, res) => {
       }
       return;
     }
-    matched.handler(req, res, match);
+    try {
+      matched.handler(req, res, match);
+    } catch (error) {
+      req.resume();
+      const invalidId = error instanceof URIError;
+      if (!invalidId) console.error("[PatchLoop receiver] route handler failed:", error);
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
+      respondJson(res, invalidId ? 400 : 500, {
+        ok: false,
+        error: invalidId ? "Invalid feedback ID encoding" : "Internal Server Error"
+      });
+    }
     return;
   }
 
@@ -585,7 +605,7 @@ function enforceIngestProject(payload, keyEntry) {
 function handlePostFeedback(req, res) {
   readJsonBody(req, res, async (payload) => {
     try {
-      validateFeedbackPayload(payload);
+      payload = normalizeFeedbackPayload(payload);
       enforceIngestProject(payload, req.patchloopIngestKey);
     } catch (error) {
       respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
@@ -605,6 +625,9 @@ function handlePostFeedback(req, res) {
       receivedAt: new Date().toISOString(),
       schemaVersion: DEFAULT_SCHEMA_VERSION,
       ...payload,
+      // Live ingest creates a new triage item. Only the receiver can assert
+      // handling history; authenticated imports may retain a triage status.
+      status: "new",
       screenshot,
       // Weak provenance signal for triage, alongside the ingest key / project
       // binding (#44): the browser-sent Origin and whether the allowlist would
@@ -1019,6 +1042,14 @@ function readRequestBody(req, res, onBody) {
 }
 
 function readJsonBody(req, res, onJson) {
+  // A simple cross-origin request can carry cookies on the same site. Requiring
+  // JSON prevents it from reaching mutation handlers without a CORS preflight.
+  const mediaType = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+  if (mediaType !== "application/json") {
+    req.resume();
+    respondJson(res, 415, { ok: false, error: "Content-Type must be application/json" });
+    return;
+  }
   readRequestBody(req, res, async (raw) => {
     let payload;
     try {
@@ -1064,10 +1095,10 @@ function normalizeImportedBundle(body) {
   if (list.length > MAX_IMPORT_ITEMS) {
     throw httpError(`Import bundle exceeds the maximum of ${MAX_IMPORT_ITEMS} items`, 413);
   }
-  return list.map(normalizeImportedPayload);
+  return list.map(normalizeFeedbackPayload);
 }
 
-function normalizeImportedPayload(payload) {
+function normalizeFeedbackPayload(payload) {
   validateFeedbackPayload(payload);
   const imported = JSON.parse(JSON.stringify(payload));
   delete imported.delivery;
@@ -1075,7 +1106,8 @@ function normalizeImportedPayload(payload) {
   delete imported.receivedAt;
   delete imported.importedAt;
   delete imported.source;
-  // Server-owned provenance (set on live ingest); a bundle must not carry it in.
+  delete imported.statusUpdatedAt;
+  // Server-owned provenance must not be asserted by a producer or bundle.
   delete imported.received;
   // Local-only export markers (set by the widget after a batch download) must
   // never reach the stored record.
@@ -1142,6 +1174,12 @@ function validateFeedbackPayload(payload) {
   if (payload.createdAt != null) requireString(payload.createdAt, "feedback.createdAt");
   if (payload.page.url != null) requireString(payload.page.url, "feedback.page.url");
   if (payload.page.title != null) requireString(payload.page.title, "feedback.page.title");
+  for (const field of ["browser", "language"]) {
+    if (payload.environment[field] != null) requireString(payload.environment[field], `feedback.environment.${field}`);
+  }
+  if (payload.environment.viewport != null) {
+    validateNumericObject(payload.environment.viewport, "feedback.environment.viewport", ["width", "height"]);
+  }
 
   // Git provenance sent by the widget (#96). Optional because older widgets
   // and hand-posted payloads do not carry it; when present, every field must
@@ -1161,10 +1199,29 @@ function validateFeedbackPayload(payload) {
   }
   if (payload.target.selector != null) requireString(payload.target.selector, "feedback.target.selector");
   if (payload.target.text != null) requireString(payload.target.text, "feedback.target.text");
-  if (payload.target.area != null) requirePlainObject(payload.target.area, "feedback.target.area");
+  validateNumericObject(payload.target, "feedback.target", ["x", "y", "clientX", "clientY", "pageX", "pageY", "documentX", "documentY"]);
+  if (payload.target.area != null) {
+    validateNumericObject(payload.target.area, "feedback.target.area", ["x", "y", "width", "height", "clientX", "clientY", "clientWidth", "clientHeight", "pageX", "pageY", "documentX", "documentY", "documentWidth", "documentHeight"]);
+  }
+  if (payload.target.anchor != null) {
+    validateNumericObject(payload.target.anchor, "feedback.target.anchor", ["x", "y", "width", "height"]);
+    if (payload.target.anchor.selector != null) requireString(payload.target.anchor.selector, "feedback.target.anchor.selector");
+  }
   if (payload.screenshot != null) {
-    requirePlainObject(payload.screenshot, "feedback.screenshot");
+    validateNumericObject(payload.screenshot, "feedback.screenshot", ["width", "height", "bytes", "maxBytes", "scrollX", "scrollY", "devicePixelRatio"]);
+    for (const field of ["status", "kind", "mimeType", "reason", "error", "dataUrl"]) {
+      if (payload.screenshot[field] != null) requireString(payload.screenshot[field], `feedback.screenshot.${field}`);
+    }
     validateScreenshotContent(payload.screenshot);
+  }
+}
+
+function validateNumericObject(value, label, fields) {
+  requirePlainObject(value, label);
+  for (const field of fields) {
+    if (value[field] != null && !Number.isFinite(value[field])) {
+      throw httpError(`${label}.${field} must be a finite number`, 400);
+    }
   }
 }
 
@@ -1272,6 +1329,7 @@ const { renderInbox, renderLoginPage } = createInboxView({
 async function handleGetInbox(req, res) {
   try {
     const items = await store.list({});
+    const html = renderInbox(items);
     res.writeHead(200, {
       "Content-Type": "text/html; charset=utf-8",
       // Everything on the page is same-origin (script, styles, fetches); a
@@ -1280,7 +1338,7 @@ async function handleGetInbox(req, res) {
       "X-Content-Type-Options": "nosniff",
       "Content-Security-Policy": INBOX_CSP
     });
-    res.end(renderInbox(items));
+    res.end(html);
   } catch (error) {
     res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Internal Server Error");

@@ -11,6 +11,21 @@ function createInboxView(deps) {
 
   function renderInbox(items) {
     const cards = items.map((item) => {
+      try {
+        return renderCard(item);
+      } catch (_) {
+        // Old stores may contain metadata accepted before shape validation.
+        // Keep the record inspectable/removable without breaking other cards.
+        const id = item && typeof item.id === "string" ? item.id : "";
+        return `<article class="card" data-card data-status="new" data-kind="" data-project="" data-demo="" data-reviewer="" data-source="" data-slack="" data-github="" data-search="${escapeHtml(id.toLowerCase())}">
+          <p>保存済みメタデータの形式が不正なため、この feedback の詳細を表示できません。</p>
+          ${id ? `<button type="button" class="delete-feedback" data-delete-feedback data-feedback-id="${escapeHtml(id)}">削除</button>` : ""}
+          <details><summary>raw payload</summary><pre>${escapeHtml(JSON.stringify(item, null, 2))}</pre></details>
+        </article>`;
+      }
+    });
+
+    function renderCard(item) {
       const target = item.target || {};
       const env = item.environment || {};
       const page = item.page || {};
@@ -70,7 +85,7 @@ function createInboxView(deps) {
         </details>
       </article>
     `;
-    });
+    }
 
     return `<!doctype html>
 <html lang="ja">
@@ -112,7 +127,9 @@ function createInboxView(deps) {
     const optionList = (values, allLabel) => [`<option value="">${allLabel}</option>`]
       .concat(values.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`))
       .join("");
-    const unique = (mapper) => Array.from(new Set(items.map(mapper).filter(Boolean))).sort();
+    const unique = (mapper) => Array.from(new Set(items
+      .filter((item) => item && typeof item === "object")
+      .map(mapper).filter((value) => typeof value === "string" && value))).sort();
     const projects = unique((item) => item.projectId || "");
     const demos = unique((item) => item.demoId || "");
     const reviewers = unique((item) => item.reviewer || "");
