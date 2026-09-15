@@ -348,6 +348,11 @@ const server = http.createServer((req, res) => {
     } catch (error) {
       req.resume();
       const invalidId = error instanceof URIError;
+      if (!invalidId) console.error("[PatchLoop receiver] route handler failed:", error);
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
       respondJson(res, invalidId ? 400 : 500, {
         ok: false,
         error: invalidId ? "Invalid feedback ID encoding" : "Internal Server Error"

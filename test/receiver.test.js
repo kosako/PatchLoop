@@ -174,6 +174,48 @@ test("malformed encoded feedback IDs return 400 without stopping the receiver", 
   assert.equal((await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_after_bad_id"))).status, 201);
 });
 
+for (const headersSent of [false, true]) {
+  test(`synchronous route failures are logged and contained with headersSent=${headersSent}`, async (t) => {
+    const fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-route-fault-"));
+    t.after(() => fs.rm(fixtureDir, { recursive: true, force: true }));
+    const preload = path.join(fixtureDir, "fail-response.cjs");
+    // Inject one native response failure in the receiver child. The real login
+    // route and dispatcher run unchanged, including Node's headersSent behavior.
+    await fs.writeFile(preload, `
+      const http = require("node:http");
+      const writeHead = http.ServerResponse.prototype.writeHead;
+      let faulted = false;
+      http.ServerResponse.prototype.writeHead = function (...args) {
+        if (!faulted && this.req.url === "/login?fault=sync") {
+          faulted = true;
+          if (${headersSent}) writeHead.apply(this, args);
+          throw new Error("Synthetic route failure");
+        }
+        return writeHead.apply(this, args);
+      };
+    `);
+    const receiver = await startReceiver(t, { NODE_OPTIONS: `--require ${JSON.stringify(preload)}` });
+    let stderr = "";
+    receiver.child.stderr.on("data", (chunk) => { stderr += chunk; });
+    const target = `${receiver.baseUrl}/login?fault=sync`;
+    if (headersSent) {
+      await assert.rejects(async () => {
+        const response = await fetch(target);
+        await response.text();
+      });
+    } else {
+      const response = await fetch(target);
+      assert.equal(response.status, 500);
+      assert.deepEqual(await response.json(), { ok: false, error: "Internal Server Error" });
+    }
+    assert.equal((await fetch(`${receiver.baseUrl}/healthz`)).status, 200);
+    receiver.child.kill();
+    await waitForExit(receiver.child);
+    assert.match(stderr, /\[PatchLoop receiver\] route handler failed: Error: Synthetic route failure/);
+    assert.doesNotMatch(stderr, /ERR_HTTP_HEADERS_SENT/);
+  });
+}
+
 test("legacy malformed metadata cannot prevent the Inbox from showing other records", async (t) => {
   const receiver = await startReceiver(t);
   const invalid = feedbackPayload("pl_legacy_invalid");
