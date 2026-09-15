@@ -2,6 +2,7 @@
 
 const { escapeHtml } = require("../shared/format.js");
 const { FEEDBACK_STATUSES } = require("./store.js");
+const { feedbackForExport } = require("./feedback-export.js");
 
 function createInboxView(deps) {
   const { formatScreenshotStatus, safeLinkUrl, GITHUB_CONFIGURED, RECEIVER_TOKEN } = deps;
@@ -20,7 +21,7 @@ function createInboxView(deps) {
         return `<article class="card" data-card data-status="new" data-kind="" data-project="" data-demo="" data-reviewer="" data-source="" data-slack="" data-github="" data-search="${escapeHtml(id.toLowerCase())}">
           <p>保存済みメタデータの形式が不正なため、この feedback の詳細を表示できません。</p>
           ${id ? `<button type="button" class="delete-feedback" data-delete-feedback data-feedback-id="${escapeHtml(id)}">削除</button>` : ""}
-          <details><summary>raw payload</summary><pre>${escapeHtml(JSON.stringify(item, null, 2))}</pre></details>
+          <details><summary>raw payload</summary><pre>${escapeHtml(JSON.stringify(feedbackForExport(item), null, 2))}</pre></details>
         </article>`;
       }
     });
@@ -81,7 +82,7 @@ function createInboxView(deps) {
         </dl>
         <details>
           <summary>raw payload</summary>
-          <pre>${escapeHtml(JSON.stringify(item, null, 2))}</pre>
+          <pre>${escapeHtml(JSON.stringify(feedbackForExport(item), null, 2))}</pre>
         </details>
       </article>
     `;

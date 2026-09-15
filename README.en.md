@@ -255,7 +255,7 @@ Environment variables override the config file. For example, to try Slack forwar
 SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..." node server/receive.js
 ```
 
-If Slack forwarding fails, the receiver still stores the payload. The Slack result is visible in the saved payload under `integrations.slack` and in the inbox `Slack` row. Screenshot `dataUrl` values are saved as files by the receiver and replaced with `screenshot.url` in stored payloads.
+If Slack forwarding fails, the receiver still stores the payload. The Slack result is visible in the saved payload under `integrations.slack` and in the inbox `Slack` row. Screenshot `dataUrl` values are saved as files by the receiver and replaced with `screenshot.url` in stored payloads. The internal image file path, `screenshot.path`, stays in storage and is omitted from the JSON API, inbox raw payload, and GitHub issue body.
 
 ### Creating GitHub Issues
 

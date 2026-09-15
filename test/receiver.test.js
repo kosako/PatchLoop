@@ -61,6 +61,63 @@ test("POST /feedback rejects malformed feedback payloads", async (t) => {
   assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
 });
 
+test("outgoing feedback omits the internal screenshot path while storage and cleanup retain it", async (t) => {
+  const github = await startMockGitHub(t, (res) => {
+    res.writeHead(201, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ number: 12, html_url: "https://github.com/acme/demo/issues/12" }));
+  });
+  const receiver = await startReceiver(t, {
+    GITHUB_TOKEN: "test-token", GITHUB_REPO: "acme/demo", GITHUB_API_BASE: github.baseUrl
+  });
+  const payload = feedbackPayload("pl_export_privacy");
+  payload.sourceContext = { repo: "acme/demo", root: "web", branch: "main" };
+  payload.extra = { path: "public-source-path", message: "keep this field" };
+  payload.screenshot.extra = { path: "public-image-metadata" };
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, payload)).status, 201);
+
+  const [stored] = await readStoredFeedback(receiver.dbPath);
+  const internalPath = stored.screenshot.path;
+  assert.equal(path.dirname(internalPath), receiver.screenshotDir);
+  assert.equal(await fs.readFile(internalPath, "utf8"), testSvg());
+
+  for (const suffix of ["", "?projectId=patchloop"]) {
+    const response = await fetch(`${receiver.baseUrl}/feedback.json${suffix}`);
+    assert.equal(response.status, 200);
+    const raw = await response.text();
+    assert.equal(raw.includes(internalPath), false);
+    const [exported] = JSON.parse(raw);
+    assert.equal(Object.hasOwn(exported.screenshot, "path"), false);
+    assert.equal(exported.screenshot.url, stored.screenshot.url);
+    assert.deepEqual(exported.sourceContext, payload.sourceContext);
+    assert.deepEqual(exported.extra, payload.extra);
+    assert.deepEqual(exported.screenshot.extra, payload.screenshot.extra);
+  }
+
+  const inbox = await fetch(receiver.baseUrl);
+  const html = await inbox.text();
+  assert.equal(inbox.status, 200);
+  assert.equal(html.includes(internalPath), false);
+  assert.ok(html.includes(stored.screenshot.url));
+  assert.ok(html.includes("public-source-path"));
+  assert.ok(html.includes("public-image-metadata"));
+
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {})).status, 201);
+  const body = github.requests[0].body.body;
+  assert.equal(body.includes(internalPath), false);
+  const issuePayload = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(body)[1]);
+  assert.equal(Object.hasOwn(issuePayload.screenshot, "path"), false);
+  assert.equal(issuePayload.screenshot.url, stored.screenshot.url);
+  assert.deepEqual(issuePayload.sourceContext, payload.sourceContext);
+  assert.deepEqual(issuePayload.extra, payload.extra);
+  assert.deepEqual(issuePayload.screenshot.extra, payload.screenshot.extra);
+
+  const [afterExport] = await readStoredFeedback(receiver.dbPath);
+  assert.equal(afterExport.screenshot.path, internalPath);
+  const removed = await fetch(`${receiver.baseUrl}/feedback/${payload.id}`, { method: "DELETE" });
+  assert.equal(removed.status, 200);
+  await assert.rejects(fs.access(internalPath), { code: "ENOENT" });
+});
+
 test("POST /feedback stores the sourceContext block as sent (#96)", async (t) => {
   const receiver = await startReceiver(t);
   const payload = feedbackPayload("pl_source_context");
