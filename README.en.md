@@ -99,7 +99,7 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 - `reviewer` (string, optional) — pre-fills the reviewer field in the comment form. When omitted, the widget restores a saved reviewer from `localStorage`; otherwise the field starts empty
 - `reviewerStorageKey` (string, optional) — `localStorage` key used to persist the reviewer name; defaults to `patchloop:reviewer`
 - `persistFeedback` (boolean, optional) — save the feedback list to `localStorage` and restore it after reloads on the same project / demo / page URL; defaults to `true`
-- `feedbackStorageKey` (string, optional) — `localStorage` key used to persist the feedback list; defaults to `patchloop:feedback`
+- `feedbackStorageKey` (string, optional) — namespace for the `localStorage` keys used to persist feedback; defaults to `patchloop:feedback`. Storage is separated by this value, project, demo, and the page's origin + pathname (query strings and hashes identify the same page). Legacy single-key data migrates only when its scope matches; it is retained if copying to the new key fails
 - `deliveryMode` (`"receiver"` | `"slack-webhook"` | `"download"` | `"none"`, optional) — delivery target; defaults to `"receiver"`
 - `endpoint` (string, optional) — URL the widget POSTs each payload to; nothing is sent when omitted
 - `ingestKey` (string, optional) — per-project public key sent to the receiver in the `X-PatchLoop-Ingest-Key` header; required when the receiver sets `INGEST_KEYS` / `ingestKeys`. It is embedded in the page, so it is not a secret — it identifies the project, deters indiscriminate spam, and can be rotated to revoke
