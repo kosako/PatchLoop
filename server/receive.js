@@ -584,11 +584,17 @@ function enforceIngestProject(payload, keyEntry) {
 
 function handlePostFeedback(req, res) {
   readJsonBody(req, res, async (payload) => {
-    let screenshot;
     try {
       validateFeedbackPayload(payload);
       enforceIngestProject(payload, req.patchloopIngestKey);
-      await assertFeedbackCapacity(1);
+    } catch (error) {
+      respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
+      return;
+    }
+
+    await assertFeedbackCapacity(1);
+    let screenshot;
+    try {
       screenshot = saveScreenshot(payload.screenshot, payload.id);
     } catch (error) {
       respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
@@ -620,43 +626,61 @@ function handlePostFeedback(req, res) {
     try {
       await store.insert(stored);
     } catch (error) {
-      await deleteScreenshotFile(screenshot);
+      try {
+        await deleteScreenshotFile(screenshot);
+      } catch (cleanupError) {
+        console.warn(`[PatchLoop receiver] failed to clean up screenshot for feedback id=${stored.id}:`, cleanupError);
+      }
       respondJson(res, error.statusCode || 500, { ok: false, error: error.message });
       return;
     }
 
-    stored.integrations = {
-      ...(stored.integrations || {}),
-      slack: await deliverToSlack(stored)
-    };
-    await store.update(stored.id, { integrations: stored.integrations });
-    const slackLog = stored.integrations.slack.status === "disabled"
+    const slack = await deliverToSlack(stored);
+    await store.updateIntegration(stored.id, "slack", slack);
+    const slackLog = slack.status === "disabled"
       ? ""
-      : ` slack=${stored.integrations.slack.status}`;
+      : ` slack=${slack.status}`;
     console.log(`[PatchLoop receiver] received feedback id=${payload?.id || "?"} comment="${truncateText(payload?.comment || "", 60)}"${slackLog}`);
     respondJson(res, 201, {
       ok: true,
       id: payload?.id,
       count: await store.count(),
-      slack: stored.integrations.slack
+      slack
     });
   });
 }
 
 function handlePostImport(req, res) {
   readJsonBody(req, res, async (body) => {
-    let importedList;
+    let normalized;
     try {
-      importedList = normalizeImportedBundle(body);
-      await assertFeedbackCapacity(importedList.length);
+      normalized = normalizeImportedBundle(body);
     } catch (error) {
       respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
       return;
     }
 
+    let importedList;
+    const duplicates = [];
+    try {
+      const seen = new Set();
+      importedList = [];
+      for (const imported of normalized) {
+        if (seen.has(imported.id) || await store.get(imported.id)) {
+          duplicates.push(imported.id);
+        } else {
+          importedList.push(imported);
+        }
+        seen.add(imported.id);
+      }
+      await assertFeedbackCapacity(importedList.length);
+    } catch (error) {
+      respondJson(res, error.statusCode || 500, { ok: false, error: error.message });
+      return;
+    }
+
     const now = new Date().toISOString();
     const ids = [];
-    const duplicates = [];
     const failed = [];
 
     // Best-effort per item: a duplicate id (re-imported batch) is skipped, not
@@ -691,7 +715,11 @@ function handlePostImport(req, res) {
         // The insert failed, so drop the screenshot we just wrote for it
         // (saveScreenshot names files uniquely, so this never touches an
         // existing record's screenshot).
-        await deleteScreenshotFile(screenshot);
+        try {
+          await deleteScreenshotFile(screenshot);
+        } catch (cleanupError) {
+          console.warn(`[PatchLoop receiver] failed to clean up screenshot for feedback id=${stored.id}:`, cleanupError);
+        }
         if (error.statusCode === 409) {
           duplicates.push(stored.id);
         } else {
@@ -715,22 +743,30 @@ function handlePostImport(req, res) {
 }
 
 async function handleDeleteFeedback(req, res, id) {
-  let removed;
+  const pending = feedbackOperationsInFlight.get(id);
+  if (pending) {
+    respondJson(res, 409, { ok: false, error: `${pending} already in progress: ${id}` });
+    return;
+  }
+  feedbackOperationsInFlight.set(id, "Feedback deletion");
   try {
-    removed = await store.delete(id);
-  } catch (error) {
-    respondJson(res, 500, { ok: false, error: error.message });
-    return;
-  }
-  if (!removed) {
-    respondJson(res, 404, { ok: false, error: `Unknown feedback id: ${id}` });
-    return;
-  }
+    const item = await store.get(id);
+    if (!item) {
+      respondJson(res, 404, { ok: false, error: `Unknown feedback id: ${id}` });
+      return;
+    }
 
-  // Await the file removal so a 200 means the screenshot is gone too.
-  await deleteScreenshotFile(removed.screenshot);
-  console.log(`[PatchLoop receiver] deleted feedback id=${id}`);
-  respondJson(res, 200, { ok: true, id, count: await store.count() });
+    // Keep the row until file cleanup succeeds so a failed deletion can retry.
+    await deleteScreenshotFile(item.screenshot);
+    await store.delete(id);
+    console.log(`[PatchLoop receiver] deleted feedback id=${id}`);
+    respondJson(res, 200, { ok: true, id, count: await store.count() });
+  } catch (error) {
+    console.error(`[PatchLoop receiver] failed to delete feedback id=${id}:`, error);
+    respondJson(res, 500, { ok: false, error: "Unable to delete feedback" });
+  } finally {
+    feedbackOperationsInFlight.delete(id);
+  }
 }
 
 // Removes the stored screenshot for a deleted feedback. Confined to
@@ -764,18 +800,11 @@ async function deleteScreenshotFile(screenshot) {
   const root = path.resolve(SCREENSHOT_DIR);
   if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return;
   try {
-    // Measure the real file size before removing so the disk counter reflects
-    // what was actually freed (a missing file frees nothing).
-    let freed = 0;
-    try {
-      freed = (await fs.promises.stat(resolved)).size;
-    } catch (_) {
-      freed = 0;
-    }
-    await fs.promises.rm(resolved, { force: true });
-    screenshotBytesUsed = Math.max(0, screenshotBytesUsed - freed);
+    const stat = await fs.promises.stat(resolved);
+    await fs.promises.unlink(resolved);
+    screenshotBytesUsed = Math.max(0, screenshotBytesUsed - stat.size);
   } catch (error) {
-    console.warn(`[PatchLoop receiver] could not delete screenshot ${resolved}: ${error.message}`);
+    if (error.code !== "ENOENT") throw error;
   }
 }
 
@@ -797,12 +826,8 @@ function handlePostStatus(req, res, id) {
   });
 }
 
-// Serializes GitHub issue creation per feedback id. The create flow is
-// read -> network -> write with awaits in between, so two concurrent POSTs for
-// the same id could both pass the "already created" guard and open duplicate
-// issues. An in-flight marker (held only for the duration of one create) makes
-// the second request fail fast instead.
-const githubIssueInFlight = new Set();
+// A delete must not remove or replace the row while an issue is being created.
+const feedbackOperationsInFlight = new Map();
 
 function handlePostGitHubIssue(req, res, id) {
   readJsonBody(req, res, async () => {
@@ -811,26 +836,27 @@ function handlePostGitHubIssue(req, res, id) {
       return;
     }
 
-    const item = await store.get(id);
-    if (!item) {
-      respondJson(res, 404, { ok: false, error: `Unknown feedback id: ${id}` });
+    const pending = feedbackOperationsInFlight.get(id);
+    if (pending) {
+      respondJson(res, 409, { ok: false, error: `${pending} already in progress: ${id}` });
       return;
     }
-
-    const existing = item.integrations && item.integrations.github;
-    if (existing && existing.status === "created") {
-      respondJson(res, 409, { ok: false, error: `GitHub issue already created: ${existing.url || `#${existing.issueNumber}`}`, github: existing });
-      return;
-    }
-
-    if (githubIssueInFlight.has(id)) {
-      respondJson(res, 409, { ok: false, error: `GitHub issue creation already in progress: ${id}` });
-      return;
-    }
-    githubIssueInFlight.add(id);
+    feedbackOperationsInFlight.set(id, "GitHub issue creation");
     try {
+      const item = await store.get(id);
+      if (!item) {
+        respondJson(res, 404, { ok: false, error: `Unknown feedback id: ${id}` });
+        return;
+      }
+
+      const existing = item.integrations && item.integrations.github;
+      if (existing && existing.status === "created") {
+        respondJson(res, 409, { ok: false, error: `GitHub issue already created: ${existing.url || `#${existing.issueNumber}`}`, github: existing });
+        return;
+      }
+
       const github = await createGitHubIssue(item);
-      await store.update(id, { integrations: { ...(item.integrations || {}), github } });
+      await store.updateIntegration(id, "github", github);
       console.log(`[PatchLoop receiver] github issue ${github.status} id=${id}${github.url ? ` url=${github.url}` : ""}`);
 
       if (github.status === "created") {
@@ -839,7 +865,7 @@ function handlePostGitHubIssue(req, res, id) {
         respondJson(res, 502, { ok: false, error: github.error || "GitHub issue creation failed", github });
       }
     } finally {
-      githubIssueInFlight.delete(id);
+      feedbackOperationsInFlight.delete(id);
     }
   });
 }
@@ -1566,6 +1592,8 @@ function postJson(targetUrl, body, extraHeaders = {}, timeoutMs = SLACK_TIMEOUT_
       }
     }, (response) => {
       let raw = "";
+      response.once("error", reject);
+      response.once("aborted", () => reject(new Error("Response aborted before completion")));
       response.setEncoding("utf8");
       response.on("data", (chunk) => {
         raw += chunk;
@@ -1673,6 +1701,8 @@ function postSlackApi(method, body) {
       }
     }, (response) => {
       let raw = "";
+      response.once("error", reject);
+      response.once("aborted", () => reject(new Error("Response aborted before completion")));
       response.setEncoding("utf8");
       response.on("data", (chunk) => {
         raw += chunk;
@@ -1721,6 +1751,8 @@ function uploadBinary(targetUrl, buffer, mimeType) {
       }
     }, (response) => {
       let raw = "";
+      response.once("error", reject);
+      response.once("aborted", () => reject(new Error("Response aborted before completion")));
       response.setEncoding("utf8");
       response.on("data", (chunk) => {
         raw += chunk;

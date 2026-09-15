@@ -12,6 +12,8 @@
 //   get(id)            -> item|null
 //   list({projectId, demoId, status}) -> item[]   newest first; filters are optional
 //   update(id, patch)  -> item|null shallow-merge patch into the stored item
+//   updateIntegration(id, provider, result) -> item|null atomically replace one
+//                                    provider result, preserving all other fields
 //   delete(id)         -> item|null returns the removed item (for screenshot cleanup)
 //   count()            -> number
 //   close()
@@ -61,6 +63,10 @@ function extractColumns(item) {
 function createSqliteStore({ dbPath, legacyJsonPath }) {
   let db;
 
+  function markLegacyMigrated() {
+    db.prepare("INSERT INTO store_metadata (key, value) VALUES ('legacy_json_migrated', '1')").run();
+  }
+
   function migrateLegacyJson() {
     if (!legacyJsonPath || !fs.existsSync(legacyJsonPath)) return;
 
@@ -95,6 +101,9 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
       for (const item of items.slice().reverse()) {
         if (item && item.id != null) insertRow(item, { ignoreConflict: true });
       }
+      // Record completion in the same transaction as the rows. Archiving is
+      // best-effort, and an empty feedback table must never replay old data.
+      markLegacyMigrated();
       db.exec("COMMIT");
     } catch (error) {
       db.exec("ROLLBACK");
@@ -118,6 +127,20 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
     ).run(cols.id, cols.project_id, cols.demo_id, cols.status, cols.received_at, JSON.stringify(item));
   }
 
+  // No await between reading and writing: each mutation uses the latest row
+  // without yielding to other requests. A networked backend must provide the
+  // same atomic read-modify-write guarantee using a transaction.
+  function updateRow(id, change) {
+    const row = db.prepare("SELECT data FROM feedback WHERE id = ?").get(String(id));
+    if (!row) return null;
+    const updated = change(JSON.parse(row.data));
+    const cols = extractColumns(updated);
+    db.prepare(
+      "UPDATE feedback SET project_id = ?, demo_id = ?, status = ?, received_at = ?, data = ? WHERE id = ?"
+    ).run(cols.project_id, cols.demo_id, cols.status, cols.received_at, JSON.stringify(updated), String(id));
+    return updated;
+  }
+
   return {
     async init() {
       fs.mkdirSync(path.dirname(dbPath), { recursive: true });
@@ -131,10 +154,20 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
           status TEXT,
           received_at TEXT,
           data TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS store_metadata (
+          key TEXT PRIMARY KEY NOT NULL,
+          value TEXT NOT NULL
         )
       `);
-      const existing = db.prepare("SELECT COUNT(*) AS n FROM feedback").get().n;
-      if (existing === 0) migrateLegacyJson();
+      const migrated = db.prepare("SELECT value FROM store_metadata WHERE key = 'legacy_json_migrated'").get();
+      if (!migrated) {
+        const existing = db.prepare("SELECT COUNT(*) AS n FROM feedback").get().n;
+        // Existing databases already skipped legacy imports when non-empty.
+        // Preserve that decision even after their last feedback is deleted.
+        if (existing > 0) markLegacyMigrated();
+        else migrateLegacyJson();
+      }
     },
 
     async insert(item) {
@@ -178,18 +211,15 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
       return rows.map((row) => JSON.parse(row.data));
     },
 
-    // Read and write happen without an await in between, so the whole
-    // read-modify-write runs synchronously on the single thread and cannot lose
-    // a concurrent update. A networked backend would wrap this in a transaction.
     async update(id, patch) {
-      const row = db.prepare("SELECT data FROM feedback WHERE id = ?").get(String(id));
-      if (!row) return null;
-      const updated = { ...JSON.parse(row.data), ...patch };
-      const cols = extractColumns(updated);
-      db.prepare(
-        "UPDATE feedback SET project_id = ?, demo_id = ?, status = ?, received_at = ?, data = ? WHERE id = ?"
-      ).run(cols.project_id, cols.demo_id, cols.status, cols.received_at, JSON.stringify(updated), String(id));
-      return updated;
+      return updateRow(id, (item) => ({ ...item, ...patch }));
+    },
+
+    async updateIntegration(id, provider, result) {
+      return updateRow(id, (item) => ({
+        ...item,
+        integrations: { ...item.integrations, [provider]: result }
+      }));
     },
 
     async delete(id) {
