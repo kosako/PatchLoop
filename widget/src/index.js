@@ -1167,13 +1167,13 @@ function deleteFeedback(id) {
   }
   state.feedback = state.feedback.filter((f) => f.id !== id);
   state.approximateIds.delete(id);
+  persistFeedbackList();
+  renumberMarkers();
+  renderFeedbackList();
   if (state.editingId === id) {
     state.editingId = null;
     closeCommentForm();
   }
-  persistFeedbackList();
-  renumberMarkers();
-  renderFeedbackList();
   hideTooltip();
 }
 

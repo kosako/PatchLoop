@@ -81,7 +81,7 @@ module.exports = [
     ]
   },
   {
-    files: ["server/**/*.js", "scripts/**/*.js", "test/**/*.js", "eslint.config.js"],
+    files: ["server/**/*.js", "scripts/**/*.js", "test/**/*.js", "test-support/**/*.js", "eslint.config.js"],
     ignores: ["server/static/**"],
     languageOptions: {
       ecmaVersion: 2024,
