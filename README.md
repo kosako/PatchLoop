@@ -107,12 +107,12 @@ PatchLoop は、普通の HTML に `script` tag で埋め込める standalone wi
 - `showDeliverySettings` (boolean, optional) — drawer 内に送信先切替 UI を表示するか。デフォルトは `false`
 - `captureScreenshot` (boolean, optional) — viewport snapshot を payload に含めるか。デフォルトは `true`
 - `screenshotMaxBytes` (number, optional) — widget 側で snapshot を省略する最大バイト数。デフォルトは `1200000`
-- `onSubmit(payload)` (function, optional) — submit のたびに呼ばれる callback
+- `onSubmit(payload)` (function, optional) — submit のたびに呼ばれる callback。同期例外・返したPromiseのrejectionはconsoleに警告し、receiver / Slackへの配送はcallbackの成功・完了に依存せず継続します
 
 ### window.PatchLoop API
 
 - `PatchLoop.init(options)` — widget をマウントしてキャプチャを開始
-- `PatchLoop.destroy()` — widget DOM・マーカー・ハイライトを全部撤去
+- `PatchLoop.destroy()` — widget DOM・マーカー・ハイライトを全部撤去し、DOM ready待ちの初期化も取り消します。body生成前に`init()`を複数回呼んだ場合は、最後の設定だけで初期化します
 - `PatchLoop.setFeedbackMode(boolean)` — コメントモードを外部から切替
 - `PatchLoop.getFeedback()` — 現在の feedback 一覧のコピーを返す（newest first）
 
