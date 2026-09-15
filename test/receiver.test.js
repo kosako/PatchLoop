@@ -819,6 +819,28 @@ test("X-Forwarded-For is ignored for rate limiting unless trust proxy is set", a
   assert.equal((await fetch(url, { headers: { "X-Forwarded-For": "2.2.2.2" } })).status, 429);
 });
 
+test("POST /feedback reports capacity database failures as server errors before writing", async (t) => {
+  const receiver = await startReceiver(t);
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_capacity_before_failure"))).status, 201);
+  const before = await readStoredFeedback(receiver.dbPath);
+  const files = await fs.readdir(receiver.screenshotDir);
+  const db = new DatabaseSync(receiver.dbPath);
+  try {
+    db.exec("ALTER TABLE feedback RENAME TO unavailable_feedback");
+    const rejected = feedbackPayload("pl_capacity_db_failure");
+    const response = await postJson(`${receiver.baseUrl}/feedback`, rejected);
+    assert.equal(response.status, 500);
+    assert.equal(response.body.ok, false);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM unavailable_feedback").get().n, 1);
+    assert.deepEqual(await fs.readdir(receiver.screenshotDir), files);
+    db.exec("ALTER TABLE unavailable_feedback RENAME TO feedback");
+    assert.deepEqual(await readStoredFeedback(receiver.dbPath), before);
+    assert.equal((await postJson(`${receiver.baseUrl}/feedback`, rejected)).status, 201);
+  } finally {
+    db.close();
+  }
+});
+
 test("POST /feedback returns 507 once the stored feedback limit is reached", async (t) => {
   const receiver = await startReceiver(t, { MAX_FEEDBACK_COUNT: "1" });
   const first = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_cap_1"));
@@ -1012,15 +1034,15 @@ test("POST /feedback rejects a duplicate id instead of overwriting", async (t) =
   assert.equal(files.length, 1);
 });
 
-for (const failure of ["duplicate", "database"]) {
-  test(`POST /feedback preserves the ${failure} insert error when screenshot cleanup fails`, async (t) => {
-    const fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-cleanup-failure-"));
-    t.after(() => fs.rm(fixtureDir, { recursive: true, force: true }));
-    const triggerPath = path.join(fixtureDir, "fail-cleanup");
-    const preload = path.join(fixtureDir, "block-cleanup.cjs");
-    // Replace only the rejected upload with a nonempty directory. unlink then
-    // fails with a real I/O error even when CI runs with elevated permissions.
-    await fs.writeFile(preload, `
+async function prepareScreenshotCleanupFailure(t) {
+  const fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-cleanup-failure-"));
+  t.after(() => fs.rm(fixtureDir, { recursive: true, force: true }));
+  const triggerPath = path.join(fixtureDir, "fail-cleanup");
+  const racePath = path.join(fixtureDir, "concurrent-feedback.json");
+  const preload = path.join(fixtureDir, "block-cleanup.cjs");
+  // Replace only the rejected upload with a nonempty directory. unlink then
+  // fails with a real I/O error even when CI runs with elevated permissions.
+  await fs.writeFile(preload, `
       const fs = require("node:fs");
       const path = require("node:path");
       const writeFile = fs.writeFileSync;
@@ -1030,10 +1052,27 @@ for (const failure of ["duplicate", "database"]) {
           fs.renameSync(filePath, filePath + ".retained");
           fs.mkdirSync(filePath);
           fs.renameSync(filePath + ".retained", path.join(filePath, "retained.svg"));
+          if (fs.existsSync(${JSON.stringify(racePath)})) {
+            const item = JSON.parse(fs.readFileSync(${JSON.stringify(racePath)}, "utf8"));
+            const { DatabaseSync } = require("node:sqlite");
+            const db = new DatabaseSync(process.env.FEEDBACK_DB_PATH);
+            try {
+              db.prepare("INSERT INTO feedback (id, data) VALUES (?, ?)").run(item.id, JSON.stringify(item));
+            } finally {
+              db.close();
+            }
+            fs.unlinkSync(${JSON.stringify(racePath)});
+          }
         }
         return result;
       };
-    `);
+  `);
+  return { triggerPath, racePath, preload };
+}
+
+for (const failure of ["duplicate", "database"]) {
+  test(`POST /feedback preserves the ${failure} insert error when screenshot cleanup fails`, async (t) => {
+    const { triggerPath, preload } = await prepareScreenshotCleanupFailure(t);
     const slack = await startMockGitHub(t, (res) => res.end("ok"));
     const receiver = await startReceiver(t, {
       NODE_OPTIONS: `--require ${JSON.stringify(preload)}`,
@@ -1064,6 +1103,60 @@ for (const failure of ["duplicate", "database"]) {
       assert.ok(blocked);
       const blockedPath = path.join(receiver.screenshotDir, blocked.name);
       assert.equal((await fs.readFile(path.join(blockedPath, "retained.svg"))).length, before[0].screenshot.bytes);
+      const closed = once(receiver.child, "close");
+      receiver.child.kill();
+      await closed;
+      assert.match(errors.join(""), /failed to clean up screenshot/);
+      assert.ok(errors.join("").includes(rejected.id));
+      assert.ok(errors.join("").includes(blockedPath));
+    } finally {
+      db.close();
+    }
+  });
+}
+
+for (const failure of ["duplicate", "database"]) {
+  test(`POST /import preserves the ${failure} insert classification when screenshot cleanup fails`, async (t) => {
+    const { triggerPath, racePath, preload } = await prepareScreenshotCleanupFailure(t);
+    const slack = await startMockGitHub(t, (res) => res.end("unexpected"));
+    const receiver = await startReceiver(t, {
+      NODE_OPTIONS: `--require ${JSON.stringify(preload)}`,
+      SLACK_WEBHOOK_URL: slack.baseUrl
+    });
+    const errors = [];
+    receiver.child.stderr.on("data", (chunk) => errors.push(chunk.toString()));
+    const rejected = feedbackPayload(`pl_import_cleanup_${failure}`);
+    const raced = { ...rejected, comment: "concurrent writer" };
+    delete raced.screenshot;
+    await fs.writeFile(triggerPath, "enabled");
+    const db = new DatabaseSync(receiver.dbPath);
+    try {
+      if (failure === "duplicate") {
+        // Insert after import's duplicate pre-check, while saveScreenshot is
+        // writing, so the real UNIQUE constraint rejects the import insert.
+        await fs.writeFile(racePath, JSON.stringify(raced));
+      } else {
+        db.exec("CREATE TRIGGER reject_import BEFORE INSERT ON feedback BEGIN SELECT RAISE(ABORT, 'injected import failure'); END");
+      }
+      const response = await postJson(`${receiver.baseUrl}/import`, rejected);
+      assert.equal(response.status, failure === "duplicate" ? 409 : 400);
+      assert.deepEqual(response.body, {
+        ok: false,
+        ids: [],
+        imported: 0,
+        duplicates: failure === "duplicate" ? [rejected.id] : [],
+        failed: failure === "duplicate" ? [] : [{ id: rejected.id, error: "injected import failure" }],
+        count: failure === "duplicate" ? 1 : 0,
+        source: "import"
+      });
+      assert.deepEqual(await readStoredFeedback(receiver.dbPath), failure === "duplicate" ? [raced] : []);
+      assert.equal(slack.requests.length, 0);
+      const entries = await fs.readdir(receiver.screenshotDir, { withFileTypes: true });
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].isDirectory(), true);
+      const blockedPath = path.join(receiver.screenshotDir, entries[0].name);
+      assert.equal((await fs.readFile(path.join(blockedPath, "retained.svg"))).length, Buffer.byteLength(testSvg()));
+      assert.equal(JSON.stringify(response.body).includes(receiver.tempDir), false);
       const closed = once(receiver.child, "close");
       receiver.child.kill();
       await closed;

@@ -584,11 +584,17 @@ function enforceIngestProject(payload, keyEntry) {
 
 function handlePostFeedback(req, res) {
   readJsonBody(req, res, async (payload) => {
-    let screenshot;
     try {
       validateFeedbackPayload(payload);
       enforceIngestProject(payload, req.patchloopIngestKey);
-      await assertFeedbackCapacity(1);
+    } catch (error) {
+      respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
+      return;
+    }
+
+    await assertFeedbackCapacity(1);
+    let screenshot;
+    try {
       screenshot = saveScreenshot(payload.screenshot, payload.id);
     } catch (error) {
       respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
@@ -712,8 +718,7 @@ function handlePostImport(req, res) {
         try {
           await deleteScreenshotFile(screenshot);
         } catch (cleanupError) {
-          failed.push({ id: stored.id, error: cleanupError.message });
-          continue;
+          console.warn(`[PatchLoop receiver] failed to clean up screenshot for feedback id=${stored.id}:`, cleanupError);
         }
         if (error.statusCode === 409) {
           duplicates.push(stored.id);
