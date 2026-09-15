@@ -49,33 +49,37 @@
 })();
 
 (() => {
-  const cards = Array.from(document.querySelectorAll("[data-card]"));
-
   const panel = document.querySelector("[data-filter-panel]");
-  if (panel) {
-    const textInput = panel.querySelector("[data-filter-text]");
-    const selects = Array.from(panel.querySelectorAll("[data-filter-key]"));
-    const count = panel.querySelector("[data-filter-count]");
-    const emptyNote = document.querySelector("[data-filter-empty]");
+  const textInput = panel && panel.querySelector("[data-filter-text]");
+  const selects = panel ? Array.from(panel.querySelectorAll("[data-filter-key]")) : [];
+  const count = panel && panel.querySelector("[data-filter-count]");
+  const totalCount = document.querySelector("[data-total-count]");
+  const emptyNote = document.querySelector("[data-filter-empty]");
+  const inboxEmpty = document.querySelector("[data-inbox-empty]");
 
-    const applyFilters = () => {
-      const text = textInput.value.trim().toLowerCase();
-      let visible = 0;
-      cards.forEach((card) => {
-        const matchesText = !text || card.dataset.search.includes(text);
-        const matchesSelects = selects.every((select) => !select.value || card.dataset[select.dataset.filterKey] === select.value);
-        const show = matchesText && matchesSelects;
-        card.hidden = !show;
-        if (show) visible += 1;
-      });
-      count.textContent = visible === cards.length ? cards.length + " 件" : visible + " / " + cards.length + " 件";
-      if (emptyNote) emptyNote.hidden = visible > 0;
-    };
+  const applyFilters = () => {
+    const cards = Array.from(document.querySelectorAll("[data-card]"));
+    const text = textInput ? textInput.value.trim().toLowerCase() : "";
+    let visible = 0;
+    cards.forEach((card) => {
+      const matchesText = !text || card.dataset.search.includes(text);
+      const matchesSelects = selects.every((select) => !select.value || card.dataset[select.dataset.filterKey] === select.value);
+      const show = matchesText && matchesSelects;
+      card.hidden = !show;
+      if (show) visible += 1;
+    });
+    if (count) count.textContent = visible === cards.length ? cards.length + " 件" : visible + " / " + cards.length + " 件";
+    if (totalCount) totalCount.textContent = String(cards.length);
+    if (emptyNote) emptyNote.hidden = cards.length === 0 || visible > 0;
+    if (inboxEmpty) inboxEmpty.hidden = cards.length > 0;
+    if (panel) panel.hidden = cards.length === 0;
+  };
 
+  if (textInput) {
     textInput.addEventListener("input", applyFilters);
-    selects.forEach((select) => select.addEventListener("change", applyFilters));
-    applyFilters();
   }
+  selects.forEach((select) => select.addEventListener("change", applyFilters));
+  applyFilters();
 
   document.querySelectorAll("[data-github-create]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -110,6 +114,7 @@
         const result = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(result.error || "Status update failed");
         card.dataset.status = select.value;
+        applyFilters();
       } catch (error) {
         select.value = previous;
         window.alert(error.message);
@@ -129,6 +134,7 @@
         const result = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(result.error || "Delete failed");
         button.closest("[data-card]").remove();
+        applyFilters();
       } catch (error) {
         button.disabled = false;
         button.textContent = "削除";
