@@ -1480,7 +1480,7 @@ async function submitComment(event) {
   const includeScreenshot = form.querySelector("[data-pl-include-screenshot]")?.checked ?? state.options.captureScreenshot;
   const payload = buildPayload(comment, reviewer, state.pendingTarget, includeScreenshot);
   const delivering = shouldDeliverFeedback();
-  if (delivering) payload.delivery = { pending: true };
+  if (delivering) payload.delivery = pendingDelivery();
   state.feedback.unshift(payload);
   finalizePendingMarker(payload);
   persistFeedbackList();
@@ -1500,6 +1500,7 @@ async function submitComment(event) {
 
   if (delivering) {
     await deliverFeedback(payload);
+    if (getRoot() !== root) return;
     persistFeedbackList();
     renderFeedbackList();
     showWidgetNotice(deliveryStatusText(payload.delivery), payload.delivery.ok === false);
@@ -1560,7 +1561,7 @@ function restorePersistedFeedback() {
 
   state.feedback = stored;
   state.feedback.forEach((item) => {
-    if (item.delivery?.pending) item.delivery = { ok: false, error: "送信結果未確認" };
+    if (item.delivery?.pending) item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
   });
   restoreFeedbackMarkers();
   persistFeedbackList();
@@ -1582,6 +1583,10 @@ async function deliverFeedback(payload) {
   }
 
   await postFeedback(payload);
+}
+
+function pendingDelivery() {
+  return { pending: true, target: state.options.deliveryMode === "slack-webhook" ? "slack-webhook" : "receiver" };
 }
 
 // Demo-scoped batch export: write every still-unsent comment as one bundle,
@@ -2155,7 +2160,7 @@ function renderFeedbackList() {
             <div class="pl-feedback-text">${escapeHtml(item.comment || "")}</div>
           </div>
           <div class="pl-feedback-actions">
-            ${item.delivery?.ok === false && !item.localEdited && item.delivery.status !== 409 ? '<button type="button" data-pl-retry>再送</button>' : ""}
+            ${(item.delivery?.ok === false || (item.delivery?.interrupted && item.delivery.target !== "slack-webhook")) && !item.localEdited && item.delivery.status !== 409 ? '<button type="button" data-pl-retry>再送</button>' : ""}
             <button type="button" data-pl-edit title="この端末のコメントを編集"${item.delivery?.pending ? " disabled" : ""}>編集</button>
             <button type="button" data-pl-delete title="この端末のコメントを削除"${item.delivery?.pending ? " disabled" : ""}>削除</button>
           </div>
@@ -2168,6 +2173,9 @@ function renderFeedbackList() {
 function deliveryStatusText(delivery) {
   if (!delivery) return "";
   if (delivery.pending) return "送信しています…";
+  if (delivery.interrupted) return delivery.target === "slack-webhook"
+    ? "送信が中断されました。Slack 側で内容を確認してください。再送すると重複する可能性があります。"
+    : "送信が中断されたため、結果は未確認です。受信箱の内容を確認してから再送してください。";
   if (delivery.target === "download") {
     if (delivery.ok) return `downloaded ${delivery.fileName || ""}`.trim();
     return `download failed: ${delivery.error || "unknown error"}`;
@@ -2215,16 +2223,18 @@ function handleListClick(event) {
 }
 
 async function retryFeedback(id) {
+  const root = getRoot();
   const item = state.feedback.find((entry) => entry.id === id);
   if (!item || item.delivery?.pending || item.localEdited) return;
   if (!shouldDeliverFeedback()) {
     showWidgetNotice("送信先・設定を確認してください。ファイル共有の場合は書き出しを使います。", true);
     return;
   }
-  item.delivery = { pending: true };
+  item.delivery = pendingDelivery();
   persistFeedbackList();
   renderFeedbackList();
   await deliverFeedback(item);
+  if (getRoot() !== root) return;
   persistFeedbackList();
   renderFeedbackList();
   showWidgetNotice(deliveryStatusText(item.delivery), item.delivery.ok === false);

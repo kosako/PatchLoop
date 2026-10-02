@@ -163,10 +163,48 @@ test("restoring an interrupted delivery preserves the comment and offers recover
   w.api.destroy();
   w.init({ persistFeedback: true });
   assert.equal(w.api.getFeedback()[0].comment, "Pending at reload");
-  assert.equal(w.api.getFeedback()[0].delivery.ok, false);
+  assert.equal(w.api.getFeedback()[0].delivery.ok, null);
+  assert.equal(w.api.getFeedback()[0].delivery.interrupted, true);
   assert.ok(w.document.querySelector("[data-pl-retry]"));
+  const notice = w.document.querySelector("[data-pl-notice]");
+  const noticeBefore = notice.textContent;
   complete({ ok: true, status: 201 });
   await submission;
+  assert.equal(notice.textContent, noticeBefore);
+  assert.equal(w.api.getFeedback()[0].delivery.ok, null);
+});
+
+test("interrupted Slack delivery keeps its destination and does not offer a duplicate-prone retry", async () => {
+  let complete;
+  const w = widgetHarness({ replies: [() => new Promise((resolve) => { complete = resolve; })] });
+  const options = { persistFeedback: true, deliveryMode: "slack-webhook", slackWebhookUrl: "https://hooks.slack.test/example" };
+  w.init(options);
+  const submission = w.submit("Pending Slack");
+  w.api.destroy();
+  w.init(options);
+  assert.equal(w.api.getFeedback()[0].delivery.target, "slack-webhook");
+  assert.equal(w.api.getFeedback()[0].delivery.ok, null);
+  assert.equal(w.document.querySelector("[data-pl-retry]"), null);
+  assert.match(w.document.querySelector("[data-pl-list]").innerHTML, /Slack 側で内容を確認/);
+  complete({ ok: true });
+  await submission;
+});
+
+test("a retry completing after reinitialization cannot announce success in a different demo", async () => {
+  let complete;
+  const w = widgetHarness({ replies: [new Error("offline"), () => new Promise((resolve) => { complete = resolve; })] });
+  w.init();
+  await w.submit("Retry later");
+  const retry = w.document.querySelector("[data-pl-retry]");
+  const retried = Promise.all(w.document.querySelector("[data-pl-list]").emit("click", { target: retry }));
+  w.api.destroy();
+  w.init({ demoId: "another-demo" });
+  const notice = w.document.querySelector("[data-pl-notice]");
+  const before = notice.textContent;
+  complete({ ok: true, status: 201 });
+  await retried;
+  assert.equal(w.api.getFeedback().length, 0);
+  assert.equal(notice.textContent, before);
 });
 
 test("a stalled request times out, preserves the comment, and offers retry", async () => {
