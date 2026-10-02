@@ -172,6 +172,15 @@ test("restoring an interrupted delivery preserves the comment and offers recover
   await submission;
   assert.equal(notice.textContent, noticeBefore);
   assert.equal(w.api.getFeedback()[0].delivery.ok, null);
+  w.document.querySelector("[data-pl-list]").emit("click", { target: w.document.querySelector("[data-pl-edit]") });
+  await w.submit("Corrected before retry", { captureTarget: false });
+  assert.notEqual(w.api.getFeedback()[0].localEdited, true);
+  const retry = w.document.querySelector("[data-pl-retry]");
+  assert.ok(retry);
+  await Promise.all(w.document.querySelector("[data-pl-list]").emit("click", { target: retry }));
+  assert.equal(w.requests.length, 2);
+  assert.equal(JSON.parse(w.requests[1].body).comment, "Corrected before retry");
+  assert.equal(w.api.getFeedback()[0].delivery.ok, true);
 });
 
 test("interrupted Slack delivery keeps its destination and does not offer a duplicate-prone retry", async () => {

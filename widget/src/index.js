@@ -563,7 +563,8 @@ async function submitComment(event) {
       const changed = target.comment !== comment || target.reviewer !== reviewer;
       target.comment = comment;
       target.reviewer = reviewer;
-      if (changed && ((target.delivery && !target.delivery.pending && target.delivery.ok !== false) || target.exported)) target.localEdited = true;
+      const submitted = target.delivery?.ok === true || (target.delivery?.target === "slack-webhook" && target.delivery.ok === null);
+      if (changed && (submitted || target.exported)) target.localEdited = true;
       // Re-export the local change; receivers still deduplicate the original ID.
       if (changed && target.exported) {
         delete target.exported;

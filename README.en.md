@@ -165,7 +165,7 @@ Main payload fields:
 - `environment.language`
 - `screenshot` — viewport snapshot. On success it includes `status: "captured"`, `mimeType: "image/svg+xml"`, `dataUrl`, `targetOverlay`, and related metadata
 - `createdAt`
-- `delivery` — external delivery adds `{ pending: true, target: "receiver" | "slack-webhook" }` before the notification event and `onSubmit` callback. It is replaced with `{ ok, status }` or `{ ok: false, error }` after delivery. Direct Slack delivery reports `{ ok: null, status: "unknown", target: "slack-webhook" }`. This is local delivery state and is not stored in the receiver’s received record
+- `delivery` — external delivery adds `{ pending: true, target: "receiver" | "slack-webhook" }` before the notification event and `onSubmit` callback. It is replaced with `{ ok, status }` or `{ ok: false, error }` after delivery. Direct Slack delivery reports `{ ok: null, status: "unknown", target: "slack-webhook" }`. Restoring interrupted delivery produces `{ ok: null, interrupted: true, target }`, meaning the outcome is unknown. Receiver comments remain retryable after editing, but existing IDs are never overwritten. These are local delivery states, not stored in the receiver’s received record
 
 `target.kind` is either `point` or `area`. For area selections, `target.area` carries the viewport percentages (`x` / `y` / `width` / `height`) plus pixel values for `clientX/Y/Width/Height`, `pageX/Y`, and `documentX/Y/Width/Height`.
 
