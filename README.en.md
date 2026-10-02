@@ -131,7 +131,7 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 
 Edits and deletions affect this browser only, not received feedback or GitHub Issues. Editing a delivered or exported comment marks it as a local change that has not reached the destination. Screenshot capture does not guarantee masking or removal of hidden content and may include offscreen content; omit the image on sensitive pages.
 
-The reviewer name is saved to `localStorage` after submit and restored the next time the widget starts. The feedback list is also saved to `localStorage` by default and restored after reloads on the same project / demo / page URL, including pins and area overlays. The drawer's clear action removes both visible markers and saved feedback. Set `persistFeedback: false` for memory-only behavior.
+The reviewer name is saved to `localStorage` after submit and restored the next time the widget starts. The feedback list is also saved to `localStorage` by default and restored after reloads on the same project / demo / page URL, including pins and area overlays. The panel’s “この端末のコメントを消す” action removes both visible markers and saved feedback from this browser. Set `persistFeedback: false` for memory-only behavior.
 
 Tab to a comment marker to read its tooltip, and press Escape to dismiss it. In the comment form, Escape cancels the entry or edit and restores focus to the previous control.
 
@@ -165,7 +165,7 @@ Main payload fields:
 - `environment.language`
 - `screenshot` — viewport snapshot. On success it includes `status: "captured"`, `mimeType: "image/svg+xml"`, `dataUrl`, `targetOverlay`, and related metadata
 - `createdAt`
-- `delivery` — added after the POST resolves when `endpoint` is set (`{ ok, status }` or `{ ok: false, error }`)
+- `delivery` — external delivery adds `{ pending: true }` before the notification event and `onSubmit` callback. It is replaced with `{ ok, status }` or `{ ok: false, error }` after delivery. Direct Slack delivery reports `{ ok: null, status: "unknown", target: "slack-webhook" }`. This is local delivery state and is not stored in the receiver’s received record
 
 `target.kind` is either `point` or `area`. For area selections, `target.area` carries the viewport percentages (`x` / `y` / `width` / `height`) plus pixel values for `clientX/Y/Width/Height`, `pageX/Y`, and `documentX/Y/Width/Height`.
 

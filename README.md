@@ -165,7 +165,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 - `environment.language`
 - `screenshot` — viewport snapshot。成功時は `status: "captured"`、`mimeType: "image/svg+xml"`、`dataUrl`、`targetOverlay` などを含む
 - `createdAt`
-- `delivery` — `endpoint` 設定時、POST 完了後に `{ ok, status }` または `{ ok: false, error }` が追加される
+- `delivery` — 外部送信を行う場合は、通知イベントと `onSubmit` の呼び出し前に `{ pending: true }` を付与します。送信後は `{ ok, status }` または `{ ok: false, error }` に置き換わります。Slack 直送の結果は `{ ok: null, status: "unknown", target: "slack-webhook" }` です。これは端末内の配送状態で、receiver の受信済みデータには保存されません
 
 `target.kind` は `point` または `area` です。範囲選択の場合は `target.area` に viewport 上の percentage (`x` / `y` / `width` / `height`) に加えて、`clientX/Y/Width/Height`、`pageX/Y`、`documentX/Y/Width/Height` のピクセル値も入ります。
 

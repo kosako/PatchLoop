@@ -116,6 +116,59 @@ test("public selection API is safe before init and after destroy", () => {
   assert.equal(w.document.querySelectorAll("[data-patchloop-root]").length, 0);
 });
 
+test("selection mode moves focus to the guide and Escape returns to the launcher", () => {
+  const w = widgetHarness();
+  w.init();
+  w.document.querySelector("[data-pl-mode]").focus();
+  w.document.querySelector("[data-pl-mode]").click();
+  const stop = w.document.querySelector("[data-pl-stop-capture]");
+  assert.equal(w.document.activeElement, stop);
+  w.document.emit("keydown", { key: "Escape", target: stop });
+  assert.equal(w.document.querySelector("[data-pl-capture-guide]").hidden, true);
+  assert.equal(w.document.activeElement, w.document.querySelector("[data-pl-collapse]"));
+});
+
+test("keyboard selection never targets PatchLoop point or area markers", async () => {
+  for (const area of [false, true]) {
+    const w = widgetHarness();
+    w.init();
+    await w.submit("Existing", { area });
+    w.api.setFeedbackMode(true);
+    const marker = w.document.querySelector(area ? "[data-patchloop-area]" : "[data-patchloop-pin]");
+    const target = area ? marker.querySelector("button") : marker;
+    target.focus();
+    w.document.emit("keydown", { key: "Enter", target });
+    assert.equal(w.document.querySelector("[data-pl-comment]").hidden, true);
+    assert.equal(w.api.getFeedback().length, 1);
+  }
+});
+
+test("editing an unconfirmed Slack delivery is explicitly a local-only change", async () => {
+  const w = widgetHarness();
+  w.init({ deliveryMode: "slack-webhook", slackWebhookUrl: "https://hooks.slack.test/example" });
+  await w.submit("Original");
+  assert.equal(w.api.getFeedback()[0].delivery.ok, null);
+  w.document.querySelector("[data-pl-list]").emit("click", { target: w.document.querySelector("[data-pl-edit]") });
+  await w.submit("Revised", { captureTarget: false });
+  assert.equal(w.requests.length, 1);
+  assert.equal(w.api.getFeedback()[0].localEdited, true);
+});
+
+test("restoring an interrupted delivery preserves the comment and offers recovery", async () => {
+  let complete;
+  const w = widgetHarness({ replies: [() => new Promise((resolve) => { complete = resolve; })] });
+  w.init({ persistFeedback: true });
+  const submission = w.submit("Pending at reload");
+  assert.equal(w.api.getFeedback()[0].delivery.pending, true);
+  w.api.destroy();
+  w.init({ persistFeedback: true });
+  assert.equal(w.api.getFeedback()[0].comment, "Pending at reload");
+  assert.equal(w.api.getFeedback()[0].delivery.ok, false);
+  assert.ok(w.document.querySelector("[data-pl-retry]"));
+  complete({ ok: true, status: 201 });
+  await submission;
+});
+
 test("a stalled request times out, preserves the comment, and offers retry", async () => {
   const w = widgetHarness({ replies: [(options) => new Promise((resolve, reject) => {
     options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });

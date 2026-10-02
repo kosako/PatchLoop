@@ -112,6 +112,10 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [] } = {
         const tooltipMarkup = /<div[^>]*data-pl-tooltip[^>]*>/.exec(value)[0];
         for (const attribute of tooltipMarkup.matchAll(/(id|role)="([^"]+)"/g)) node.querySelector("[data-pl-tooltip]").setAttribute(attribute[1], attribute[2]);
         node.querySelector("[data-pl-tooltip]").hidden = true;
+        const guide = element("div", "plCaptureGuide");
+        guide.hidden = true;
+        guide.append(element("button", "plStopCapture"));
+        node.append(guide);
         const form = element("form", "plComment");
         form.hidden = true;
         for (const key of ["plCommentText", "plReviewer", "plFormError", "plIncludeScreenshot", "plScreenshotField", "plCaptureNote", "plEditNote", "plFormTitle", "plSubmit"]) form.append(element("input", key));

@@ -120,19 +120,19 @@ function renderShell() {
     </section>
     <div class="pl-capture-guide" data-pl-capture-guide hidden><span>場所をクリック・タップして選択<small>Tab + Enter でも選べます</small></span><button type="button" data-pl-stop-capture>終了</button></div>
     <div class="pl-tooltip" id="pl-feedback-tooltip" role="tooltip" data-pl-tooltip hidden></div>
-    <form class="pl-comment" data-pl-comment hidden>
+    <form class="pl-comment" data-pl-comment novalidate hidden>
       <div class="pl-form-heading"><strong data-pl-form-title>コメントを追加</strong><span>気づいたことを、ひとつずつ。</span></div>
       <label>
         コメント
-        <textarea data-pl-comment-text rows="4" placeholder="どこを、どう変えるとよくなりますか？" required aria-describedby="pl-reviewer-error"></textarea>
+        <textarea data-pl-comment-text rows="4" placeholder="どこを、どう変えるとよくなりますか？" required aria-describedby="pl-form-error"></textarea>
       </label>
       <label>
         投稿者
-        <input data-pl-reviewer value="${escapeHtml(state.options.reviewer)}" placeholder="表示名" required aria-describedby="pl-reviewer-error" />
+        <input data-pl-reviewer value="${escapeHtml(state.options.reviewer)}" placeholder="表示名" required aria-describedby="pl-form-error" />
       </label>
       <label class="pl-screenshot-option" data-pl-screenshot-field><input type="checkbox" data-pl-include-screenshot${state.options.captureScreenshot ? " checked" : ""} />画面画像を含める</label>
       <p class="pl-capture-note" data-pl-capture-note>画像には画面外の内容が含まれる場合があります。機密情報のあるページでは外してください。</p>
-      <p class="pl-form-error" id="pl-reviewer-error" data-pl-form-error role="alert" hidden></p>
+      <p class="pl-form-error" id="pl-form-error" data-pl-form-error role="alert" hidden></p>
       <p class="pl-edit-note" data-pl-edit-note hidden>編集はこの端末に保存されます。受信済みの内容や作成済みの Issue は更新されません。</p>
       <div class="pl-form-actions">
         <button type="button" data-pl-cancel>キャンセル</button>
@@ -219,13 +219,15 @@ function cancelCaptureDrag() {
 }
 
 function handleCaptureKeydown(event) {
-  if (!state.active || event.isComposing || event.target.closest("[data-patchloop-root]")) return;
+  if (!state.active || event.isComposing) return;
   if (event.key === "Escape") {
+    if (event.target.closest("[data-pl-comment]")) return;
     event.preventDefault();
     cancelPendingComment();
     setFeedbackMode(false);
     return;
   }
+  if (event.target.closest("[data-patchloop-root]") || event.target.closest("[data-patchloop-pin]") || event.target.closest("[data-patchloop-area]")) return;
   if (event.key !== "Enter" || event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
   if (event.target === document.body || event.target === document.documentElement) return;
   const rect = event.target.getBoundingClientRect();
@@ -393,10 +395,15 @@ function setFeedbackMode(nextValue) {
   modeBtn.textContent = state.active ? "場所の選択を終了" : "コメントを追加";
   modeBtn.setAttribute("aria-pressed", String(state.active));
   const guide = root.querySelector("[data-pl-capture-guide]");
+  const focusInGuide = guide?.contains(document.activeElement);
+  const focusInPanelBody = document.activeElement === modeBtn || root.querySelector("[data-pl-body]")?.contains(document.activeElement);
   if (guide) guide.hidden = !state.active;
   if (state.active) {
     state.collapsed = true;
     applyCollapseState();
+    if (focusInPanelBody) root.querySelector("[data-pl-stop-capture]")?.focus({ preventScroll: true });
+  } else if (focusInGuide) {
+    handleBtn?.focus({ preventScroll: true });
   }
   root.querySelector("[data-pl-help]").textContent = state.active ? "場所をクリック、または範囲をドラッグ。Tab で移動し Enter でも選べます。Esc で終了。" : "気になる場所を選んで、改善のヒントを残しましょう。";
   if (!state.active) {
@@ -556,7 +563,7 @@ async function submitComment(event) {
       const changed = target.comment !== comment || target.reviewer !== reviewer;
       target.comment = comment;
       target.reviewer = reviewer;
-      if (changed && (target.delivery?.ok || target.exported)) target.localEdited = true;
+      if (changed && ((target.delivery && !target.delivery.pending && target.delivery.ok !== false) || target.exported)) target.localEdited = true;
       // Re-export the local change; receivers still deduplicate the original ID.
       if (changed && target.exported) {
         delete target.exported;
