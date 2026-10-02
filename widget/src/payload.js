@@ -9,7 +9,7 @@ import { captureScreenshot } from "./screenshot.js";
 // v2 adds the optional sourceContext block (#96).
 const PAYLOAD_SCHEMA_VERSION = 2;
 
-export function buildPayload(comment, reviewer, target) {
+export function buildPayload(comment, reviewer, target, includeScreenshot = state.options.captureScreenshot) {
   return {
     schemaVersion: PAYLOAD_SCHEMA_VERSION,
     id: generateFeedbackId(),
@@ -45,7 +45,7 @@ export function buildPayload(comment, reviewer, target) {
       browser: navigator.userAgent,
       language: navigator.language
     },
-    screenshot: captureScreenshot(target),
+    screenshot: includeScreenshot ? captureScreenshot(target) : null,
     createdAt: new Date().toISOString()
   };
 }

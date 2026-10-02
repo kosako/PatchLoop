@@ -4,6 +4,16 @@ const { escapeHtml } = require("../shared/format.js");
 const { FEEDBACK_STATUSES } = require("./store.js");
 const { feedbackForExport } = require("./feedback-export.js");
 
+const STATUS_LABELS = { new: "未確認", accepted: "対応予定", fixed: "修正済み", ignored: "見送り" };
+const KIND_LABELS = { point: "ポイント", area: "範囲" };
+
+function displayDate(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value || "日時不明") : new Intl.DateTimeFormat("ja-JP", {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
+  }).format(date);
+}
+
 function createInboxView(deps) {
   const { formatScreenshotStatus, safeLinkUrl, GITHUB_CONFIGURED, RECEIVER_TOKEN } = deps;
   function feedbackStatusOf(item) {
@@ -48,27 +58,39 @@ function createInboxView(deps) {
       const slackStatus = escapeHtml((slack && slack.status) || "unknown");
       const github = item.integrations && item.integrations.github;
       const githubStatus = escapeHtml((github && github.status) || "none");
-      const searchText = escapeHtml([item.comment, item.reviewer, target.selector, page.url, page.title, item.id]
+      const searchText = escapeHtml([item.comment, item.reviewer, target.selector, page.url, page.title, item.id, item.projectId, item.demoId]
         .filter(Boolean).join(" ").toLowerCase());
       const statusOptions = FEEDBACK_STATUSES
-        .map((value) => `<option value="${value}"${value === status ? " selected" : ""}>${value}</option>`)
+        .map((value) => `<option value="${value}"${value === status ? " selected" : ""}>${STATUS_LABELS[value]}</option>`)
         .join("");
       const viewport = env.viewport
         ? `${env.viewport.width}×${env.viewport.height}`
         : "";
       return `
       <article class="card" data-card data-status="${status}" data-kind="${kind}" data-project="${project}" data-demo="${demo}" data-reviewer="${reviewer}" data-source="${source}" data-slack="${slackStatus}" data-github="${githubStatus}" data-search="${searchText}">
-        <header>
-          <span class="kind kind-${kind}">${kind}</span>
-          <span class="reviewer">${reviewer || "(no name)"}</span>
+        <header class="card-header">
+          <span class="kind kind-${kind}">${escapeHtml(KIND_LABELS[target.kind] || "その他")}</span>
+          <span class="reviewer">${reviewer || "投稿者不明"}</span>
+          <time datetime="${receivedAt}" title="${receivedAt}">${escapeHtml(displayDate(item.receivedAt))}</time>
+        </header>
+        <div class="card-content">
+          <div class="card-copy">
+            <p class="card-context">${project || "プロジェクト未指定"}${demo ? ` <span>/</span> ${demo}` : ""}</p>
+            <p class="comment">${comment}</p>
+            <p class="page-link">${safeLinkUrl(page.url) ? `<a href="${escapeHtml(safeLinkUrl(page.url))}" target="_blank" rel="noopener">${pageTitle || pageUrl}<span class="sr-only">（新しいタブで開く）</span></a>` : pageTitle || pageUrl}</p>
+          </div>
+          ${renderScreenshotPreview(screenshot)}
+        </div>
+        <div class="card-actions">
           <label class="status-control">
+            <span>対応状況</span>
             <select data-status-select data-feedback-id="${escapeHtml(item.id || "")}" aria-label="フィードバックのステータス">${statusOptions}</select>
           </label>
-          <time>${receivedAt}</time>
-          <button type="button" class="delete-feedback" data-delete-feedback data-feedback-id="${escapeHtml(item.id || "")}" title="この feedback を削除">削除</button>
-        </header>
-        <p class="comment">${comment}</p>
-        ${renderScreenshotPreview(screenshot)}
+          <span class="github-cell" data-github-cell>${renderGitHubCell(github, item.id)}</span>
+        </div>
+        <p class="action-status" data-action-status role="status" aria-live="polite" hidden></p>
+        <details class="card-details">
+          <summary>詳細・連携情報</summary>
         <dl>
           <div><dt>URL</dt><dd>${safeLinkUrl(page.url) ? `<a href="${escapeHtml(safeLinkUrl(page.url))}" target="_blank" rel="noopener">${pageUrl}</a>` : pageUrl}</dd></div>
           <div><dt>Title</dt><dd>${pageTitle}</dd></div>
@@ -76,13 +98,15 @@ function createInboxView(deps) {
           <div><dt>Viewport</dt><dd>${escapeHtml(viewport)}</dd></div>
           <div><dt>Source</dt><dd>${source}</dd></div>
           <div><dt>Slack</dt><dd>${escapeHtml(formatSlackStatus(slack))}</dd></div>
-          <div><dt>GitHub</dt><dd>${renderGitHubCell(github, item.id)}</dd></div>
+          <div><dt>GitHub</dt><dd>${githubStatus}</dd></div>
           <div><dt>Created</dt><dd>${createdAt}</dd></div>
           ${importedAt ? `<div><dt>Imported</dt><dd>${importedAt}</dd></div>` : ""}
         </dl>
         <details>
-          <summary>raw payload</summary>
+          <summary>JSON データ</summary>
           <pre>${escapeHtml(JSON.stringify(feedbackForExport(item), null, 2))}</pre>
+        </details>
+        <button type="button" class="delete-feedback" data-delete-feedback data-feedback-id="${escapeHtml(item.id || "")}" title="このフィードバックを削除">削除</button>
         </details>
       </article>
     `;
@@ -97,37 +121,57 @@ function createInboxView(deps) {
   <link rel="stylesheet" href="/static/inbox.css" />
 </head>
 <body>
-  <h1>PatchLoop Inbox</h1>
-  <p class="meta"><span data-total-count>${items.length}</span> feedback received · <a href="/feedback.json">raw JSON</a></p>
-  ${RECEIVER_TOKEN ? '<form class="logout-form" method="post" action="/logout"><button type="submit">ログアウト</button></form>' : ""}
-  ${renderImportPanel()}
+  <a class="skip-link" href="#inbox">フィードバック一覧へ</a>
+  <div class="app-shell">
+  <aside class="sidebar" aria-label="受信箱のナビゲーション">
+    <a class="brand" href="/">PatchLoop<span>FEEDBACK WORKSPACE</span></a>
+    <p class="nav-label">受信箱</p>
+    <nav class="status-nav" aria-label="対応状況で絞り込み">
+      ${["", ...FEEDBACK_STATUSES].map((value) => `<button type="button" data-status-nav="${value}" aria-pressed="${value === ""}"><span>${STATUS_LABELS[value] || "すべて"}</span><span class="nav-count" data-status-count="${value}">${value ? items.filter((item) => feedbackStatusOf(item || {}) === value).length : items.length}</span></button>`).join("")}
+    </nav>
+    <div class="sidebar-footer"><p>気づきを、次の改善へ。</p><small>画面上のフィードバックを<br />確認して、修正につなげましょう。</small>
+    ${RECEIVER_TOKEN ? '<form class="logout-form" method="post" action="/logout"><button type="submit">ログアウト</button></form>' : ""}</div>
+  </aside>
+  <main id="inbox" tabindex="-1">
+  <header class="page-header">
+    <div><p class="eyebrow">WORKSPACE / INBOX</p><h1>フィードバック</h1><p class="meta">画面の気づきを集めて、チームの次の一歩に。<span class="total"><span data-total-count>${items.length}</span> 件を受信</span></p></div>
+    <a class="button secondary" href="/feedback.json" download>JSON を書き出す</a>
+  </header>
+  ${renderImportPanel(items.length === 0)}
   ${items.length === 0 ? "" : renderFilterPanel(items)}
+  <p class="action-status" data-inbox-status role="status" aria-live="polite" hidden></p>
+  <div class="feedback-stream">
   ${cards.join("")}
-  <p class="empty" data-inbox-empty${items.length === 0 ? "" : " hidden"}>まだフィードバックはありません。widget からコメントを送ると、ここに表示されます。</p>
-  <p class="empty" data-filter-empty hidden>絞り込みに一致する feedback はありません。</p>
+  </div>
+  <p class="empty" data-inbox-empty${items.length === 0 ? "" : " hidden"}><strong>最初の気づきを集めましょう</strong><span>レビュー対象のページで PatchLoop を開き、場所を選んでコメントしてください。<br />保存したフィードバックの JSON ファイルも、上の「ファイルを読み込む」から取り込めます。</span></p>
+  <p class="empty" data-filter-empty hidden><strong>一致するフィードバックがありません</strong><span>検索語や絞り込み条件を変えてみてください。</span><button type="button" data-filter-reset>絞り込みを解除</button></p>
+  <noscript><p class="notice">検索・対応状況の変更・ファイルの読み込みには JavaScript を有効にしてください。</p></noscript>
+  </main>
+  </div>
   <script src="/static/inbox.js"></script>
 </body>
 </html>`;
   }
 
-  function renderImportPanel() {
+  function renderImportPanel(empty) {
     return `
-  <section class="import-panel">
+  <details class="import-panel"${empty ? " open" : ""}>
+    <summary>ファイルを読み込む<span>ダウンロードしたフィードバックを受信箱に追加</span></summary>
     <div>
-      <h2>Import feedback bundle</h2>
-      <p>Download mode で保存した .patchloop-feedback.json を読み込みます。</p>
+      <p>PatchLoop で保存した .patchloop-feedback.json ファイルを選んでください。既存のフィードバックは重複して追加されません。</p>
     </div>
     <form class="import-form" data-import-form>
       <input type="file" accept=".json,application/json" data-import-file aria-label="インポートするフィードバックのJSONファイル" />
-      <button type="submit">Import</button>
+      <button type="submit">読み込む</button>
       <span class="import-status" data-import-status role="status" aria-live="polite" aria-atomic="true"></span>
+      <button type="button" data-import-reload hidden>受信箱を更新</button>
     </form>
-  </section>`;
+  </details>`;
   }
 
   function renderFilterPanel(items) {
-    const optionList = (values, allLabel) => [`<option value="">${allLabel}</option>`]
-      .concat(values.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`))
+    const optionList = (values, allLabel, labels = {}) => [`<option value="">${allLabel}</option>`]
+      .concat(values.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(labels[value] || value)}</option>`))
       .join("");
     const unique = (mapper) => Array.from(new Set(items
       .filter((item) => item && typeof item === "object")
@@ -141,16 +185,23 @@ function createInboxView(deps) {
 
     return `
   <section class="filter-panel" data-filter-panel>
-    <input type="search" placeholder="検索（コメント / reviewer / selector / URL）" data-filter-text aria-label="フィードバックを検索" />
-    <select data-filter-key="status" aria-label="ステータスで絞り込み">${optionList(FEEDBACK_STATUSES, "Status: all")}</select>
-    <select data-filter-key="kind" aria-label="指摘の種類で絞り込み">${optionList(["point", "area"], "Kind: all")}</select>
-    <select data-filter-key="project" aria-label="プロジェクトで絞り込み">${optionList(projects, "Project: all")}</select>
-    <select data-filter-key="demo" aria-label="デモで絞り込み">${optionList(demos, "Demo: all")}</select>
-    <select data-filter-key="reviewer" aria-label="投稿者で絞り込み">${optionList(reviewers, "Reviewer: all")}</select>
-    <select data-filter-key="source" aria-label="受信元で絞り込み">${optionList(sources, "Source: all")}</select>
-    <select data-filter-key="slack" aria-label="Slack通知結果で絞り込み">${optionList(slackStatuses, "Slack: all")}</select>
-    <select data-filter-key="github" aria-label="GitHub Issueの作成状況で絞り込み">${optionList(githubStatuses, "GitHub: all")}</select>
-    <span class="filter-count" data-filter-count></span>
+    <div class="primary-filters">
+      <input type="search" placeholder="コメント、ページ、投稿者を検索…" data-filter-text aria-label="フィードバックを検索" />
+      <select data-filter-key="project" aria-label="プロジェクトで絞り込み">${optionList(projects, "すべてのプロジェクト")}</select>
+      <select data-filter-key="status" aria-label="ステータスで絞り込み">${optionList(FEEDBACK_STATUSES, "すべての状況", STATUS_LABELS)}</select>
+    </div>
+    <div class="filter-footer">
+    <details class="advanced-filters"><summary>詳細な絞り込み</summary><div class="advanced-fields">
+      <label>種類<select data-filter-key="kind" aria-label="指摘の種類で絞り込み">${optionList(["point", "area"], "すべて", KIND_LABELS)}</select></label>
+      <label>デモ<select data-filter-key="demo" aria-label="デモで絞り込み">${optionList(demos, "すべて")}</select></label>
+      <label>投稿者<select data-filter-key="reviewer" aria-label="投稿者で絞り込み">${optionList(reviewers, "すべて")}</select></label>
+      <label>受信元<select data-filter-key="source" aria-label="受信元で絞り込み">${optionList(sources, "すべて")}</select></label>
+      <label>Slack<select data-filter-key="slack" aria-label="Slack通知結果で絞り込み">${optionList(slackStatuses, "すべて")}</select></label>
+      <label>GitHub<select data-filter-key="github" aria-label="GitHub Issueの作成状況で絞り込み">${optionList(githubStatuses, "すべて")}</select></label>
+    </div></details>
+    <button type="button" class="text-button" data-filter-reset>クリア</button>
+    <span class="filter-count" data-filter-count role="status" aria-live="polite"></span>
+    </div>
   </section>`;
   }
 
@@ -163,9 +214,9 @@ function createInboxView(deps) {
         : `${number} created`;
     }
 
-    if (!GITHUB_CONFIGURED) return "not configured";
+    if (!GITHUB_CONFIGURED) return '<span class="integration-note">GitHub 未接続</span>';
 
-    const button = `<button type="button" class="github-create" data-github-create data-feedback-id="${escapeHtml(id || "")}">Create GitHub Issue</button>`;
+    const button = `<button type="button" class="github-create" data-github-create data-feedback-id="${escapeHtml(id || "")}">GitHub Issue を作成</button>`;
     if (github && github.status === "failed") {
       const code = github.statusCode ? ` (${escapeHtml(String(github.statusCode))})` : "";
       return `<span class="github-error">failed${code}: ${escapeHtml(github.error || "unknown error")}</span> ${button}`;
@@ -185,7 +236,7 @@ function createInboxView(deps) {
       return `
         <figure class="screenshot">
           <a href="${url}" target="_blank" rel="noopener">
-            <img src="${url}" alt="PatchLoop screenshot preview" />
+            <img src="${url}" alt="指摘箇所のスクリーンショット（新しいタブで拡大）" loading="lazy" decoding="async" />
           </a>
           <figcaption>${escapeHtml(caption || "screenshot saved")}</figcaption>
         </figure>
@@ -212,23 +263,22 @@ function createInboxView(deps) {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PatchLoop Inbox — Login</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 24rem; margin: 4rem auto; padding: 0 1rem; }
-    label { display: block; margin-bottom: 0.75rem; }
-    input { display: block; width: 100%; box-sizing: border-box; margin-top: 0.25rem; padding: 0.5rem; }
-    button { padding: 0.5rem 1.25rem; }
-    .error { color: #b00020; }
-  </style>
+  <link rel="stylesheet" href="/static/inbox.css" />
 </head>
-<body>
-  <h1>PatchLoop Inbox</h1>
-  ${failed ? '<p class="error">トークンが違います。</p>' : ""}
+<body class="login-page">
+  <main class="login-card">
+  <a class="brand" href="/">PatchLoop<span>FEEDBACK WORKSPACE</span></a>
+  <h1>おかえりなさい</h1>
+  <p class="meta">アクセストークンを入力して、<br />チームのフィードバックを確認しましょう。</p>
+  ${failed ? '<p class="error" id="login-error" role="alert">トークンが違います。確認してもう一度お試しください。</p>' : ""}
   <form method="post" action="/login">
-    <label>Access token
-      <input type="password" name="token" autocomplete="current-password" autofocus required />
+    <label>アクセストークン
+      <input type="password" name="token" autocomplete="current-password" autofocus required${failed ? ' aria-invalid="true" aria-describedby="login-error"' : ""} />
     </label>
-    <button type="submit">Sign in</button>
+    <button type="submit">受信箱を開く</button>
   </form>
+  <p class="login-help">トークンが分からない場合は、<br />この受信箱を管理している方に確認してください。</p>
+  </main>
 </body>
 </html>`;
   }

@@ -9,8 +9,10 @@ const bundle = fs.readFileSync(path.join(__dirname, "../dist/patchloop-widget.js
 // The bundle runs unchanged against a small DOM adapter. These tests drive the
 // public API and registered input/submit listeners; layout and screenshot
 // fidelity belong to browser tests rather than this deterministic harness.
-function widgetHarness({ ready = true } = {}) {
+function widgetHarness({ ready = true, pointerEvents = false, replies = [] } = {}) {
   const mountedRoots = [];
+  const downloads = [];
+  const blobs = new Map();
   function eventTarget() {
     const listeners = new Map();
     return {
@@ -60,6 +62,10 @@ function widgetHarness({ ready = true } = {}) {
         this.parentElement = null;
       },
       setAttribute(name, value) { attributes.set(name, String(value)); },
+      click() {
+        if (this.tagName === "A" && this.download) downloads.push({ name: this.download, blob: blobs.get(this.href) });
+        this.emit("click", { target: this });
+      },
       getAttribute: (name) => attributes.get(name) ?? null,
       removeAttribute: (name) => attributes.delete(name),
       contains(candidate) { return candidate === this || this.children.some((child) => child.contains(candidate)); },
@@ -91,20 +97,24 @@ function widgetHarness({ ready = true } = {}) {
           for (const match of value.matchAll(/<article[^>]*data-feedback-id="([^"]+)"[^>]*>([\s\S]*?)<\/article>/g)) {
             const article = element("article", "feedbackId");
             article.dataset.feedbackId = match[1];
-            for (const button of match[2].matchAll(/<button[^>]*data-pl-(edit|delete)[^>]*>/g)) article.append(element("button", button[1] === "edit" ? "plEdit" : "plDelete"));
+            for (const button of match[2].matchAll(/<button[^>]*data-pl-(edit|delete|retry)[^>]*>/g)) {
+              const child = element("button", { edit: "plEdit", delete: "plDelete", retry: "plRetry" }[button[1]]);
+              child.disabled = / disabled/.test(button[0]);
+              article.append(child);
+            }
             node.append(article);
           }
           return;
         }
         if (!node.dataset.patchloopRoot) return;
         node.children = [];
-        for (const key of ["plPanel", "plCollapse", "plMode", "plDownloadAll", "plClear", "plCancel", "plList", "plTooltip", "plHelp"]) node.append(element("div", key));
+        for (const key of ["plPanel", "plCollapse", "plMode", "plDownloadAll", "plDownloadAgain", "plClear", "plCancel", "plList", "plTooltip", "plHelp", "plNotice", "plCount"]) node.append(element("div", key));
         const tooltipMarkup = /<div[^>]*data-pl-tooltip[^>]*>/.exec(value)[0];
         for (const attribute of tooltipMarkup.matchAll(/(id|role)="([^"]+)"/g)) node.querySelector("[data-pl-tooltip]").setAttribute(attribute[1], attribute[2]);
         node.querySelector("[data-pl-tooltip]").hidden = true;
         const form = element("form", "plComment");
         form.hidden = true;
-        for (const key of ["plCommentText", "plReviewer", "plFormError"]) form.append(element("input", key));
+        for (const key of ["plCommentText", "plReviewer", "plFormError", "plIncludeScreenshot", "plScreenshotField", "plCaptureNote", "plEditNote", "plFormTitle", "plSubmit"]) form.append(element("input", key));
         node.append(form);
       }
     });
@@ -132,24 +142,37 @@ function widgetHarness({ ready = true } = {}) {
   const window = {
     ...eventTarget(), innerWidth: 800, innerHeight: 600, scrollX: 0, scrollY: 0,
     location: { href: "https://demo.example/page" }, clearTimeout, setTimeout,
+    confirm: () => true,
+    ...(pointerEvents ? { PointerEvent: function () {} } : {}),
     localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) }
   };
   vm.runInNewContext(bundle, {
-    window, document, URL, navigator: { userAgent: "test", language: "ja" },
+    window, document, Blob, AbortController,
+    URL: class extends URL {
+      static createObjectURL(blob) { const url = `blob:test-${blobs.size}`; blobs.set(url, blob); return url; }
+      static revokeObjectURL() {}
+    },
+    navigator: { userAgent: "test", language: "ja" },
     CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
     console: { info() {}, warn: (...args) => warnings.push(args) },
-    fetch: async (url, options) => { requests.push({ url, ...options }); return { ok: true, status: 201 }; }
+    fetch: async (url, options) => {
+      requests.push({ url, ...options });
+      const reply = replies.shift();
+      if (reply instanceof Error) throw reply;
+      if (typeof reply === "function") return reply(options);
+      return reply || { ok: true, status: 201 };
+    }
   });
   const api = window.PatchLoop;
   function capture(area = false) {
     api.setFeedbackMode(true);
     const mouse = { target, button: 0, clientX: 20, clientY: 30 };
-    document.emit("mousedown", mouse);
-    if (area) document.emit("mousemove", { ...mouse, buttons: 1, clientX: 100, clientY: 80 });
-    document.emit("mouseup", area ? { ...mouse, clientX: 100, clientY: 80 } : mouse);
+    document.emit(pointerEvents ? "pointerdown" : "mousedown", mouse);
+    if (area) document.emit(pointerEvents ? "pointermove" : "mousemove", { ...mouse, buttons: 1, clientX: 100, clientY: 80 });
+    document.emit(pointerEvents ? "pointerup" : "mouseup", area ? { ...mouse, clientX: 100, clientY: 80 } : mouse);
   }
   return {
-    api, requests, warnings, document, capture,
+    api, requests, warnings, document, window, capture, downloads, target,
     init(options = {}) { api.init({ persistFeedback: false, captureScreenshot: false, reviewer: "Reviewer", endpoint: "https://receiver.example/feedback", ...options }); },
     ready() { document.body = body; document.activeElement = body; document.emit("DOMContentLoaded"); },
     roots: () => document.querySelectorAll("[data-patchloop-root]"),

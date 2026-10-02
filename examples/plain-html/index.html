@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="ja">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -12,7 +12,7 @@
         <p class="eyebrow">プレーンHTMLプレビュー</p>
         <h1>顧客更新レビュー</h1>
       </div>
-      <button>プレビュー共有</button>
+      <button type="button" id="startReview">この画面にコメント</button>
     </header>
 
     <main>
@@ -20,7 +20,7 @@
         <div>
           <p class="eyebrow">レビュー画面</p>
           <h2>週次パイプライン会議の前に、顧客の健全性を確認する。</h2>
-          <p class="lede">このページにはビルド手順がありません。PatchLoop は script tag と数行の設定だけで追加されています。</p>
+          <p class="lede">気になる場所にコメントして、次の改善につなげましょう。クリックで位置を、ドラッグで範囲を選べます。</p>
         </div>
         <aside class="score-card">
           <span>更新確度</span>
@@ -34,7 +34,7 @@
             <h3>拡張パイプライン</h3>
             <strong>$2.4M</strong>
           </div>
-          <div class="bars" aria-label="Pipeline bar chart">
+          <div class="bars" role="img" aria-label="6 件の商談の進捗: 44%、68%、56%、84%、62%、78%">
             <span style="height: 44%"></span>
             <span style="height: 68%"></span>
             <span style="height: 56%"></span>
@@ -61,17 +61,14 @@
             <h3>次のアクション</h3>
             <strong>6</strong>
           </div>
-          <p>PatchLoop のコメントモードで画面上の場所をクリック、または範囲をドラッグすると、位置情報付きのコメント payload が作られます。</p>
+          <p>「この画面にコメント」から場所を選び、気づきを残してください。Tab と Enter でボタンを選ぶこともできます。タッチ画面ではタップで選択します。</p>
         </article>
       </section>
 
-      <section class="payload-log">
-        <div>
-          <p class="eyebrow">最新の widget payload</p>
-          <h3>送信したフィードバックがここに表示されます</h3>
-        </div>
+      <details class="payload-log">
+        <summary>組み込み開発者向け：最新のフィードバックデータ</summary>
         <pre id="payloadOutput">まだフィードバックはありません。</pre>
-      </section>
+      </details>
     </main>
 
     <script src="../../dist/patchloop-widget.js"></script>
@@ -82,9 +79,11 @@
         endpoint: "http://localhost:4000/feedback",
         showDeliverySettings: true,
         onSubmit(payload) {
-          document.querySelector("#payloadOutput").textContent = JSON.stringify(payload, null, 2);
+          // Keep the example readable and avoid embedding image data in later captures.
+          document.querySelector("#payloadOutput").textContent = JSON.stringify(payload, (key, value) => key === "dataUrl" ? "[画像データ省略]" : value, 2);
         }
       });
+      document.querySelector("#startReview").addEventListener("click", () => window.PatchLoop.setFeedbackMode(true));
     </script>
   </body>
 </html>

@@ -50,8 +50,8 @@ When the receiver is running, the same bundle is also served at `http://localhos
 
 script-tag widget:
 
-- Right-edge drawer with collapse handle that stays out of the way
-- Comment mode toggle in the drawer header (active state colours the handle)
+- Compact panel opened with the bottom-right Feedback button
+- Add-comment action with a page selection guide and an explicit exit button
 - Click-to-pin location capture and drag-to-select area capture
 - Draft markers that take their final sequential number on submit
 - Comment mode stays active after submit so several spots can be annotated in a row
@@ -122,11 +122,14 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 
 ### Basic flow
 
-1. Click the right-edge handle to open the drawer
-2. Start comment mode
-3. Click a point or drag an area on the page
-4. Write a comment and reviewer name, then submit (Cmd+Enter / Ctrl+Enter also works). Feedback cannot be submitted while the reviewer is blank. Comment mode stays active after submit; end it with the mode button in the drawer header
-5. The comment appears in the drawer list and is also passed to `onSubmit(payload)`. Each item can be edited or deleted from the list
+1. Open the panel with the bottom-right Feedback button
+2. Choose “コメントを追加” (Add comment); the panel collapses and a selection guide appears
+3. Click a point or drag an area. On touch screens, tap a point. With a keyboard, Tab to a page control and press Enter
+4. Enter a comment and reviewer name; both are required. Submit with the button or Cmd+Enter / Ctrl+Enter. Uncheck “画面画像を含める” to omit the screenshot for this comment
+5. Check delivery in the list. Failed requests can be retried after checking connection/settings. Requests time out after 15 seconds without removing the comment. If the same ID has already been received, verify its contents in the inbox
+6. End selection with the guide’s exit button or Escape
+
+Edits and deletions affect this browser only, not received feedback or GitHub Issues. Editing a delivered or exported comment marks it as a local change that has not reached the destination. Screenshot capture does not guarantee masking or removal of hidden content and may include offscreen content; omit the image on sensitive pages.
 
 The reviewer name is saved to `localStorage` after submit and restored the next time the widget starts. The feedback list is also saved to `localStorage` by default and restored after reloads on the same project / demo / page URL, including pins and area overlays. The drawer's clear action removes both visible markers and saved feedback. Set `persistFeedback: false` for memory-only behavior.
 
@@ -180,6 +183,7 @@ node server/receive.js
 - Imports download-mode JSON bundles at `POST /import` (single v1 feedback or array-based v2 batch), storing them in the same inbox format. Duplicate ids are skipped, and the response returns `imported` / `duplicates` / `failed`
 - Renders an inbox of received feedback at `GET /`
 - The inbox has text search plus status / kind / project / demo / reviewer / source / Slack filters
+- The sidebar shows counts by status. Search and filters remain in place after actions, with inline success/error messages. Imports show added/duplicate/failed counts before an explicit inbox refresh.
 - Each feedback has a triage status (`new` / `accepted` / `fixed` / `ignored`) editable from the card; statuses persist to sqlite
 - `POST /feedback/:id/status` updates the status via the API (body: `{"status": "accepted"}`)
 - `DELETE /feedback/:id` removes a feedback and its screenshot (also from the card's delete button)
@@ -299,7 +303,7 @@ HOST=127.0.0.1 PORT=4000 node server/receive.js
 
 ## Slack Direct Mode
 
-Use `deliveryMode: "slack-webhook"` to send directly from the browser to a Slack Incoming Webhook without running the receiver. When the drawer delivery settings are enabled, you can switch the target to `Slack direct` and enter the webhook URL in the UI.
+Use `deliveryMode: "slack-webhook"` to send directly from the browser to a Slack Incoming Webhook without running the receiver. When the drawer delivery settings are enabled, you can switch the target to `Slack に直接送信（結果確認不可）` and enter the webhook URL in the UI.
 
 ```js
 window.PatchLoop.init({
@@ -321,7 +325,7 @@ window.PatchLoop.init({
 });
 ```
 
-In download mode, comments are not downloaded one-by-one on submit. They collect in the drawer, and the "未送信をまとめてDL（N）" button writes **all unsent comments as a single file** named `<project>-<demo>-<count>-<timestamp>.patchloop-feedback.json`. Exported comments get a sent flag (shown as "DL済み" in the list) and are excluded from the next batch download (editing a sent comment moves it back to unsent). The bundle is a single JSON file for now, not a ZIP. The format is versioned and `feedback` is an array.
+In download mode, comments collect in the panel. “未送信を書き出す（N）” exports **all unexported comments in one JSON file** named `<project>-<demo>-<count>-<timestamp>.patchloop-feedback.json`. “書き出し済み” records that a download started, not that the file was saved or imported. Use “全件を再ダウンロード” to download everything again. Editing an exported comment makes it exportable again, but importing an existing ID skips it as a duplicate; it does not overwrite the received version. The bundle is a versioned JSON file with a `feedback` array.
 
 ```json
 {

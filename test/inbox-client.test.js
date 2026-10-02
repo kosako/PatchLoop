@@ -40,7 +40,9 @@ test("a rejected status edit restores the selection and preserves the list", asy
   assert.equal(card.statusSelect.disabled, false);
   assert.equal(card.hidden, false);
   assert.equal(ui.count.textContent, "1 件");
-  assert.deepEqual(ui.alerts, ["Status rejected"]);
+  assert.equal(card.message.textContent, "Status rejected");
+  assert.equal(card.message.dataset.state, "error");
+  assert.deepEqual(ui.alerts, []);
 });
 
 test("deletion counts the live cards and distinguishes no matches from an empty inbox", async () => {
@@ -76,7 +78,9 @@ test("a failed or cancelled deletion preserves cards and counts", async () => {
   assert.equal(failed.count.textContent, "1 件");
   assert.equal(card.deleteButton.disabled, false);
   assert.equal(card.deleteButton.textContent, "削除");
-  assert.deepEqual(failed.alerts, ["Deletion rejected"]);
+  assert.equal(card.message.textContent, "Deletion rejected");
+  assert.equal(card.message.dataset.state, "error");
+  assert.deepEqual(failed.alerts, []);
 
   const cancelled = createInbox([{ id: "one", status: "new" }], { confirm: false });
   await cancelled.cards[0].deleteButton.fire("click");
@@ -114,7 +118,7 @@ test("import reports missing files, duplicate results, and failed requests", asy
   const duplicate = createInbox([], { replies: [{ ok: false, body: { imported: 0, duplicates: ["existing"], failed: [] } }] });
   duplicate.file.files = [{ text: async () => "{}" }];
   await duplicate.form.fire("submit");
-  assert.match(duplicate.importStatus.textContent, /1 duplicate skipped/);
+  assert.match(duplicate.importStatus.textContent, /重複 1 件はスキップ/);
   assert.equal(duplicate.reloads, 0);
 
   const failed = createInbox([], { replies: [{ ok: false, body: { error: "Import rejected" } }] });
@@ -124,10 +128,82 @@ test("import reports missing files, duplicate results, and failed requests", asy
   assert.equal(failed.importStatus.dataset.state, "error");
 });
 
+test("sidebar counts follow triage changes and reset restores search and status", async () => {
+  const ui = createInbox([{ id: "alpha", status: "new" }, { id: "beta", status: "fixed" }]);
+  await ui.navigation[1].fire("click");
+  assert.equal(ui.statusFilter.value, "new");
+  assert.equal(ui.navigation[1].attributes["aria-pressed"], "true");
+  ui.search.value = "missing";
+  await ui.search.fire("input");
+  assert.equal(ui.navigation[0].badge.textContent, "2");
+  await ui.reset.fire("click");
+  assert.equal(ui.count.textContent, "2 件");
+  assert.equal(ui.search.focused, true);
+  ui.cards[0].statusSelect.value = "fixed";
+  await ui.cards[0].statusSelect.fire("change");
+  assert.equal(ui.navigation[1].badge.textContent, "0");
+  assert.equal(ui.navigation[3].badge.textContent, "2");
+});
+
+test("partial import stays visible and blocks a concurrent submission", async () => {
+  const ui = createInbox([], { replies: [{ ok: true, body: { imported: 1, duplicates: ["one"], failed: [{ error: "invalid" }] } }] });
+  let finishReading;
+  ui.file.files = [{ text: () => new Promise((resolve) => { finishReading = resolve; }) }];
+  const first = ui.form.fire("submit");
+  assert.equal(ui.submit.disabled, true);
+  await ui.form.fire("submit");
+  finishReading("{}");
+  await first;
+  assert.equal(ui.requests.length, 1);
+  assert.match(ui.importStatus.textContent, /1 件を追加.*重複 1 件.*失敗 1 件/);
+  assert.equal(ui.importStatus.dataset.state, "error");
+  assert.equal(ui.reload.hidden, false);
+  assert.equal(ui.submit.disabled, false);
+  assert.equal(ui.reloads, 0);
+  await ui.reload.fire("click");
+  assert.equal(ui.reloads, 1);
+});
+
+test("expired sessions and throttling preserve the user's filter and selection", async () => {
+  for (const [status, expected] of [[401, /ログイン/], [429, /しばらく待って/]]) {
+    const ui = createInbox([{ id: "one", status: "new" }], { replies: [{ ok: false, status, body: {} }] });
+    ui.search.value = "one";
+    ui.cards[0].statusSelect.value = "fixed";
+    await ui.cards[0].statusSelect.fire("change");
+    assert.equal(ui.search.value, "one");
+    assert.equal(ui.cards[0].statusSelect.value, "new");
+    assert.match(ui.cards[0].message.textContent, expected);
+  }
+});
+
+test("GitHub creation and existing-issue recovery replace the action with a safe link", async () => {
+  for (const status of [201, 409]) {
+    const ui = createInbox([{ id: "one", status: "new" }], { replies: [{ ok: status === 201, status,
+      body: { github: { issueNumber: 42, url: "https://github.com/example/demo/issues/42" } } }] });
+    await ui.cards[0].githubButton.fire("click");
+    assert.equal(ui.cards[0].githubLink.href, "https://github.com/example/demo/issues/42");
+    assert.equal(ui.cards[0].githubLink.focused, true);
+    assert.equal(ui.cards[0].dataset.github, "created");
+    assert.equal(ui.reloads, 0);
+  }
+});
+
+test("an invalid created-issue URL never enables duplicate creation or an unsafe link", async () => {
+  const ui = createInbox([{ id: "one", status: "new" }], { replies: [{ ok: true,
+    body: { github: { issueNumber: 42, url: "javascript:alert(1)" } } }] });
+  await ui.cards[0].githubButton.fire("click");
+  assert.equal(ui.cards[0].githubLink, undefined);
+  assert.equal(ui.cards[0].githubButton.disabled, true);
+  assert.match(ui.cards[0].message.textContent, /ページを更新/);
+});
+
 function element(properties = {}) {
   const listeners = new Map();
   return {
     dataset: {}, value: "", hidden: false, disabled: false, textContent: "",
+    attributes: {}, focused: false,
+    focus() { this.focused = true; },
+    setAttribute(name, value) { this.attributes[name] = value; },
     ...properties,
     addEventListener(type, callback) {
       const callbacks = listeners.get(type) || [];
@@ -146,18 +222,28 @@ function createInbox(rows, options = {}) {
     total: element(), count: element(), search: element(),
     inboxEmpty: element({ hidden: rows.length > 0 }), filteredEmpty: element({ hidden: true }),
     importStatus: element(), file: element({ files: [] }),
+    message: element(), submit: element(), reload: element({ hidden: true }), reset: element(),
     statusFilter: element({ dataset: { filterKey: "status" } })
   };
+  ui.navigation = ["", "new", "accepted", "fixed", "ignored"].map((status) => {
+    const badge = element();
+    return element({ dataset: { statusNav: status }, badge, querySelector: () => badge });
+  });
   for (const row of rows) {
-    const card = element({ dataset: { status: row.status, search: row.id } });
+    const message = element();
+    const card = element({ dataset: { status: row.status, search: row.id }, message,
+      querySelector: (selector) => selector === "[data-action-status]" ? message : null });
     card.remove = () => { ui.cards.splice(ui.cards.indexOf(card), 1); };
     card.statusSelect = element({ value: row.status, dataset: { feedbackId: row.id }, closest: () => card });
     card.deleteButton = element({ dataset: { feedbackId: row.id }, closest: () => card });
+    card.githubButton = element({ dataset: { feedbackId: row.id }, closest: () => card,
+      replaceWith: (link) => { card.githubLink = link; } });
     ui.cards.push(card);
   }
   ui.form = element({
     querySelector(selector) {
-      return { "[data-import-file]": ui.file, "[data-import-status]": ui.importStatus }[selector] || null;
+      return { "[data-import-file]": ui.file, "[data-import-status]": ui.importStatus,
+        'button[type="submit"]': ui.submit, "[data-import-reload]": ui.reload }[selector] || null;
     }
   });
   ui.panel = rows.length ? element({
@@ -176,20 +262,24 @@ function createInbox(rows, options = {}) {
         "[data-filter-panel]": ui.panel,
         "[data-total-count]": ui.total,
         "[data-filter-empty]": ui.filteredEmpty,
-        "[data-inbox-empty]": ui.inboxEmpty
+        "[data-inbox-empty]": ui.inboxEmpty,
+        "[data-inbox-status]": ui.message
       }[selector] || null;
     },
     querySelectorAll(selector) {
       if (selector === "[data-card]") return ui.cards.slice();
       if (selector === "[data-status-select]") return ui.cards.map((card) => card.statusSelect);
       if (selector === "[data-delete-feedback]") return ui.cards.map((card) => card.deleteButton);
-      if (selector === "[data-github-create]") return [];
+      if (selector === "[data-github-create]") return ui.cards.map((card) => card.githubButton);
+      if (selector === "[data-status-nav]") return ui.navigation;
+      if (selector === "[data-filter-reset]") return [ui.reset];
       throw new Error(`Unexpected selector: ${selector}`);
-    }
+    },
+    createElement: () => element()
   };
   const replies = (options.replies || []).slice();
   vm.runInNewContext(script, {
-    document,
+    document, URL,
     window: {
       confirm: () => options.confirm !== false,
       alert: (message) => ui.alerts.push(message),
@@ -198,7 +288,7 @@ function createInbox(rows, options = {}) {
     fetch: async (url, requestOptions) => {
       ui.requests.push({ url, options: requestOptions });
       const reply = replies.shift() || { ok: true, body: {} };
-      return { ok: reply.ok, json: async () => reply.body };
+      return { ok: reply.ok, status: reply.status, json: async () => reply.body };
     }
   });
   return ui;

@@ -670,7 +670,7 @@ const { captureScreenshot } = __pl_widget_src_screenshot;
 // v2 adds the optional sourceContext block (#96).
 const PAYLOAD_SCHEMA_VERSION = 2;
 
-function buildPayload(comment, reviewer, target) {
+function buildPayload(comment, reviewer, target, includeScreenshot = state.options.captureScreenshot) {
   return {
     schemaVersion: PAYLOAD_SCHEMA_VERSION,
     id: generateFeedbackId(),
@@ -706,7 +706,7 @@ function buildPayload(comment, reviewer, target) {
       browser: navigator.userAgent,
       language: navigator.language
     },
-    screenshot: captureScreenshot(target),
+    screenshot: includeScreenshot ? captureScreenshot(target) : null,
     createdAt: new Date().toISOString()
   };
 }
@@ -906,6 +906,9 @@ const EXPORT_KIND = "patchloop-feedback-bundle";
 // the switch to batch download.
 const EXPORT_VERSION = 2;
 let pendingInit = null;
+const captureEvents = typeof window.PointerEvent === "function"
+  ? ["pointerdown", "pointermove", "pointerup"]
+  : ["mousedown", "mousemove", "mouseup"];
 
 function init(options = {}) {
   cancelPendingInit();
@@ -945,11 +948,15 @@ function destroy() {
   cancelPendingInit();
   document.documentElement.classList.remove("pl-feedback-active");
   document.querySelector("[data-patchloop-style]")?.remove();
-  document.removeEventListener("mousedown", handleDocumentMouseDown, true);
-  document.removeEventListener("mousemove", handleDocumentMouseMove, true);
-  document.removeEventListener("mouseup", handleDocumentMouseUp, true);
+  document.removeEventListener(captureEvents[0], handleDocumentMouseDown, true);
+  document.removeEventListener(captureEvents[1], handleDocumentMouseMove, true);
+  document.removeEventListener(captureEvents[2], handleDocumentMouseUp, true);
+  document.removeEventListener("pointercancel", cancelCaptureDrag, true);
+  document.removeEventListener("keydown", handleCaptureKeydown, true);
   document.removeEventListener("click", suppressDocumentClick, true);
   window.removeEventListener("resize", handleWindowResize);
+  window.visualViewport?.removeEventListener("resize", positionVisibleCommentForm);
+  window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
   window.clearTimeout(state.resizeTimer);
   state.approximateIds.clear();
   document.querySelector("[data-patchloop-root]")?.remove();
@@ -984,39 +991,47 @@ function renderShell() {
   root.dataset.patchloopRoot = "true";
   root.className = `pl-root pl-${state.options.position}`;
   root.innerHTML = `
-    <section class="pl-panel pl-collapsed" data-pl-panel>
+    <section class="pl-panel pl-collapsed" data-pl-panel aria-label="PatchLoop フィードバック">
       <header>
-        <button type="button" class="pl-handle" data-pl-collapse aria-expanded="false" title="展開">‹</button>
+        <button type="button" class="pl-handle" data-pl-collapse aria-expanded="false" title="フィードバックを開く">フィードバック</button>
         <strong class="pl-title">PatchLoop</strong>
-        <button type="button" class="pl-mode" data-pl-mode>コメントモード開始</button>
       </header>
       <div class="pl-panel-body" data-pl-body>
-        <p data-pl-help>コメントモードを開始して、画面上の気になる場所をクリックしてください。</p>
+        <div class="pl-compose"><button type="button" class="pl-mode" data-pl-mode aria-pressed="false">コメントを追加</button><p data-pl-help>気になる場所を選んで、改善のヒントを残しましょう。</p></div>
+        <p class="pl-notice" data-pl-notice role="status" aria-live="polite" hidden></p>
+        <div class="pl-list-heading"><strong>このページのコメント</strong><span data-pl-count>0</span></div>
+        <div class="pl-feedback-list" data-pl-list>
+          <p class="pl-feedback-list-empty">まだコメントはありません。</p>
+        </div>
         <div class="pl-actions">
           <button type="button" data-pl-download-all hidden>未送信をまとめてDL</button>
-          <button type="button" data-pl-clear>フィードバックを消す</button>
+          <button type="button" data-pl-download-again hidden>全件を再ダウンロード</button>
+          <button type="button" data-pl-clear hidden>この端末のコメントを消す</button>
         </div>
         ${renderDeliverySettings()}
-        <div class="pl-feedback-list" data-pl-list>
-          <p class="pl-feedback-list-empty">まだフィードバックはありません。</p>
-        </div>
       </div>
     </section>
+    <div class="pl-capture-guide" data-pl-capture-guide hidden><span>場所をクリック・タップして選択<small>Tab + Enter でも選べます</small></span><button type="button" data-pl-stop-capture>終了</button></div>
     <div class="pl-tooltip" id="pl-feedback-tooltip" role="tooltip" data-pl-tooltip hidden></div>
     <form class="pl-comment" data-pl-comment hidden>
+      <div class="pl-form-heading"><strong data-pl-form-title>コメントを追加</strong><span>気づいたことを、ひとつずつ。</span></div>
       <label>
         コメント
-        <textarea data-pl-comment-text rows="4" placeholder="ここで何を直したいですか？"></textarea>
+        <textarea data-pl-comment-text rows="4" placeholder="どこを、どう変えるとよくなりますか？" required aria-describedby="pl-reviewer-error"></textarea>
       </label>
       <label>
         投稿者
-        <input data-pl-reviewer value="${escapeHtml(state.options.reviewer)}" placeholder="名前" aria-describedby="pl-reviewer-error" />
+        <input data-pl-reviewer value="${escapeHtml(state.options.reviewer)}" placeholder="表示名" required aria-describedby="pl-reviewer-error" />
       </label>
-      <p class="pl-form-error" id="pl-reviewer-error" data-pl-form-error hidden></p>
+      <label class="pl-screenshot-option" data-pl-screenshot-field><input type="checkbox" data-pl-include-screenshot${state.options.captureScreenshot ? " checked" : ""} />画面画像を含める</label>
+      <p class="pl-capture-note" data-pl-capture-note>画像には画面外の内容が含まれる場合があります。機密情報のあるページでは外してください。</p>
+      <p class="pl-form-error" id="pl-reviewer-error" data-pl-form-error role="alert" hidden></p>
+      <p class="pl-edit-note" data-pl-edit-note hidden>編集はこの端末に保存されます。受信済みの内容や作成済みの Issue は更新されません。</p>
       <div class="pl-form-actions">
         <button type="button" data-pl-cancel>キャンセル</button>
-        <button type="submit">送信</button>
+        <button type="submit" data-pl-submit>コメントを送る</button>
       </div>
+      <small class="pl-keyboard-hint">⌘ / Ctrl + Enter で確定 · Esc でキャンセル</small>
     </form>
   `;
 
@@ -1024,12 +1039,18 @@ function renderShell() {
 
   root.querySelector("[data-pl-collapse]").addEventListener("click", toggleCollapse);
   root.querySelector("[data-pl-mode]").addEventListener("click", toggleFeedbackMode);
+  root.querySelector("[data-pl-stop-capture]")?.addEventListener("click", () => setFeedbackMode(false));
   root.querySelector("[data-pl-download-all]").addEventListener("click", downloadUnsentFeedback);
-  root.querySelector("[data-pl-clear]").addEventListener("click", clearPins);
+  root.querySelector("[data-pl-download-again]")?.addEventListener("click", () => downloadFeedbackItems(state.feedback));
+  root.querySelector("[data-pl-clear]").addEventListener("click", () => {
+    if (state.feedback.some((item) => item.delivery?.pending)) return;
+    if (window.confirm("この端末に保存したコメントをすべて消します。送信先の内容は削除されません。続けますか？")) clearPins();
+  });
   root.querySelector("[data-pl-cancel]").addEventListener("click", cancelPendingComment);
   root.querySelector("[data-pl-comment]").addEventListener("submit", submitComment);
   root.querySelector("[data-pl-comment]").addEventListener("keydown", handleCommentKeydown);
   root.querySelector("[data-pl-reviewer]").addEventListener("input", () => clearFormError(root.querySelector("[data-pl-comment]")));
+  root.querySelector("[data-pl-comment-text]").addEventListener("input", () => clearFormError(root.querySelector("[data-pl-comment]")));
   root.querySelector("[data-pl-list]").addEventListener("click", handleListClick);
   root.querySelector("[data-pl-delivery-settings]")?.addEventListener("input", handleDeliverySettingsInput);
   root.querySelector("[data-pl-delivery-settings]")?.addEventListener("change", handleDeliverySettingsInput);
@@ -1041,14 +1062,14 @@ function renderDeliverySettings() {
 
   return `
         <details class="pl-delivery-settings" data-pl-delivery-settings>
-          <summary>送信設定</summary>
+          <summary>送信先・設定</summary>
           <label>
             送信先
             <select data-pl-delivery-mode>
-              <option value="receiver"${state.options.deliveryMode === "receiver" ? " selected" : ""}>Receiver</option>
-              <option value="slack-webhook"${state.options.deliveryMode === "slack-webhook" ? " selected" : ""}>Slack direct</option>
-              <option value="download"${state.options.deliveryMode === "download" ? " selected" : ""}>Download</option>
-              <option value="none"${state.options.deliveryMode === "none" ? " selected" : ""}>送信なし</option>
+              <option value="receiver"${state.options.deliveryMode === "receiver" ? " selected" : ""}>受信箱へ送信</option>
+              <option value="slack-webhook"${state.options.deliveryMode === "slack-webhook" ? " selected" : ""}>Slack に直接送信（結果確認不可）</option>
+              <option value="download"${state.options.deliveryMode === "download" ? " selected" : ""}>ファイルで共有</option>
+              <option value="none"${state.options.deliveryMode === "none" ? " selected" : ""}>この端末に保存</option>
             </select>
           </label>
           <label data-pl-endpoint-field>
@@ -1064,32 +1085,71 @@ function renderDeliverySettings() {
 }
 
 function bindGlobalCapture() {
-  document.removeEventListener("mousedown", handleDocumentMouseDown, true);
-  document.removeEventListener("mousemove", handleDocumentMouseMove, true);
-  document.removeEventListener("mouseup", handleDocumentMouseUp, true);
+  document.removeEventListener(captureEvents[0], handleDocumentMouseDown, true);
+  document.removeEventListener(captureEvents[1], handleDocumentMouseMove, true);
+  document.removeEventListener(captureEvents[2], handleDocumentMouseUp, true);
   document.removeEventListener("click", suppressDocumentClick, true);
-  document.addEventListener("mousedown", handleDocumentMouseDown, true);
-  document.addEventListener("mousemove", handleDocumentMouseMove, true);
-  document.addEventListener("mouseup", handleDocumentMouseUp, true);
+  document.addEventListener(captureEvents[0], handleDocumentMouseDown, true);
+  document.addEventListener(captureEvents[1], handleDocumentMouseMove, true);
+  document.addEventListener(captureEvents[2], handleDocumentMouseUp, true);
   document.addEventListener("click", suppressDocumentClick, true);
+  document.removeEventListener("pointercancel", cancelCaptureDrag, true);
+  document.addEventListener("pointercancel", cancelCaptureDrag, true);
+  document.removeEventListener("keydown", handleCaptureKeydown, true);
+  document.addEventListener("keydown", handleCaptureKeydown, true);
   window.removeEventListener("resize", handleWindowResize);
   window.addEventListener("resize", handleWindowResize);
+  window.visualViewport?.removeEventListener("resize", positionVisibleCommentForm);
+  window.visualViewport?.addEventListener("resize", positionVisibleCommentForm);
+  window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
+  window.visualViewport?.addEventListener("scroll", positionVisibleCommentForm);
+}
+
+function cancelCaptureDrag() {
+  removeSelectionBox();
+  state.drag = null;
+  state.suppressNextClick = false;
+}
+
+function handleCaptureKeydown(event) {
+  if (!state.active || event.isComposing || event.target.closest("[data-patchloop-root]")) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    cancelPendingComment();
+    setFeedbackMode(false);
+    return;
+  }
+  if (event.key !== "Enter" || event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.target === document.body || event.target === document.documentElement) return;
+  const rect = event.target.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
+  const capture = {
+    target: event.target, button: 0, keyboard: true,
+    clientX: Math.max(0, Math.min(window.innerWidth - 1, rect.left + rect.width / 2)),
+    clientY: Math.max(0, Math.min(window.innerHeight - 1, rect.top + rect.height / 2)),
+    preventDefault: () => event.preventDefault(), stopPropagation: () => event.stopPropagation()
+  };
+  handleDocumentMouseDown(capture);
+  handleDocumentMouseUp(capture);
+  state.suppressNextClick = false;
 }
 
 function handleDocumentMouseDown(event) {
   if (!state.active) return;
   // Secondary/middle buttons keep their native behavior (context menu,
   // autoscroll); capturing them would drop a pin under the context menu.
-  if (event.button !== 0) return;
+  if (event.button !== 0 || event.isPrimary === false) return;
   if (event.target.closest("[data-patchloop-root]")) return;
 
-  event.preventDefault();
+  if (event.pointerType !== "touch") event.preventDefault();
   event.stopPropagation();
 
   state.drag = {
     startedAt: pointFromEvent(event),
     latest: pointFromEvent(event),
     target: event.target,
+    keyboard: event.keyboard === true,
+    touch: event.pointerType === "touch",
     isDragging: false
   };
   state.suppressNextClick = true;
@@ -1097,6 +1157,12 @@ function handleDocumentMouseDown(event) {
 
 function handleDocumentMouseMove(event) {
   if (!state.active || !state.drag) return;
+  // Touch uses a tap to capture. Moving cancels capture and leaves native page
+  // scrolling available, rather than turning every swipe into an area selection.
+  if (state.drag.touch) {
+    if (Math.hypot(event.clientX - state.drag.startedAt.clientX, event.clientY - state.drag.startedAt.clientY) > 8) cancelCaptureDrag();
+    return;
+  }
   // The mouseup can be missed entirely (button released outside the
   // window); event.buttons reports what is actually held, so a move
   // without the primary button cancels the drag instead of dragging
@@ -1134,7 +1200,7 @@ function handleDocumentMouseUp(event) {
   const start = state.drag.startedAt;
   const end = pointFromEvent(event);
   const rect = rectFromPoints(start, end, viewportMetrics());
-  const target = document.elementFromPoint(start.clientX, start.clientY) || state.drag.target;
+  const target = state.drag.keyboard ? state.drag.target : document.elementFromPoint(start.clientX, start.clientY) || state.drag.target;
 
   discardPendingMarker();
   // A new capture supersedes an interrupted edit; a stale editingId would
@@ -1210,18 +1276,26 @@ function toggleFeedbackMode() {
 }
 
 function setFeedbackMode(nextValue) {
+  const root = getRoot();
+  if (!root) return;
   state.active = nextValue;
   document.documentElement.classList.toggle("pl-feedback-active", state.active);
-  const root = getRoot();
   const handleBtn = root.querySelector("[data-pl-collapse]");
   if (handleBtn) handleBtn.classList.toggle("pl-mode-on", state.active);
   const modeBtn = root.querySelector("[data-pl-mode]");
-  modeBtn.textContent = state.active ? "コメントモード終了" : "コメントモード開始";
+  modeBtn.textContent = state.active ? "場所の選択を終了" : "コメントを追加";
   modeBtn.setAttribute("aria-pressed", String(state.active));
-  root.querySelector("[data-pl-help]").textContent = state.active ? "点をクリック、または範囲をドラッグしてコメントできます。" : "コメントモードを開始して、画面上の気になる場所をクリックしてください。";
+  const guide = root.querySelector("[data-pl-capture-guide]");
+  if (guide) guide.hidden = !state.active;
+  if (state.active) {
+    state.collapsed = true;
+    applyCollapseState();
+  }
+  root.querySelector("[data-pl-help]").textContent = state.active ? "場所をクリック、または範囲をドラッグ。Tab で移動し Enter でも選べます。Esc で終了。" : "気になる場所を選んで、改善のヒントを残しましょう。";
   if (!state.active) {
     removeSelectionBox();
     state.drag = null;
+    state.suppressNextClick = false;
   }
 }
 
@@ -1232,16 +1306,48 @@ function openCommentForm(point, options = {}) {
     state.commentReturnFocus = focused !== document.body && focused !== document.documentElement ? focused : null;
   }
   form.hidden = false;
+  const editing = Boolean(state.editingId);
+  const title = form.querySelector("[data-pl-form-title]");
+  if (title) title.textContent = editing ? "コメントを編集" : "コメントを追加";
+  const submit = form.querySelector("[data-pl-submit]");
+  if (submit) submit.textContent = editing ? "変更を保存" : "コメントを送る";
+  const editNote = form.querySelector("[data-pl-edit-note]");
+  if (editNote) editNote.hidden = !editing;
+  const screenshotField = form.querySelector("[data-pl-screenshot-field]");
+  const captureNote = form.querySelector("[data-pl-capture-note]");
+  if (screenshotField) screenshotField.hidden = editing || !state.options.captureScreenshot;
+  if (captureNote) captureNote.hidden = editing || !state.options.captureScreenshot;
+  const screenshotInput = form.querySelector("[data-pl-include-screenshot]");
+  if (screenshotInput) screenshotInput.checked = state.options.captureScreenshot;
   clearFormError(form);
-  form.style.left = `${Math.max(8, Math.min(point.clientX + 14, window.innerWidth - 340))}px`;
-  form.style.top = `${Math.max(8, Math.min(point.clientY + 14, window.innerHeight - 250))}px`;
   const commentEl = form.querySelector("[data-pl-comment-text]");
   const reviewerEl = form.querySelector("[data-pl-reviewer]");
   commentEl.value = options.comment != null ? options.comment : "";
   if (options.reviewer != null) {
     reviewerEl.value = options.reviewer;
   }
-  commentEl.focus();
+  positionCommentForm(form, point);
+  commentEl.focus({ preventScroll: true });
+}
+
+function positionVisibleCommentForm() {
+  const form = getRoot()?.querySelector("[data-pl-comment]");
+  if (!form || form.hidden) return;
+  const rect = form.getBoundingClientRect();
+  positionCommentForm(form, { clientX: rect.left - 14, clientY: rect.top - 14 });
+}
+
+function positionCommentForm(form, point) {
+  // The form's height varies with settings and viewport; keep all actions in view.
+  const viewport = window.visualViewport;
+  const left = viewport?.offsetLeft || 0;
+  const top = viewport?.offsetTop || 0;
+  const width = viewport?.width || window.innerWidth;
+  const height = viewport?.height || window.innerHeight;
+  form.style.maxHeight = `${Math.max(100, height - 16)}px`;
+  const rect = form.getBoundingClientRect();
+  form.style.left = `${Math.max(left + 8, Math.min(point.clientX + 14, left + width - rect.width - 8))}px`;
+  form.style.top = `${Math.max(top + 8, Math.min(point.clientY + 14, top + height - rect.height - 8))}px`;
 }
 
 function closeCommentForm() {
@@ -1325,7 +1431,11 @@ async function submitComment(event) {
   const form = root.querySelector("[data-pl-comment]");
   const comment = root.querySelector("[data-pl-comment-text]").value.trim();
   const reviewer = root.querySelector("[data-pl-reviewer]").value.trim();
-  if (!comment) return;
+  if (!comment) {
+    showFormError(form, "コメントを入力してください。");
+    root.querySelector("[data-pl-comment-text]").focus();
+    return;
+  }
   if (!reviewer) {
     showFormError(form, "投稿者名を入力してください。");
     root.querySelector("[data-pl-reviewer]").focus();
@@ -1339,8 +1449,8 @@ async function submitComment(event) {
       const changed = target.comment !== comment || target.reviewer !== reviewer;
       target.comment = comment;
       target.reviewer = reviewer;
-      // An edited comment that was already exported must re-enter the unsent
-      // batch, otherwise the correction never reaches the receiver.
+      if (changed && (target.delivery?.ok || target.exported)) target.localEdited = true;
+      // Re-export the local change; receivers still deduplicate the original ID.
       if (changed && target.exported) {
         delete target.exported;
         delete target.exportedAt;
@@ -1353,13 +1463,17 @@ async function submitComment(event) {
     }
     state.editingId = null;
     closeCommentForm();
+    showWidgetNotice("変更をこの端末に保存しました。送信先の内容は更新されません。");
     return;
   }
 
   if (!state.pendingTarget) return;
 
   saveReviewer(reviewer);
-  const payload = buildPayload(comment, reviewer, state.pendingTarget);
+  const includeScreenshot = form.querySelector("[data-pl-include-screenshot]")?.checked ?? state.options.captureScreenshot;
+  const payload = buildPayload(comment, reviewer, state.pendingTarget, includeScreenshot);
+  const delivering = shouldDeliverFeedback();
+  if (delivering) payload.delivery = { pending: true };
   state.feedback.unshift(payload);
   finalizePendingMarker(payload);
   persistFeedbackList();
@@ -1377,11 +1491,22 @@ async function submitComment(event) {
     }
   }
 
-  if (shouldDeliverFeedback()) {
+  if (delivering) {
     await deliverFeedback(payload);
     persistFeedbackList();
     renderFeedbackList();
+    showWidgetNotice(deliveryStatusText(payload.delivery), payload.delivery.ok === false);
+  } else {
+    showWidgetNotice(state.options.deliveryMode === "download" ? "コメントを保存しました。「未送信を書き出す」から共有できます。" : "コメントをこの端末に保存しました。外部には送信していません。");
   }
+}
+
+function showWidgetNotice(message, error = false) {
+  const notice = getRoot()?.querySelector("[data-pl-notice]");
+  if (!notice) return;
+  notice.textContent = message;
+  notice.dataset.state = error ? "error" : "success";
+  notice.hidden = false;
 }
 
 function reportSubmitCallbackError(error) {
@@ -1394,7 +1519,7 @@ async function postFeedback(payload) {
     if (state.options.ingestKey) {
       headers["X-PatchLoop-Ingest-Key"] = state.options.ingestKey;
     }
-    const response = await fetch(state.options.endpoint, {
+    const response = await fetchWithTimeout(state.options.endpoint, {
       method: "POST",
       headers,
       body: JSON.stringify(payload)
@@ -1404,6 +1529,16 @@ async function postFeedback(payload) {
     payload.delivery = { ok: false, error: error.message };
   }
   console.info("[PatchLoop] delivery", payload.id, payload.delivery);
+}
+
+async function fetchWithTimeout(url, options) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 15000);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 function restorePersistedFeedback() {
@@ -1417,6 +1552,9 @@ function restorePersistedFeedback() {
   if (!stored.length) return;
 
   state.feedback = stored;
+  state.feedback.forEach((item) => {
+    if (item.delivery?.pending) item.delivery = { ok: false, error: "送信結果未確認" };
+  });
   restoreFeedbackMarkers();
   persistFeedbackList();
 }
@@ -1445,17 +1583,28 @@ async function deliverFeedback(payload) {
 // a file per click.
 function downloadUnsentFeedback() {
   const unsent = state.feedback.filter((item) => !item.exported);
-  if (unsent.length === 0) return;
+  downloadFeedbackItems(unsent);
+}
+
+function downloadFeedbackItems(items) {
+  if (items.length === 0) return;
 
   const exportedAt = new Date().toISOString();
   try {
-    const bundle = buildFeedbackBundle(unsent, exportedAt);
+    const bundle = buildFeedbackBundle(items.map((item) => {
+      const copy = { ...item };
+      delete copy.exported;
+      delete copy.exportedAt;
+      delete copy.exportedFileName;
+      delete copy.localEdited;
+      return copy;
+    }), exportedAt);
     const json = JSON.stringify(bundle, null, 2);
     const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = batchBundleFileName(unsent.length);
+    link.download = batchBundleFileName(items.length);
     link.style.display = "none";
     document.body.append(link);
     link.click();
@@ -1463,15 +1612,17 @@ function downloadUnsentFeedback() {
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
     // Flag after the bundle is serialized, so the downloaded file does not
     // carry the local exported markers.
-    unsent.forEach((item) => {
+    items.forEach((item) => {
       item.exported = true;
       item.exportedAt = exportedAt;
       item.exportedFileName = link.download;
     });
     persistFeedbackList();
     renderFeedbackList();
-    console.info("[PatchLoop] batch download", unsent.length, link.download);
+    showWidgetNotice("ファイルの保存を開始しました。保存できなかった場合は「全件を再ダウンロード」を使ってください。");
+    console.info("[PatchLoop] batch download", items.length, link.download);
   } catch (error) {
+    showWidgetNotice("ファイルを書き出せませんでした。もう一度お試しください。", true);
     console.warn("[PatchLoop] batch download failed", error);
   }
 }
@@ -1499,6 +1650,8 @@ function updateDownloadAllButton() {
   if (!root) return;
   const button = root.querySelector("[data-pl-download-all]");
   if (!button) return;
+  const again = root.querySelector("[data-pl-download-again]");
+  if (again) again.hidden = state.options.deliveryMode !== "download" || state.feedback.length === 0;
   if (state.options.deliveryMode !== "download") {
     button.hidden = true;
     return;
@@ -1506,12 +1659,12 @@ function updateDownloadAllButton() {
   const unsent = state.feedback.filter((item) => !item.exported).length;
   button.hidden = false;
   button.disabled = unsent === 0;
-  button.textContent = unsent > 0 ? `未送信をまとめてDL（${unsent}）` : "未送信はありません";
+  button.textContent = unsent > 0 ? `未送信を書き出す（${unsent}）` : "すべて書き出し済み";
 }
 
 async function postSlackWebhook(payload) {
   try {
-    await fetch(state.options.slackWebhookUrl, {
+    await fetchWithTimeout(state.options.slackWebhookUrl, {
       method: "POST",
       mode: "no-cors",
       headers: { "Content-Type": "text/plain;charset=UTF-8" },
@@ -1817,6 +1970,7 @@ function setMarkerApproximate(marker, isApproximate) {
 }
 
 function handleWindowResize() {
+  positionVisibleCommentForm();
   window.clearTimeout(state.resizeTimer);
   state.resizeTimer = window.setTimeout(reanchorAllMarkers, 200);
 }
@@ -1937,8 +2091,9 @@ function applyCollapseState() {
   const button = root.querySelector("[data-pl-collapse]");
   if (button) {
     button.setAttribute("aria-expanded", String(!state.collapsed));
-    button.textContent = state.collapsed ? "‹" : "›";
-    button.setAttribute("title", state.collapsed ? "展開" : "折りたたみ");
+    button.textContent = state.collapsed ? "フィードバック" : "閉じる";
+    button.setAttribute("title", state.collapsed ? "フィードバックを開く" : "フィードバックを閉じる");
+    button.setAttribute("aria-label", state.collapsed ? "フィードバックを開く" : "フィードバックを閉じる");
   }
 }
 
@@ -1955,26 +2110,35 @@ function renderFeedbackList() {
   const list = root.querySelector("[data-pl-list]");
   if (!list) return;
   updateDownloadAllButton();
+  const count = root.querySelector("[data-pl-count]");
+  if (count) count.textContent = String(state.feedback.length);
+  const clear = root.querySelector("[data-pl-clear]");
+  if (clear) clear.hidden = state.feedback.length === 0;
+  if (clear) clear.disabled = state.feedback.some((item) => item.delivery?.pending);
   if (state.feedback.length === 0) {
-    list.innerHTML = '<p class="pl-feedback-list-empty">まだフィードバックはありません。</p>';
+    list.innerHTML = '<p class="pl-feedback-list-empty">まだコメントはありません。<br />「コメントを追加」から最初の気づきを残しましょう。</p>';
     return;
   }
   list.innerHTML = state.feedback
     .map((item, i) => {
       const num = state.feedback.length - i;
       const kind = (item.target && item.target.kind) || "point";
-      const delivery = item.delivery
+      const delivery = item.localEdited
+        ? '<span class="pl-feedback-status pl-feedback-status-unknown">ローカル変更・送信先には未反映</span>'
+        : item.delivery?.pending
+          ? '<span class="pl-feedback-status pl-feedback-status-unknown">送信中…</span>'
+        : item.delivery
         ? item.delivery.ok === null
-          ? `<span class="pl-feedback-status pl-feedback-status-unknown" title="${escapeHtml(deliveryStatusText(item.delivery))}">?</span>`
+          ? `<span class="pl-feedback-status pl-feedback-status-unknown" title="${escapeHtml(deliveryStatusText(item.delivery))}">結果未確認</span>`
           : item.delivery.ok
-            ? `<span class="pl-feedback-status pl-feedback-status-ok" title="${escapeHtml(deliveryStatusText(item.delivery))}">✓</span>`
-            : `<span class="pl-feedback-status pl-feedback-status-fail" title="${escapeHtml(deliveryStatusText(item.delivery))}">✗</span>`
+            ? `<span class="pl-feedback-status pl-feedback-status-ok" title="${escapeHtml(deliveryStatusText(item.delivery))}">送信済み</span>`
+            : `<span class="pl-feedback-status pl-feedback-status-fail" title="${escapeHtml(deliveryStatusText(item.delivery))}">送信失敗</span>`
         : "";
       const approximate = state.approximateIds.has(item.id)
         ? '<span class="pl-feedback-approx" title="ウィンドウサイズが変わったため、位置が近似になっています">≈</span>'
         : "";
       const exported = item.exported
-        ? `<span class="pl-feedback-exported" title="${escapeHtml(`ダウンロード済み: ${item.exportedFileName || ""}`.trim())}">DL済み</span>`
+        ? `<span class="pl-feedback-exported" title="${escapeHtml(`書き出し済み: ${item.exportedFileName || ""}`.trim())}">書き出し済み</span>`
         : "";
       return `
         <article class="pl-feedback-item${item.exported ? " pl-feedback-item-exported" : ""}" data-feedback-id="${escapeHtml(item.id)}">
@@ -1984,8 +2148,9 @@ function renderFeedbackList() {
             <div class="pl-feedback-text">${escapeHtml(item.comment || "")}</div>
           </div>
           <div class="pl-feedback-actions">
-            <button type="button" data-pl-edit title="編集">編集</button>
-            <button type="button" data-pl-delete title="削除">削除</button>
+            ${item.delivery?.ok === false && !item.localEdited && item.delivery.status !== 409 ? '<button type="button" data-pl-retry>再送</button>' : ""}
+            <button type="button" data-pl-edit title="この端末のコメントを編集"${item.delivery?.pending ? " disabled" : ""}>編集</button>
+            <button type="button" data-pl-delete title="この端末のコメントを削除"${item.delivery?.pending ? " disabled" : ""}>削除</button>
           </div>
         </article>
       `;
@@ -1995,17 +2160,19 @@ function renderFeedbackList() {
 
 function deliveryStatusText(delivery) {
   if (!delivery) return "";
+  if (delivery.pending) return "送信しています…";
   if (delivery.target === "download") {
     if (delivery.ok) return `downloaded ${delivery.fileName || ""}`.trim();
     return `download failed: ${delivery.error || "unknown error"}`;
   }
   if (delivery.target === "slack-webhook") {
-    if (delivery.ok === null) return "posted to Slack direct (result unknown: no-cors)";
-    if (delivery.ok) return "sent to Slack direct";
-    return `Slack direct failed: ${delivery.error || "unknown error"}`;
+    if (delivery.ok === null) return "Slack への送信を開始しました。ブラウザから送信結果は確認できません。";
+    if (delivery.ok) return "Slack に送信しました。";
+    return "Slack に送信できませんでした。送信先・設定を確認してください。";
   }
-  if (delivery.ok) return `delivered ${delivery.status || ""}`.trim();
-  return `delivery failed: ${delivery.error || delivery.status || "unknown error"}`;
+  if (delivery.ok) return "受信箱に送信しました。";
+  if (delivery.status === 409) return "同じ ID が受信済みです。受信箱の内容を確認してください。";
+  return "送信できませんでした。コメントはこの端末に残っています。送信先・接続を確認してください。";
 }
 
 function renumberMarkers() {
@@ -2028,6 +2195,9 @@ function handleListClick(event) {
   const itemEl = event.target.closest("[data-feedback-id]");
   if (!itemEl) return;
   const id = itemEl.dataset.feedbackId;
+  if (event.target.closest("[data-pl-retry]")) {
+    return retryFeedback(id);
+  }
   if (event.target.closest("[data-pl-edit]")) {
     startEditFeedback(id);
     return;
@@ -2035,6 +2205,23 @@ function handleListClick(event) {
   if (event.target.closest("[data-pl-delete]")) {
     deleteFeedback(id);
   }
+}
+
+async function retryFeedback(id) {
+  const item = state.feedback.find((entry) => entry.id === id);
+  if (!item || item.delivery?.pending || item.localEdited) return;
+  if (!shouldDeliverFeedback()) {
+    showWidgetNotice("送信先・設定を確認してください。ファイル共有の場合は書き出しを使います。", true);
+    return;
+  }
+  item.delivery = { pending: true };
+  persistFeedbackList();
+  renderFeedbackList();
+  await deliverFeedback(item);
+  persistFeedbackList();
+  renderFeedbackList();
+  showWidgetNotice(deliveryStatusText(item.delivery), item.delivery.ok === false);
+  getRoot()?.querySelector("[data-pl-collapse]")?.focus({ preventScroll: true });
 }
 
 function startEditFeedback(id) {
@@ -2204,44 +2391,44 @@ function injectStyles() {
   const style = document.createElement("style");
   style.dataset.patchloopStyle = "true";
   style.textContent = `
-    .pl-root, .pl-root * { box-sizing: border-box; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .pl-root, .pl-root * { box-sizing: border-box; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: normal; }
     .pl-root [hidden], .pl-comment[hidden], .pl-tooltip[hidden] { display: none !important; }
-    .pl-root { position: fixed; z-index: 2147483000; color: #14211d; right: 0; bottom: 20px; }
-    .pl-panel { position: absolute; right: 0; bottom: 0; width: min(390px, calc(100vw - 32px)); background: #fff; border: 1px solid #d9e1dd; border-radius: 8px 0 0 8px; box-shadow: 0 22px 70px rgba(20, 33, 29, 0.22); overflow: hidden; transition: transform 250ms ease; }
-    .pl-panel header { min-height: 44px; padding: 0 8px 0 6px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #d9e1dd; }
-    .pl-title { flex: 1; min-width: 0; }
-    .pl-handle { min-width: 32px; height: 32px; padding: 0; border: 0; background: transparent; cursor: pointer; font-size: 20px; color: #14211d; border-radius: 6px; font-weight: 700; transition: background 150ms ease, color 150ms ease; }
+    .pl-root { position: fixed; z-index: 2147483000; color: #14211d; right: 20px; bottom: max(20px, env(safe-area-inset-bottom)); font-size: 14px; line-height: 1.5; text-align: left; }
+    .pl-panel { position: absolute; right: 0; bottom: 0; width: min(400px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); background: #fff; border: 1px solid #d9e1dd; border-radius: 16px; box-shadow: 0 18px 65px rgba(20, 33, 29, 0.16); overflow: auto; overscroll-behavior: contain; }
+    .pl-panel header { min-height: 64px; padding: 12px 20px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #edf1ee; }
+    .pl-title { flex: 1; min-width: 0; font-size: 17px; font-weight: 750; order: -1; }
+    .pl-handle { min-width: 42px; min-height: 36px; padding: 6px 10px; border: 0; background: #f2f6f3; cursor: pointer; font-size: 11px; color: #42584c; border-radius: 8px; font-weight: 600; }
     .pl-handle:hover { background: #f0f3ef; }
     .pl-handle.pl-mode-on { background: #b83d4d; color: #fff; }
     .pl-handle.pl-mode-on:hover { background: #9f3442; }
-    .pl-mode { min-height: 30px; padding: 0 12px; border-radius: 999px; border: 1px solid #0f7b63; background: #0f7b63; color: #fff; font-weight: 800; font-size: 12px; cursor: pointer; }
+    .pl-mode { display: block; width: 100%; min-height: 44px; padding: 10px 16px; border-radius: 9px; border: 1px solid #0f7b63; background: #0f7b63; color: #fff; font-weight: 650; font-size: 13px; cursor: pointer; }
     .pl-mode[aria-pressed="true"] { background: #b83d4d; border-color: #b83d4d; }
-    .pl-panel.pl-collapsed { transform: translateX(calc(100% - 44px)); }
-    .pl-panel.pl-collapsed header { border-bottom: 0; }
+    .pl-panel.pl-collapsed { width: auto; min-width: 152px; border-radius: 999px; overflow: hidden; background: #0f7b63; border-color: #0f7b63; }
+    .pl-panel.pl-collapsed header { padding: 0; min-height: 48px; border-bottom: 0; }
     .pl-panel.pl-collapsed .pl-title,
     .pl-panel.pl-collapsed .pl-mode { display: none; }
     .pl-panel.pl-collapsed .pl-panel-body { display: none; }
-    .pl-panel p { margin: 0; padding: 14px; color: #65716d; font-size: 13px; }
-    .pl-actions { display: flex; gap: 8px; padding: 0 14px 14px; }
-    .pl-actions button, .pl-form-actions button { min-height: 36px; border-radius: 8px; border: 1px solid #d9e1dd; background: #fff; color: #14211d; padding: 0 12px; cursor: pointer; }
+    .pl-panel p { margin: 0; color: #65716d; font-size: 12px; line-height: 1.7; }
+    .pl-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 20px 18px; }
+    .pl-actions button, .pl-form-actions button { min-height: 40px; border-radius: 8px; border: 1px solid #d9e1dd; background: #fff; color: #14211d; padding: 8px 12px; cursor: pointer; font-size: 12px; font-weight: 600; }
     .pl-actions [data-pl-download-all] { background: #0f7b63; border-color: #0f7b63; color: #fff; font-weight: 800; }
     .pl-actions [data-pl-download-all]:disabled { background: #cfd8d4; border-color: #cfd8d4; color: #fff; cursor: default; }
     .pl-form-actions button[type="submit"] { background: #0f7b63; border-color: #0f7b63; color: #fff; font-weight: 800; }
-    .pl-delivery-settings { margin: 0 14px 14px; border: 1px solid #d9e1dd; border-radius: 8px; padding: 8px 10px 10px; background: #f7f8f5; }
-    .pl-delivery-settings summary { cursor: pointer; color: #14211d; font-weight: 800; font-size: 12px; }
+    .pl-delivery-settings { margin: 0 20px 20px; border-top: 1px solid #d9e1dd; padding-top: 14px; background: #fff; }
+    .pl-delivery-settings summary { cursor: pointer; color: #65716d; font-weight: 600; font-size: 12px; }
     .pl-delivery-settings label { display: grid; gap: 5px; margin-top: 8px; color: #65716d; font-size: 11px; font-weight: 800; }
-    .pl-delivery-settings input, .pl-delivery-settings select { width: 100%; min-height: 32px; border: 1px solid #d9e1dd; border-radius: 6px; background: #fff; color: #14211d; padding: 6px 8px; font: inherit; }
-    .pl-feedback-list { max-height: 280px; overflow-y: auto; padding: 0 14px 14px; display: grid; gap: 8px; }
-    .pl-feedback-list-empty { margin: 0; color: #65716d; font-size: 13px; padding: 0; }
-    .pl-feedback-item { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; padding: 10px; border: 1px solid #d9e1dd; border-radius: 8px; background: #fff; align-items: start; }
+    .pl-delivery-settings input, .pl-delivery-settings select { width: 100%; min-height: 40px; border: 1px solid #d9e1dd; border-radius: 7px; background: #fff; color: #14211d; padding: 8px 10px; font: inherit; font-size: 12px; }
+    .pl-feedback-list { max-height: min(320px, 40dvh); overflow-y: auto; padding: 0 20px 18px; display: grid; gap: 10px; overscroll-behavior: contain; }
+    .pl-feedback-list-empty { margin: 0; color: #65716d; font-size: 12px; padding: 24px 12px !important; border: 1px dashed #d9e1dd; border-radius: 9px; text-align: center; }
+    .pl-feedback-item { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 8px 10px; padding: 14px; border: 1px solid #e2e9e5; border-radius: 10px; background: #fff; align-items: start; }
     .pl-feedback-num { width: 24px; height: 24px; min-width: 24px; min-height: 24px; box-sizing: border-box; border-radius: 50%; display: grid; place-items: center; color: #fff; font-weight: 900; font-size: 11px; line-height: 1; }
     .pl-feedback-num.kind-point { background: #0f7b63; }
     .pl-feedback-num.kind-area { background: #b83d4d; }
     .pl-feedback-body { display: grid; gap: 4px; min-width: 0; }
-    .pl-feedback-meta { color: #65716d; font-weight: 700; font-size: 11px; }
-    .pl-feedback-text { color: #14211d; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
-    .pl-feedback-actions { display: flex; gap: 4px; }
-    .pl-feedback-actions button { min-height: 24px; padding: 0 8px; font-size: 11px; border-radius: 6px; border: 1px solid #d9e1dd; background: #fff; color: #14211d; cursor: pointer; font-weight: 700; }
+    .pl-feedback-meta { color: #65716d; font-weight: 500; font-size: 10px; }
+    .pl-feedback-text { color: #14211d; font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+    .pl-feedback-actions { display: flex; gap: 8px; grid-column: 2; margin-top: 4px; }
+    .pl-feedback-actions button { min-height: 32px; padding: 4px 10px; font-size: 11px; border-radius: 6px; border: 1px solid #d9e1dd; background: #fff; color: #14211d; cursor: pointer; font-weight: 500; }
     .pl-feedback-actions [data-pl-delete] { border-color: #b83d4d; color: #b83d4d; }
     .pl-feedback-status { font-weight: 900; }
     .pl-feedback-status-ok { color: #0f7b63; }
@@ -2250,10 +2437,10 @@ function injectStyles() {
     .pl-feedback-exported { color: #0f7b63; font-weight: 900; font-size: 10px; border: 1px solid #0f7b63; border-radius: 999px; padding: 1px 6px; margin-left: 2px; }
     .pl-feedback-item-exported { background: #f7f8f5; }
     .pl-tooltip { position: fixed; max-width: 280px; background: #14211d; color: #fff; padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.4; pointer-events: none; z-index: 2147483002; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.32); white-space: pre-wrap; word-break: break-word; }
-    .pl-comment { position: fixed; z-index: 2147483001; width: min(320px, calc(100vw - 24px)); display: grid; gap: 10px; padding: 14px; background: #fff; border: 1px solid #d9e1dd; border-radius: 8px; box-shadow: 0 22px 70px rgba(20, 33, 29, 0.24); }
-    .pl-comment label { display: grid; gap: 6px; color: #65716d; font-size: 12px; font-weight: 800; }
-    .pl-comment textarea, .pl-comment input { width: 100%; border: 1px solid #d9e1dd; border-radius: 8px; padding: 9px 10px; color: #14211d; font: inherit; resize: vertical; }
-    .pl-form-error { margin: -2px 0 0; padding: 0; color: #b83d4d; font-size: 12px; font-weight: 800; }
+    .pl-comment { position: fixed; z-index: 2147483001; width: min(360px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain; display: grid; gap: 14px; padding: 22px; background: #fff; border: 1px solid #d9e1dd; border-radius: 14px; box-shadow: 0 18px 70px rgba(20, 33, 29, 0.22); }
+    .pl-comment label { display: grid; gap: 6px; color: #42584c; font-size: 12px; font-weight: 600; }
+    .pl-comment textarea, .pl-comment input { width: 100%; border: 1px solid #ccd9d1; border-radius: 8px; padding: 10px 12px; background: #fff; color: #14211d; font: inherit; font-size: 14px; line-height: 1.6; resize: vertical; }
+    .pl-form-error { margin: 0; padding: 10px 12px; border-radius: 6px; color: #b83d4d; background: #fff0f2; font-size: 12px; font-weight: 600; }
     .pl-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
     .pl-pin { position: absolute; z-index: 2147482999; transform: translate(-50%, -50%); width: 30px; height: 30px; min-width: 30px; min-height: 30px; max-width: 30px; max-height: 30px; box-sizing: border-box; display: grid; place-items: center; padding: 0; line-height: 1; border-radius: 50%; border: 3px solid #fff; background: #b83d4d; color: #fff; font: 900 13px/1 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); cursor: pointer; }
     .pl-selection { position: fixed; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; }
@@ -2264,6 +2451,41 @@ function injectStyles() {
     .pl-marker-approx { outline: 3px dashed #f2a33c !important; outline-offset: 2px; }
     .pl-feedback-approx { color: #986000; font-weight: 900; cursor: help; margin-left: 2px; }
     .pl-feedback-active, .pl-feedback-active * { cursor: crosshair !important; }
+    .pl-root :focus-visible, .pl-pin:focus-visible, .pl-area button:focus-visible { outline: 3px solid #168565; outline-offset: 3px; }
+    .pl-capture-guide { position: fixed; top: max(16px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; align-items: center; justify-content: space-between; gap: 16px; width: max-content; max-width: calc(100vw - 24px); padding: 12px 16px; background: #14211d; color: #fff; border-radius: 12px; box-shadow: 0 10px 40px #14211d33; font-size: 12px; }
+    .pl-capture-guide small { display: block; font-size: 10px; color: #d1dfd7; margin-top: 3px; }
+    .pl-capture-guide button { border: 1px solid #65716d; border-radius: 7px; background: #fff; color: #14211d; min-height: 36px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
+    .pl-feedback-active [data-patchloop-root], .pl-feedback-active [data-patchloop-root] * { cursor: auto !important; }
+    .pl-root button:disabled { cursor: wait; opacity: .55; }
+    .pl-panel.pl-collapsed .pl-handle { width: 100%; padding: 12px 22px; min-height: 48px; border-radius: 999px; color: #fff; background: #0f7b63; font-size: 13px; }
+    .pl-panel.pl-collapsed .pl-handle.pl-mode-on { background: #b83d4d; }
+    .pl-panel-body { padding-top: 18px; }
+    .pl-compose { padding: 0 20px 18px; }
+    .pl-compose p { padding: 10px 0 0; font-size: 11px; }
+    .pl-list-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 0 20px 10px; font-size: 11px; color: #53695d; }
+    .pl-list-heading span { border-radius: 5px; padding: 1px 7px; background: #edf4ef; font-variant-numeric: tabular-nums; }
+    .pl-actions [data-pl-clear] { border: 0; color: #65716d; font-size: 10px; padding: 5px 0; min-height: 32px; }
+    .pl-actions [data-pl-download-again] { font-size: 11px; }
+    .pl-panel .pl-notice { margin: 0 20px 16px; padding: 10px 12px; border-radius: 8px; background: #edf6ef; color: #245840; font-size: 11px; }
+    .pl-panel .pl-notice[data-state="error"] { background: #fff0f2; color: #a32f45; }
+    .pl-form-heading { display: grid; gap: 4px; }
+    .pl-form-heading strong { font-size: 16px; font-weight: 700; }
+    .pl-form-heading span { color: #65716d; font-size: 11px; }
+    .pl-comment .pl-screenshot-option { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+    .pl-comment input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: #0f7b63; }
+    .pl-comment .pl-capture-note, .pl-comment .pl-edit-note { margin: -5px 0 0; font-size: 10px; line-height: 1.6; color: #65716d; }
+    .pl-comment .pl-edit-note { padding: 10px; background: #fff8e7; color: #785011; border-radius: 6px; }
+    .pl-keyboard-hint { color: #65716d; font-size: 10px; text-align: right; }
+    .pl-feedback-status { display: inline-block; margin-left: 5px; font-weight: 600; }
+    @media (max-width: 480px) {
+      .pl-root { right: 12px; bottom: max(12px, env(safe-area-inset-bottom)); }
+      .pl-panel { width: calc(100vw - 24px); }
+      .pl-comment { padding: 18px; }
+      .pl-comment textarea, .pl-comment input { font-size: 16px; }
+      .pl-feedback-list { max-height: 28dvh; }
+    }
+    @media (prefers-reduced-motion: reduce) { .pl-root *, .pl-pin, .pl-area { transition: none !important; scroll-behavior: auto !important; } }
+
   `;
   document.head.append(style);
 }
