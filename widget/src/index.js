@@ -1529,6 +1529,7 @@ function injectStyles() {
     .pl-mode { display: block; width: 100%; min-height: 44px; padding: 10px 16px; border-radius: 9px; border: 1px solid #0f7b63; background: #0f7b63; color: #fff; font-weight: 650; font-size: 13px; cursor: pointer; }
     .pl-mode[aria-pressed="true"] { background: #b83d4d; border-color: #b83d4d; }
     .pl-panel.pl-collapsed { width: auto; min-width: 152px; border-radius: 999px; overflow: hidden; background: #0f7b63; border-color: #0f7b63; }
+    .pl-feedback-active .pl-panel.pl-collapsed { background: #b83d4d; border-color: #b83d4d; }
     .pl-panel.pl-collapsed header { padding: 0; min-height: 48px; border-bottom: 0; }
     .pl-panel.pl-collapsed .pl-title,
     .pl-panel.pl-collapsed .pl-mode { display: none; }
