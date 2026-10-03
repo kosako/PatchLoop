@@ -31,11 +31,14 @@ button {
   background: var(--accent);
   color: white;
   font: inherit;
-  font-weight: 800;
+  font-weight: 650;
+  cursor: pointer;
 }
 
+button:focus-visible, summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
+
 .app-header {
-  height: 76px;
+  min-height: 84px;
   padding: 0 28px;
   display: flex;
   align-items: center;
@@ -65,10 +68,12 @@ button {
   letter-spacing: 0;
 }
 
+.app-header h1 { font-size: 21px; margin-top: 4px; letter-spacing: -.04em; }
+
 main {
   width: min(1180px, calc(100vw - 36px));
   margin: 0 auto;
-  padding: 26px 0 80px;
+  padding: 32px 0 96px;
 }
 
 .hero {
@@ -78,31 +83,33 @@ main {
   align-items: center;
   gap: 24px;
   padding: 34px;
-  background:
-    linear-gradient(90deg, rgba(15, 123, 99, 0.12), rgba(242, 184, 75, 0.18)),
-    var(--surface);
+  background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 16px;
 }
 
 .hero h2 {
   max-width: 760px;
-  font-size: 48px;
-  line-height: 1.05;
+  font-size: clamp(28px, 3.2vw, 42px);
+  line-height: 1.4;
+  letter-spacing: -.04em;
 }
 
 .lede {
   max-width: 640px;
   color: var(--muted);
-  font-size: 18px;
-  margin-top: 18px;
+  font-size: 15px;
+  line-height: 1.8;
 }
+
+.hero .lede { margin-top: 18px; }
+.hero h2 { margin-top: 10px; }
 
 .score-card,
 .panel,
 .payload-log {
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
   background: var(--surface);
 }
 
@@ -130,6 +137,7 @@ main {
 }
 
 .panel {
+  min-width: 0;
   min-height: 190px;
   padding: 18px;
 }
@@ -158,7 +166,7 @@ main {
 
 .bars span {
   flex: 1;
-  min-width: 26px;
+  min-width: 0;
   border-radius: 6px 6px 0 0;
   background: var(--accent);
 }
@@ -195,13 +203,16 @@ main {
 .payload-log {
   margin-top: 16px;
   padding: 18px;
-  display: grid;
-  gap: 14px;
 }
+
+.payload-log summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.payload-log[open] summary { margin-bottom: 16px; }
 
 pre {
   margin: 0;
   min-height: 180px;
+  max-height: 360px;
+  max-width: 100%;
   overflow: auto;
   padding: 14px;
   border-radius: 8px;
@@ -229,6 +240,10 @@ pre {
   }
 
   .hero h2 {
-    font-size: 34px;
+    font-size: 28px;
   }
+  .hero { padding: 24px; }
+  .bars { gap: 10px; height: 200px; }
+  .panel-title h3 { font-size: 17px; }
+  .panel-title strong { font-size: 21px; }
 }

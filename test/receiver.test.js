@@ -1510,7 +1510,11 @@ test("login form issues a session cookie that unlocks the inbox (no raw token in
   // The login page itself is reachable without credentials.
   const form = await fetch(`${receiver.baseUrl}/login`);
   assert.equal(form.status, 200);
-  assert.match(await form.text(), /name="token"/);
+  const formHtml = await form.text();
+  assert.match(formHtml, /name="token"/);
+  assert.match(formHtml, /href="\/static\/inbox.css"/);
+  assert.match(form.headers.get("content-security-policy"), /style-src 'self'/);
+  assert.equal((await fetch(`${receiver.baseUrl}/static/inbox.css`)).status, 200);
 
   // A wrong token re-renders the form as 401 and sets no cookie.
   const failed = await fetch(`${receiver.baseUrl}/login`, {
@@ -1520,6 +1524,7 @@ test("login form issues a session cookie that unlocks the inbox (no raw token in
   });
   assert.equal(failed.status, 401);
   assert.equal(failed.headers.get("set-cookie"), null);
+  assert.match(await failed.text(), /aria-invalid="true"/);
 
   // The correct token redirects to the inbox with an HttpOnly session cookie
   // that is derived (expiry + HMAC) — the raw token never reaches the browser.

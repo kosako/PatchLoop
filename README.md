@@ -50,8 +50,8 @@ receiver を起動している場合は `http://localhost:4000/widget.js` から
 
 script-tag widget:
 
-- 邪魔にならない右端ドロワー（折りたたみ時はハンドルのみ表示）
-- ドロワーヘッダーのコメントモード切り替え（モード ON 中はハンドルが赤くなる）
+- 右下の「フィードバック」ボタンから開くコンパクトなパネル
+- 「コメントを追加」から場所を選択し、画面上部のガイドで終了
 - クリックで点キャプチャ、ドラッグで範囲キャプチャ
 - 送信前はドラフト表示、送信時に 1, 2, 3 と確定番号が振られる
 - 送信後もコメントモードは継続し、連続でコメントできる
@@ -122,13 +122,16 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 
 ### 基本操作
 
-1. 右端のハンドルを押して drawer を開く
-2. 「コメントモード開始」を押す
-3. 画面上の場所をクリック、または範囲をドラッグする
-4. コメントと投稿者を書いて送信する。Cmd+Enter（Windows は Ctrl+Enter）でも送信できます。投稿者が空欄の場合は送信できません。コメントモードは送信後も継続するので、終了するには「コメントモード終了」を押します
-5. drawer の一覧に追加され、`onSubmit(payload)` でも payload を受け取る。送信済みの項目は drawer 内から個別に編集・削除できる
+1. 右下の「フィードバック」を押してパネルを開く
+2. 「コメントを追加」を押す。パネルが畳まれ、場所選択のガイドが表示されます
+3. 場所をクリック、または範囲をドラッグする。タッチ画面はタップ、キーボードは Tab でページ内のボタンなどへ移動して Enter で選べます
+4. コメントと投稿者を書いて送信する。両方とも必須です。Cmd+Enter / Ctrl+Enter でも確定できます。「画面画像を含める」を外すと、そのコメントには画像を添付しません
+5. 一覧で送信結果を確認する。失敗時は設定・接続を確認して「再送」できます。通信は 15 秒で打ち切り、コメントを残します。同じ ID が受信済みの場合は、受信箱で内容を確認してください
+6. 場所選択を終えるには、上部の「終了」または Escape を押します
 
-投稿者名は送信後に `localStorage` へ保存され、次回以降の widget 起動時に復元されます。feedback list もデフォルトで `localStorage` に保存され、同じ project / demo / page URL の reload 後に drawer list と pin / area overlay が復元されます。drawer の「フィードバックを消す」は、表示中の marker と保存済み feedback の両方を削除します。永続化を使わず memory-only にしたい場合は `persistFeedback: false` を指定してください。
+編集・削除はこの端末の一覧だけに反映され、受信箱や GitHub Issue は変更されません。送信済み・書き出し済みコメントを変更すると「ローカル変更・送信先には未反映」と表示します。画像の非表示箇所の除外や機密情報の自動マスキングは保証しません。画像には画面外の内容が含まれる場合があるため、機密情報のあるページでは画像を外してください。
+
+投稿者名は送信後に `localStorage` へ保存され、次回以降の widget 起動時に復元されます。feedback list もデフォルトで `localStorage` に保存され、同じ project / demo / page URL の reload 後に drawer list と pin / area overlay が復元されます。パネルの「この端末のコメントを消す」は、表示中の marker と保存済み feedback の両方を削除します。永続化を使わず memory-only にしたい場合は `persistFeedback: false` を指定してください。
 
 コメントのマーカーは Tab でフォーカスしても内容を確認でき、Escape で tooltip を閉じられます。コメントフォームでは Escape で入力・編集を取り消し、元の操作位置へフォーカスを戻します。
 
@@ -162,7 +165,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 - `environment.language`
 - `screenshot` — viewport snapshot。成功時は `status: "captured"`、`mimeType: "image/svg+xml"`、`dataUrl`、`targetOverlay` などを含む
 - `createdAt`
-- `delivery` — `endpoint` 設定時、POST 完了後に `{ ok, status }` または `{ ok: false, error }` が追加される
+- `delivery` — 外部送信を行う場合は、通知イベントと `onSubmit` の呼び出し前に `{ pending: true, target: "receiver" | "slack-webhook" }` を付与します。送信後は `{ ok, status }` または `{ ok: false, error }` に置き換わります。Slack 直送の結果は `{ ok: null, status: "unknown", target: "slack-webhook" }` です。送信中断後の復元時は `{ ok: null, interrupted: true, target }` で結果未確認を表します。receiver 向けは編集後も再送できますが、受信済み ID は上書きされません。これらは端末内の配送状態で、receiver の受信済みデータには保存されません
 
 `target.kind` は `point` または `area` です。範囲選択の場合は `target.area` に viewport 上の percentage (`x` / `y` / `width` / `height`) に加えて、`clientX/Y/Width/Height`、`pageX/Y`、`documentX/Y/Width/Height` のピクセル値も入ります。
 
@@ -179,12 +182,12 @@ node server/receive.js
 - `POST /feedback` で payload を受け取り、デフォルトでは `server/feedback.db`（sqlite）に保存します
 - `POST /import` で download mode の JSON bundle（単一 feedback の v1 / 配列の v2 batch の両方）を読み込み、通常の inbox と同じ形式で保存します。重複 id はスキップし `imported` / `duplicates` / `failed` を返します
 - `GET /` で受信した feedback の一覧（inbox）を表示します
-- inbox にはテキスト検索と status / kind / project / demo / reviewer / source / Slack の絞り込みがあります
+- inbox のサイドバーに対応状況別の件数を表示します。検索・プロジェクト・対応状況で絞り込み、詳細条件で kind / demo / reviewer / source / Slack / GitHub も指定できます。変更・失敗時にも検索条件を保持します
 - 各 feedback には triage status（`new` / `accepted` / `fixed` / `ignored`）があり、card 上の select から変更できます。status は sqlite に永続化されます
 - `POST /feedback/:id/status` で API からも status を更新できます（body は `{"status": "accepted"}` 形式）
 - `DELETE /feedback/:id` で feedback と紐づく screenshot を削除できます（inbox の card の「削除」ボタンからも）
 - GitHub 連携を設定すると、inbox の各 card から GitHub Issue を作成できます（後述）
-- inbox UI から `.patchloop-feedback.json` を選択して import できます
+- inbox UI から `.patchloop-feedback.json` を選択して import できます。追加・重複・失敗件数を確認し、「受信箱を更新」で一覧へ反映します
 - `GET /feedback.json` で raw JSON を返します（`?projectId=` / `?demoId=` / `?status=` で絞り込み可）
 - `GET /screenshots/:file` で保存済み screenshot を返します
 - `GET /healthz` で死活監視ができます（store 疎通込みで 200 / 異常・シャットダウン中は 503。認証不要・rate limit 対象外）
@@ -299,7 +302,7 @@ HOST=127.0.0.1 PORT=4000 node server/receive.js
 
 ## Slack direct mode
 
-`deliveryMode: "slack-webhook"` を使うと、receiver を立てずにブラウザから Slack Incoming Webhook に直接送信できます。drawer UI を有効にしている場合は、画面上で送信先を `Slack direct` に切り替えて webhook URL を入力できます。
+`deliveryMode: "slack-webhook"` を使うと、receiver を立てずにブラウザから Slack Incoming Webhook に直接送信できます。drawer UI を有効にしている場合は、画面上で送信先を `Slack に直接送信（結果確認不可）` に切り替えて webhook URL を入力できます。
 
 ```js
 window.PatchLoop.init({
@@ -321,7 +324,7 @@ window.PatchLoop.init({
 });
 ```
 
-download mode では、コメントするたびに自動ダウンロードはされません。コメントは drawer に溜まり、「未送信をまとめてDL（N）」ボタンを押すと、**未送信ぶんをまとめて 1 ファイル**として `<project>-<demo>-<件数>-<timestamp>.patchloop-feedback.json` に書き出します。書き出したコメントには送り済みフラグ（一覧で「DL済み」表示）が付き、次回の一括 DL からは除外されます（DL済みコメントを編集すると未送信に戻ります）。bundle は単一 JSON ファイルで、現時点では ZIP ではありません。形式は versioned で、`feedback` は配列です。
+download mode では、コメントをパネルにため、「未送信を書き出す（N）」で **未書き出しのコメントを 1 ファイル**（`<project>-<demo>-<件数>-<timestamp>.patchloop-feedback.json`）へ出力します。「書き出し済み」はダウンロード開始の記録で、保存完了や受信箱への取込完了を保証しません。保存できなかった場合は「全件を再ダウンロード」を使えます。編集した項目は再び書き出せますが、同じ ID の再取込は重複としてスキップされ、受信済みの内容を上書きしません。bundle は単一 JSON ファイルで、形式は versioned、`feedback` は配列です。
 
 ```json
 {

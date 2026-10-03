@@ -1301,9 +1301,8 @@ function respondLoginPage(res, status, failed) {
   res.writeHead(status, {
     "Content-Type": "text/html; charset=utf-8",
     "X-Content-Type-Options": "nosniff",
-    // The page carries no user-controlled content; inline styles keep it
-    // self-contained (no /static dependency), everything else stays blocked.
-    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+    // Login shares the same-origin stylesheet with Inbox; scripts stay blocked.
+    "Content-Security-Policy": "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
   });
   res.end(renderLoginPage(failed));
 }
