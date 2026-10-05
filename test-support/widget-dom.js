@@ -13,6 +13,12 @@ const bundle = fs.readFileSync(path.join(__dirname, "../dist/patchloop-widget.js
 // evaluate throw instead of silently matching nothing.
 const VOID_TAGS = new Set(["br", "hr", "img", "input", "link", "meta"]);
 const BOOLEAN_PROPERTIES = new Set(["checked", "disabled", "hidden", "required", "selected"]);
+// Like a browser, these properties are their attribute: setting the property
+// adds or removes the attribute, and attribute changes show in the property,
+// so [disabled] / [hidden] selectors, click() and focus() agree. checked and
+// selected stay plain properties, as in a browser their attribute is only the
+// initial state.
+const REFLECTED_BOOLEANS = ["disabled", "hidden", "required"];
 const REFLECTED_PROPERTIES = new Set(["id", "type", "value"]);
 const FORM_CONTROLS = new Set(["BUTTON", "INPUT", "SELECT", "TEXTAREA"]);
 const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
@@ -102,7 +108,7 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [] } = {
     const attributes = new Map();
     const node = {
       ...eventTarget(), tagName: tagName.toUpperCase(), children: [], parentElement: null,
-      dataset: {}, style: {}, value: "", textContent: "", hidden: false,
+      dataset: {}, style: {}, value: "", textContent: "",
       get isConnected() { return this.tagName === "BODY" || this.tagName === "HEAD" || Boolean(this.parentElement?.isConnected); },
       classList: {
         add: (name) => classes.add(name), remove: (name) => classes.delete(name), contains: (name) => classes.has(name),
@@ -119,7 +125,10 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [] } = {
         if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((child) => child !== this);
         this.parentElement = null;
       },
-      setAttribute(name, value) { attributes.set(name, String(value)); },
+      setAttribute(name, value) {
+        attributes.set(name, String(value));
+        if (name.startsWith("data-")) this.dataset[datasetKey(name)] = String(value);
+      },
       // Like a browser, a disabled control dispatches no click at all.
       click() {
         if (FORM_CONTROLS.has(this.tagName) && this.disabled) return;
@@ -127,7 +136,10 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [] } = {
         dispatch(this, "click");
       },
       getAttribute: (name) => attributes.get(name) ?? null,
-      removeAttribute: (name) => attributes.delete(name),
+      removeAttribute(name) {
+        attributes.delete(name);
+        if (name.startsWith("data-")) delete this.dataset[datasetKey(name)];
+      },
       contains(candidate) { return candidate === this || this.children.some((child) => child.contains(candidate)); },
       // Disabled controls and anything inside a hidden subtree cannot take focus.
       focus() {
@@ -143,7 +155,16 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [] } = {
       querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
       getBoundingClientRect() { return { left: 0, top: 0, right: 200, bottom: 100, width: 200, height: 100 }; }
     };
-    if (FORM_CONTROLS.has(node.tagName)) node.disabled = false;
+    for (const name of REFLECTED_BOOLEANS) {
+      Object.defineProperty(node, name, {
+        get: () => attributes.has(name),
+        set(value) {
+          if (!value) attributes.delete(name);
+          else if (!attributes.has(name)) attributes.set(name, "");
+        },
+        enumerable: true
+      });
+    }
     if (node.tagName === "INPUT") node.checked = false;
     if (node.tagName === "OPTION") node.selected = false;
     let html = "";

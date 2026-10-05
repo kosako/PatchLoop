@@ -78,3 +78,39 @@ test("every hook the widget queries is rendered by its markup", () => {
   const root = widget.roots()[0];
   for (const hook of hooks) assert.ok(root.querySelector(`[${hook}]`), `${hook} is missing from the rendered widget`);
 });
+
+test("harness keeps disabled, hidden and data-* in sync between attributes and properties", () => {
+  // The widget toggles these through both properties and attributes, and the
+  // tests read them through click(), focus() and selectors, so the harness has
+  // to agree with a browser either way.
+  const widget = widgetHarness();
+  widget.init();
+  const root = widget.roots()[0];
+  const button = root.querySelector("button");
+  let clicks = 0;
+  button.addEventListener("click", () => { clicks += 1; });
+
+  button.setAttribute("disabled", "");
+  assert.equal(button.disabled, true);
+  assert.ok(button.matches("[disabled]"));
+  button.click();
+  assert.equal(clicks, 0);
+  button.removeAttribute("disabled");
+  assert.equal(button.disabled, false);
+  assert.equal(button.matches("[disabled]"), false);
+  button.click();
+  assert.equal(clicks, 1);
+
+  button.hidden = true;
+  assert.ok(button.matches("[hidden]"));
+  button.hidden = false;
+  assert.equal(button.matches("[hidden]"), false);
+  button.setAttribute("hidden", "");
+  assert.equal(button.hidden, true);
+
+  button.setAttribute("data-harness-probe", "on");
+  assert.equal(button.dataset.harnessProbe, "on");
+  assert.equal(root.querySelector('[data-harness-probe="on"]'), button);
+  button.removeAttribute("data-harness-probe");
+  assert.equal(root.querySelector("[data-harness-probe]"), null);
+});
