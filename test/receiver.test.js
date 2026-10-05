@@ -550,16 +550,38 @@ test("POST /import keeps a valid triage status from the bundle (#141)", async (t
 
 test("POST /import rejects the whole batch when one status is unknown (#141)", async (t) => {
   const receiver = await startReceiver(t);
-  const response = await postJson(`${receiver.baseUrl}/import`, {
-    kind: "patchloop-feedback-bundle",
-    version: 2,
-    feedback: [feedbackPayload("pl_status_good_1"), { ...feedbackPayload("pl_status_bogus_2"), status: "bogus" }]
+  // Only a missing or null status defaults to "new"; falsy values are not
+  // treated as missing.
+  for (const status of ["bogus", "", 0, false]) {
+    const response = await postJson(`${receiver.baseUrl}/import`, {
+      kind: "patchloop-feedback-bundle",
+      version: 2,
+      feedback: [feedbackPayload("pl_status_good_1"), { ...feedbackPayload("pl_status_bad_2"), status }]
+    });
+
+    assert.equal(response.status, 400, `status ${JSON.stringify(status)}`);
+    assert.equal(response.body.ok, false);
+    assert.match(response.body.error, /feedback\.status must be one of: new, accepted, fixed, ignored/);
+    // Nothing was written — the status check runs with the rest of validation.
+    assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+    const files = await fs.readdir(receiver.screenshotDir).catch(() => []);
+    assert.equal(files.length, 0);
+  }
+});
+
+test("POST /import rejects a non-finite status that a JSON round-trip would turn into null (#141)", async (t) => {
+  const receiver = await startReceiver(t);
+  // 1e400 parses to Infinity; JSON.stringify would send it as null, so the
+  // body is built by hand.
+  const item = JSON.stringify(feedbackPayload("pl_status_infinity")).replace(/}$/, ',"status":1e400}');
+  const response = await fetch(`${receiver.baseUrl}/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: `{"kind":"patchloop-feedback-bundle","version":2,"feedback":[${item}]}`
   });
 
   assert.equal(response.status, 400);
-  assert.equal(response.body.ok, false);
-  assert.match(response.body.error, /feedback\.status must be one of: new, accepted, fixed, ignored/);
-  // Nothing was written — the status check runs with the rest of validation.
+  assert.match((await response.json()).error, /feedback\.status must be one of/);
   assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
   const files = await fs.readdir(receiver.screenshotDir).catch(() => []);
   assert.equal(files.length, 0);

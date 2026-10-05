@@ -1105,9 +1105,13 @@ function normalizeImportedBundle(body) {
 // agrees with the store's indexed status column.
 function normalizeImportedFeedback(payload) {
   const imported = normalizeFeedbackPayload(payload);
-  if (imported.status == null) {
+  // Decide on the status as parsed, not on the normalized clone: the JSON
+  // round-trip turns a non-finite number (a literal 1e400 parses to Infinity)
+  // into null, which would otherwise pass as a missing status.
+  const status = payload.status;
+  if (status == null) {
     imported.status = "new";
-  } else if (!FEEDBACK_STATUSES.includes(imported.status)) {
+  } else if (!FEEDBACK_STATUSES.includes(status)) {
     throw httpError(`feedback.status must be one of: ${FEEDBACK_STATUSES.join(", ")}`, 400);
   }
   return imported;
