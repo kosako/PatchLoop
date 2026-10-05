@@ -9,7 +9,7 @@ test("editing a delivered comment marks it as a local change without pretending 
   w.init({ persistFeedback: true });
   await w.submit("Original");
   const edit = w.document.querySelector("[data-pl-edit]");
-  w.document.querySelector("[data-pl-list]").emit("click", { target: edit });
+  edit.click();
   assert.equal(w.document.querySelector("[data-pl-edit-note]").hidden, false);
   await w.submit("Changed", { captureTarget: false });
   assert.equal(w.requests.length, 1);
@@ -148,7 +148,7 @@ test("editing an unconfirmed Slack delivery is explicitly a local-only change", 
   w.init({ deliveryMode: "slack-webhook", slackWebhookUrl: "https://hooks.slack.test/example" });
   await w.submit("Original");
   assert.equal(w.api.getFeedback()[0].delivery.ok, null);
-  w.document.querySelector("[data-pl-list]").emit("click", { target: w.document.querySelector("[data-pl-edit]") });
+  w.document.querySelector("[data-pl-edit]").click();
   await w.submit("Revised", { captureTarget: false });
   assert.equal(w.requests.length, 1);
   assert.equal(w.api.getFeedback()[0].localEdited, true);
@@ -172,7 +172,7 @@ test("restoring an interrupted delivery preserves the comment and offers recover
   await submission;
   assert.equal(notice.textContent, noticeBefore);
   assert.equal(w.api.getFeedback()[0].delivery.ok, null);
-  w.document.querySelector("[data-pl-list]").emit("click", { target: w.document.querySelector("[data-pl-edit]") });
+  w.document.querySelector("[data-pl-edit]").click();
   await w.submit("Corrected before retry", { captureTarget: false });
   assert.notEqual(w.api.getFeedback()[0].localEdited, true);
   const retry = w.document.querySelector("[data-pl-retry]");
@@ -235,4 +235,46 @@ test("a stalled request times out, preserves the comment, and offers retry", asy
   assert.equal(w.api.getFeedback()[0].delivery.ok, false);
   assert.ok(w.document.querySelector("[data-pl-retry]"));
   assert.equal(w.document.querySelector("[data-pl-clear]").disabled, false);
+});
+
+test("a comment that is still sending cannot be edited or deleted", async () => {
+  let complete;
+  const w = widgetHarness({ replies: [() => new Promise((resolve) => { complete = resolve; })] });
+  w.init();
+  const submission = w.submit("Still sending");
+  const edit = w.document.querySelector("[data-pl-edit]");
+  const remove = w.document.querySelector("[data-pl-delete]");
+  assert.equal(edit.disabled, true);
+  assert.equal(remove.disabled, true);
+  edit.focus();
+  edit.click();
+  remove.click();
+  assert.notEqual(w.document.activeElement, edit);
+  assert.equal(w.document.querySelector("[data-pl-comment]").hidden, true);
+  assert.equal(w.api.getFeedback().length, 1);
+  complete({ ok: true, status: 201 });
+  await submission;
+  w.document.querySelector("[data-pl-edit]").click();
+  assert.equal(w.document.querySelector("[data-pl-comment]").hidden, false);
+});
+
+test("delivery settings switch the destination used by the next comment", async () => {
+  const w = widgetHarness();
+  w.init({ showDeliverySettings: true });
+  const settings = w.document.querySelector("[data-pl-delivery-settings]");
+  const mode = settings.querySelector("[data-pl-delivery-mode]");
+  assert.equal(mode.value, "receiver");
+  assert.equal(settings.querySelector("[data-pl-endpoint]").value, "https://receiver.example/feedback");
+  assert.equal(settings.querySelector("[data-pl-endpoint-field]").hidden, false);
+  assert.equal(settings.querySelector("[data-pl-slack-field]").hidden, true);
+  mode.value = "slack-webhook";
+  settings.querySelector("[data-pl-slack-webhook]").value = " https://hooks.slack.test/settings ";
+  settings.emit("change", { target: mode });
+  assert.equal(settings.querySelector("[data-pl-endpoint-field]").hidden, true);
+  assert.equal(settings.querySelector("[data-pl-slack-field]").hidden, false);
+  await w.submit("Sent through the settings");
+  assert.equal(w.requests.length, 1);
+  assert.equal(w.requests[0].url, "https://hooks.slack.test/settings");
+  assert.equal(w.requests[0].mode, "no-cors");
+  assert.equal(w.api.getFeedback()[0].delivery.target, "slack-webhook");
 });

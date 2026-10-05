@@ -77,7 +77,7 @@ test("canceling an edit preserves the comment and returns focus to its edit butt
   await widget.submit("Original comment");
   const edit = widget.document.querySelector("[data-pl-edit]");
   edit.focus();
-  widget.document.querySelector("[data-pl-list]").emit("click", { target: edit });
+  edit.click();
   const form = widget.document.querySelector("[data-pl-comment]");
   form.querySelector("[data-pl-comment-text]").value = "Canceled edit";
   form.emit("keydown", { key: "Escape" });
@@ -93,13 +93,13 @@ test("editing and deleting comments refresh marker names and restore focus after
   await widget.submit("Second comment");
   const edit = widget.document.querySelector("[data-pl-edit]");
   edit.focus();
-  widget.document.querySelector("[data-pl-list]").emit("click", { target: edit });
+  edit.click();
   await widget.submit("Updated comment", { captureTarget: false });
   const points = widget.document.querySelectorAll("[data-patchloop-pin]");
   assert.equal(points[1].getAttribute("aria-label"), "点のフィードバック 2: Updated comment");
   assert.equal(widget.document.activeElement, widget.document.querySelector("[data-pl-collapse]"));
   const oldestCard = widget.document.querySelectorAll("[data-feedback-id]")[1];
-  widget.document.querySelector("[data-pl-list]").emit("click", { target: oldestCard.querySelector("[data-pl-delete]") });
+  oldestCard.querySelector("[data-pl-delete]").click();
   assert.equal(points[1].getAttribute("aria-label"), "点のフィードバック 1: Updated comment");
 });
 
@@ -113,12 +113,12 @@ for (const remaining of [0, 1]) {
     const card = list.querySelector("[data-feedback-id]");
     const edit = card.querySelector("[data-pl-edit]");
     edit.focus();
-    list.emit("click", { target: edit });
+    edit.click();
     const form = widget.document.querySelector("[data-pl-comment]");
     assert.equal(form.hidden, false);
     const remove = card.querySelector("[data-pl-delete]");
     remove.focus();
-    list.emit("click", { target: remove });
+    remove.click();
     assert.equal(form.hidden, true);
     assert.equal(widget.api.getFeedback().length, remaining);
     assert.equal(widget.api.getFeedback().some((item) => item.id === card.dataset.feedbackId), false);
