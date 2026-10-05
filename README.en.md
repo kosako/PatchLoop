@@ -276,7 +276,7 @@ GITHUB_TOKEN="github_pat_..." GITHUB_REPO="owner/repo" node server/receive.js
 - `GITHUB_API_BASE` / `githubApiBase` — API base URL (defaults to `https://api.github.com`; override for GHES or tests)
 - `GITHUB_TIMEOUT_MS` / `githubTimeoutMs` — timeout (defaults to `8000`)
 
-When configured, each inbox card shows a `Create GitHub Issue` button. Created issues include the comment, reviewer, page URL, selector, target position, viewport, screenshot link, and the raw payload. The result is persisted as `integrations.github` and the card shows the issue link (or the error on failure). Creating a second issue from the same feedback is rejected. The API equivalent is `POST /feedback/:id/github-issue`.
+When configured, each inbox card shows a “GitHub Issue を作成” (Create GitHub Issue) button. Created issues include the comment, reviewer, page URL, selector, target position, viewport, screenshot link, and the raw payload. The result is persisted as `integrations.github` and the card shows the issue link (or the error on failure). Creating a second issue from the same feedback is rejected. The API equivalent is `POST /feedback/:id/github-issue`.
 
 The screenshot image only renders inside the issue if GitHub can reach your `publicBaseUrl`; with a local receiver the link still works locally. When `RECEIVER_TOKEN` is set, GitHub's image proxy cannot authenticate, so the issue carries only an `[Open screenshot]` link instead of an inline embed (opening it requires signing in to the receiver).
 
@@ -346,7 +346,7 @@ In download mode, comments collect in the panel. “未送信を書き出す（N
 }
 ```
 
-To import a bundle, start the receiver and open the inbox (`http://127.0.0.1:4000/`), then choose the `.patchloop-feedback.json` file under `Import feedback bundle`. To import through the API, post the same JSON to `POST /import`.
+To import a bundle, start the receiver and open the inbox (`http://127.0.0.1:4000/`), then choose the `.patchloop-feedback.json` file in the “ファイルを読み込む” (Load a file) panel (the panel is collapsed when the inbox already has feedback). To import through the API, post the same JSON to `POST /import`.
 
 ```sh
 curl -X POST http://127.0.0.1:4000/import \

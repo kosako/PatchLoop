@@ -275,7 +275,7 @@ GITHUB_TOKEN="github_pat_..." GITHUB_REPO="owner/repo" node server/receive.js
 - `GITHUB_API_BASE` / `githubApiBase` — API base URL（デフォルト `https://api.github.com`。GHES やテスト時に変更）
 - `GITHUB_TIMEOUT_MS` / `githubTimeoutMs` — timeout（デフォルト `8000`）
 
-設定済みの場合、inbox の各 card に `Create GitHub Issue` ボタンが表示されます。作成された issue には feedback 本文・reviewer・ページ URL・selector・対象位置・viewport・screenshot link・raw payload が含まれます。結果は保存済み payload の `integrations.github` に永続化され、card には issue link（失敗時はエラー）が表示されます。同じ feedback からの二重作成は拒否されます。API から行う場合は `POST /feedback/:id/github-issue` を使います。
+設定済みの場合、inbox の各 card に「GitHub Issue を作成」ボタンが表示されます。作成された issue には feedback 本文・reviewer・ページ URL・selector・対象位置・viewport・screenshot link・raw payload が含まれます。結果は保存済み payload の `integrations.github` に永続化され、card には issue link（失敗時はエラー）が表示されます。同じ feedback からの二重作成は拒否されます。API から行う場合は `POST /feedback/:id/github-issue` を使います。
 
 screenshot の画像は GitHub から `publicBaseUrl` に到達できる場合のみ issue 上に表示されます（ローカル receiver のままなら link のみ機能します）。`RECEIVER_TOKEN` を設定している場合、GitHub の image proxy は認証を通れないため、issue には画像を埋め込まず `[Open screenshot]` リンクのみを載せます（開くには receiver へのログインが必要です）。
 
@@ -345,7 +345,7 @@ download mode では、コメントをパネルにため、「未送信を書き
 }
 ```
 
-Import するには receiver を起動し、inbox (`http://127.0.0.1:4000/`) の `Import feedback bundle` から `.patchloop-feedback.json` を選択します。API から送る場合は同じ JSON を `POST /import` に投げます。
+Import するには receiver を起動し、inbox (`http://127.0.0.1:4000/`) の「ファイルを読み込む」パネルで `.patchloop-feedback.json` を選択します（受信箱にフィードバックがあるときは、パネルは畳まれています）。API から送る場合は同じ JSON を `POST /import` に投げます。
 
 ```sh
 curl -X POST http://127.0.0.1:4000/import \
