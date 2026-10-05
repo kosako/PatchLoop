@@ -159,6 +159,16 @@ test("live ingest cannot assert receiver history or local delivery markers", asy
   }
 });
 
+test("live ingest still replaces an unknown status with new (#141)", async (t) => {
+  const receiver = await startReceiver(t);
+  const payload = { ...feedbackPayload("pl_live_bogus_status"), status: "bogus" };
+  const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+  assert.equal(response.status, 201);
+  const [stored] = await readStoredFeedback(receiver.dbPath);
+  assert.equal(stored.id, payload.id);
+  assert.equal(stored.status, "new");
+});
+
 test("live and import reject malformed known metadata before persisting", async (t) => {
   const receiver = await startReceiver(t);
   const cases = [
@@ -497,6 +507,81 @@ test("POST /import rejects the whole batch when a later screenshot is invalid", 
   assert.equal(response.body.ok, false);
   assert.match(response.body.error, /Unsupported screenshot mime type/);
   // The first (valid) item must not have landed before the bad one failed.
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+  const files = await fs.readdir(receiver.screenshotDir).catch(() => []);
+  assert.equal(files.length, 0);
+});
+
+test("POST /import stores a missing status as new so /feedback.json filters agree (#141)", async (t) => {
+  const receiver = await startReceiver(t);
+  const response = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 2,
+    feedback: [feedbackPayload("pl_import_nostatus"), { ...feedbackPayload("pl_import_nullstatus"), status: null }]
+  });
+  assert.equal(response.status, 201);
+
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.deepEqual(stored.map((item) => item.status), ["new", "new"]);
+  const served = await fetch(`${receiver.baseUrl}/feedback.json`).then((r) => r.json());
+  assert.deepEqual(served.map((item) => item.status), ["new", "new"]);
+  const filtered = await fetch(`${receiver.baseUrl}/feedback.json?status=new`).then((r) => r.json());
+  assert.deepEqual(filtered.map((item) => item.id).sort(), ["pl_import_nostatus", "pl_import_nullstatus"]);
+});
+
+test("POST /import keeps a valid triage status from the bundle (#141)", async (t) => {
+  const receiver = await startReceiver(t);
+  const response = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 2,
+    feedback: [{ ...feedbackPayload("pl_import_accepted"), status: "accepted" }]
+  });
+  assert.equal(response.status, 201);
+
+  const [stored] = await readStoredFeedback(receiver.dbPath);
+  assert.equal(stored.status, "accepted");
+  const ids = async (query) => {
+    const items = await fetch(`${receiver.baseUrl}/feedback.json${query}`).then((r) => r.json());
+    return items.map((item) => item.id);
+  };
+  assert.deepEqual(await ids("?status=accepted"), ["pl_import_accepted"]);
+  assert.deepEqual(await ids("?status=new"), []);
+});
+
+test("POST /import rejects the whole batch when one status is unknown (#141)", async (t) => {
+  const receiver = await startReceiver(t);
+  // Only a missing or null status defaults to "new"; falsy values are not
+  // treated as missing.
+  for (const status of ["bogus", "", 0, false]) {
+    const response = await postJson(`${receiver.baseUrl}/import`, {
+      kind: "patchloop-feedback-bundle",
+      version: 2,
+      feedback: [feedbackPayload("pl_status_good_1"), { ...feedbackPayload("pl_status_bad_2"), status }]
+    });
+
+    assert.equal(response.status, 400, `status ${JSON.stringify(status)}`);
+    assert.equal(response.body.ok, false);
+    assert.match(response.body.error, /feedback\.status must be one of: new, accepted, fixed, ignored/);
+    // Nothing was written — the status check runs with the rest of validation.
+    assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+    const files = await fs.readdir(receiver.screenshotDir).catch(() => []);
+    assert.equal(files.length, 0);
+  }
+});
+
+test("POST /import rejects a non-finite status that a JSON round-trip would turn into null (#141)", async (t) => {
+  const receiver = await startReceiver(t);
+  // 1e400 parses to Infinity; JSON.stringify would send it as null, so the
+  // body is built by hand.
+  const item = JSON.stringify(feedbackPayload("pl_status_infinity")).replace(/}$/, ',"status":1e400}');
+  const response = await fetch(`${receiver.baseUrl}/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: `{"kind":"patchloop-feedback-bundle","version":2,"feedback":[${item}]}`
+  });
+
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /feedback\.status must be one of/);
   assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
   const files = await fs.readdir(receiver.screenshotDir).catch(() => []);
   assert.equal(files.length, 0);
