@@ -1096,7 +1096,21 @@ function normalizeImportedBundle(body) {
   if (list.length > MAX_IMPORT_ITEMS) {
     throw httpError(`Import bundle exceeds the maximum of ${MAX_IMPORT_ITEMS} items`, 413);
   }
-  return list.map(normalizeFeedbackPayload);
+  return list.map(normalizeImportedFeedback);
+}
+
+// Unlike live ingest (which always resets status to "new"), an import keeps
+// the bundle's triage status, so it is checked here rather than in the shared
+// validateFeedbackPayload. A missing status becomes "new" so the stored record
+// agrees with the store's indexed status column.
+function normalizeImportedFeedback(payload) {
+  const imported = normalizeFeedbackPayload(payload);
+  if (imported.status == null) {
+    imported.status = "new";
+  } else if (!FEEDBACK_STATUSES.includes(imported.status)) {
+    throw httpError(`feedback.status must be one of: ${FEEDBACK_STATUSES.join(", ")}`, 400);
+  }
+  return imported;
 }
 
 function normalizeFeedbackPayload(payload) {

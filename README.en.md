@@ -354,7 +354,7 @@ curl -X POST http://127.0.0.1:4000/import \
   --data-binary @patchloop-feedback.json
 ```
 
-The receiver validates the bundle version (both the single-feedback v1 and the array-based v2 batch) and payload shape, saves each feedback's screenshot `dataUrl` to `server/screenshots/`, and appends the imported feedback to the store. Imported feedback gets `source: "import"` and `importedAt`. For a batch import, ids that already exist are skipped as duplicates (the rest still land), and the response returns `imported`, `duplicates`, and `failed`. If any payload in the bundle is invalid, the whole batch is rejected with 400 and nothing is written. The receiver does not forward imported feedback to Slack; the inbox shows `Slack: skipped`.
+The receiver validates the bundle version (both the single-feedback v1 and the array-based v2 batch) and payload shape, saves each feedback's screenshot `dataUrl` to `server/screenshots/`, and appends the imported feedback to the store. Imported feedback gets `source: "import"` and `importedAt`. A valid triage `status` (`new` / `accepted` / `fixed` / `ignored`) is kept, a missing one becomes `new`, and any other value rejects the whole batch with 400. For a batch import, ids that already exist are skipped as duplicates (the rest still land), and the response returns `imported`, `duplicates`, and `failed`. If any payload in the bundle is invalid, the whole batch is rejected with 400 and nothing is written. The receiver does not forward imported feedback to Slack; the inbox shows `Slack: skipped`.
 
 ## Current Boundary
 

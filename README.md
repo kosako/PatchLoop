@@ -353,7 +353,7 @@ curl -X POST http://127.0.0.1:4000/import \
   --data-binary @patchloop-feedback.json
 ```
 
-receiver は bundle version（v1 の単一 feedback / v2 の配列の両方）と payload shape を検証し、各 feedback の screenshot `dataUrl` を `server/screenshots/` に保存してから store に追記します。import した feedback には `source: "import"` / `importedAt` が付きます。batch import では、すでに存在する id は重複としてスキップし（残りは取り込む）、応答に `imported` 件数・`duplicates`・`failed` を返します。payload のどれか 1 件でも不正なら、何も書き込まずに batch 全体を 400 で拒否します。Slack への再転送はせず、inbox 上では `Slack: skipped` と表示されます。
+receiver は bundle version（v1 の単一 feedback / v2 の配列の両方）と payload shape を検証し、各 feedback の screenshot `dataUrl` を `server/screenshots/` に保存してから store に追記します。import した feedback には `source: "import"` / `importedAt` が付きます。`status` は有効な triage status（`new` / `accepted` / `fixed` / `ignored`）ならそのまま保持し、無ければ `new` を付け、それ以外の値が 1 件でもあれば batch 全体を 400 で拒否します。batch import では、すでに存在する id は重複としてスキップし（残りは取り込む）、応答に `imported` 件数・`duplicates`・`failed` を返します。payload のどれか 1 件でも不正なら、何も書き込まずに batch 全体を 400 で拒否します。Slack への再転送はせず、inbox 上では `Slack: skipped` と表示されます。
 
 ## 現在の境界
 
