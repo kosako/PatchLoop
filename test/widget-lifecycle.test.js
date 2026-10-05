@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { widgetHarness } = require("../test-support/widget-dom.js");
+const { bundle, widgetHarness } = require("../test-support/widget-dom.js");
 
 test("destroy cancels initialization waiting for DOM readiness", () => {
   const widget = widgetHarness({ ready: false });
@@ -66,4 +66,15 @@ test("callback rejection does not interrupt direct Slack delivery", async () => 
   assert.equal(widget.requests[0].mode, "no-cors");
   assert.equal(widget.api.getFeedback()[0].delivery.target, "slack-webhook");
   assert.equal(widget.warnings.length, 1);
+});
+
+test("every hook the widget queries is rendered by its markup", () => {
+  // Hooks behind ?. fail silently in a browser when the template drops them,
+  // so check each one the bundle looks up against the parsed markup.
+  const hooks = new Set([...bundle.matchAll(/querySelector\("\[(data-pl-[\w-]+)\]"\)/g)].map((match) => match[1]));
+  for (const hook of ["data-pl-include-screenshot", "data-pl-notice", "data-pl-download-again", "data-pl-delivery-mode"]) assert.ok(hooks.has(hook), hook);
+  const widget = widgetHarness();
+  widget.init({ showDeliverySettings: true });
+  const root = widget.roots()[0];
+  for (const hook of hooks) assert.ok(root.querySelector(`[${hook}]`), `${hook} is missing from the rendered widget`);
 });

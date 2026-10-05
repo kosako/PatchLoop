@@ -6,6 +6,46 @@ const vm = require("node:vm");
 
 const bundle = fs.readFileSync(path.join(__dirname, "../dist/patchloop-widget.js"), "utf8");
 
+// Markup assigned through innerHTML is parsed into elements, so the hooks the
+// tests reach (data-* attributes, hidden/checked/disabled/selected, value)
+// are exactly the ones the widget's template renders. The parser is strict:
+// markup it cannot read, mismatched or unclosed tags, and selectors it cannot
+// evaluate throw instead of silently matching nothing.
+const VOID_TAGS = new Set(["br", "hr", "img", "input", "link", "meta"]);
+const BOOLEAN_PROPERTIES = new Set(["checked", "disabled", "hidden", "required", "selected"]);
+const REFLECTED_PROPERTIES = new Set(["id", "type", "value"]);
+const FORM_CONTROLS = new Set(["BUTTON", "INPUT", "SELECT", "TEXTAREA"]);
+const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+const TOKEN = /<!--[\s\S]*?-->|<\/([a-z][\w-]*)\s*>|<([a-z][\w-]*)((?:\s+[^\s"'<>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'<>=`]+))?)*)\s*\/?>|([^<]+)|([\s\S])/gi;
+const ATTRIBUTE = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>=`]+)))?/g;
+const SELECTOR = /^([a-z][\w-]*)?((?:#[\w-]+|\.[\w-]+|\[[\w-]+(?:="[^"]*")?\]|:hover)*)$/i;
+const SELECTOR_PART = /#([\w-]+)|\.([\w-]+)|\[([\w-]+)(?:="([^"]*)")?\]|(:hover)/g;
+
+const decodeEntities = (text) => text.replace(/&(#x[\da-f]+|#\d+|[a-z]+);/gi, (entity, name) => {
+  if (name[0] !== "#") return ENTITIES[name.toLowerCase()] ?? entity;
+  return String.fromCodePoint(name[1].toLowerCase() === "x" ? parseInt(name.slice(2), 16) : Number(name.slice(1)));
+});
+const datasetKey = (attribute) => attribute.slice("data-".length).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+
+function matchesSelector(node, selector) {
+  return selector.split(",").some((alternative) => {
+    const simple = alternative.trim();
+    const match = simple && SELECTOR.exec(simple);
+    if (!match) throw new Error(`widget-dom: unsupported selector ${JSON.stringify(selector)}`);
+    if (match[1] && node.tagName !== match[1].toUpperCase()) return false;
+    return [...match[2].matchAll(SELECTOR_PART)].every(([, id, className, attribute, value, hover]) => {
+      if (id !== undefined) return node.id === id;
+      if (className !== undefined) return node.classList.contains(className);
+      if (hover) return Boolean(node.hovered);
+      // id and type set as properties still match, as they reflect to attributes.
+      const actual = attribute.startsWith("data-")
+        ? node.dataset[datasetKey(attribute)]
+        : node.getAttribute(attribute) ?? ((attribute === "id" || attribute === "type") && node[attribute] ? String(node[attribute]) : null);
+      return actual !== undefined && actual !== null && (value === undefined || actual === value);
+    });
+  });
+}
+
 // The bundle runs unchanged against a small DOM adapter. These tests drive the
 // public API and registered input/submit listeners; layout and screenshot
 // fidelity belong to browser tests rather than this deterministic harness.
@@ -15,39 +55,57 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [] } = {
   const blobs = new Map();
   function eventTarget() {
     const listeners = new Map();
+    const isCapture = (options) => options === true || Boolean(options?.capture);
     return {
       addEventListener(type, callback, options) {
+        const capture = isCapture(options);
         const current = listeners.get(type) || [];
-        if (!current.some((entry) => entry.callback === callback)) current.push({ callback, once: options?.once });
+        if (!current.some((entry) => entry.callback === callback && entry.capture === capture)) current.push({ callback, capture, once: options?.once });
         listeners.set(type, current);
       },
-      removeEventListener(type, callback) {
-        listeners.set(type, (listeners.get(type) || []).filter((entry) => entry.callback !== callback));
+      removeEventListener(type, callback, options) {
+        const capture = isCapture(options);
+        listeners.set(type, (listeners.get(type) || []).filter((entry) => entry.callback !== callback || entry.capture !== capture));
       },
-      emit(type, values = {}) {
+      // Runs this node's listeners for `type`: all of them, or only the
+      // capture (true) or bubble (false) ones when dispatching along a path.
+      emit(type, values = {}, capture) {
         if (type === "mouseenter") this.hovered = true;
         if (type === "mouseleave") this.hovered = false;
         const event = { preventDefault() {}, stopPropagation() {}, currentTarget: this, ...values };
-        return (listeners.get(type) || []).slice().map((entry) => {
-          if (entry.once) this.removeEventListener(type, entry.callback);
+        return (listeners.get(type) || []).filter((entry) => capture === undefined || entry.capture === capture).map((entry) => {
+          if (entry.once) this.removeEventListener(type, entry.callback, entry.capture);
           return entry.callback(event);
         });
       }
     };
   }
 
-  const selectorDataset = (selector) => /^\[data-([\w-]+)\]$/.exec(selector)?.[1]
-    .replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+  // A bubbling event: capture listeners from the document down to the target,
+  // then bubble listeners back up, until a listener stops propagation.
+  function dispatch(target, type) {
+    const path = [];
+    for (let node = target; node; node = node.parentElement) path.unshift(node);
+    if (target.isConnected) path.unshift(document);
+    let stopped = false;
+    const values = { target, stopPropagation() { stopped = true; } };
+    for (const [nodes, capture] of [[path, true], [path.slice().reverse(), false]]) {
+      for (const node of nodes) {
+        node.emit(type, { ...values, currentTarget: node }, capture);
+        if (stopped) return;
+      }
+    }
+  }
 
-  function element(tagName = "div", dataKey) {
+  function element(tagName = "div") {
     const classes = new Set();
     const attributes = new Map();
     const node = {
       ...eventTarget(), tagName: tagName.toUpperCase(), children: [], parentElement: null,
-      dataset: dataKey ? { [dataKey]: "" } : {}, style: {}, value: "", textContent: "", hidden: false,
+      dataset: {}, style: {}, value: "", textContent: "", hidden: false,
       get isConnected() { return this.tagName === "BODY" || this.tagName === "HEAD" || Boolean(this.parentElement?.isConnected); },
       classList: {
-        add: (name) => classes.add(name), remove: (name) => classes.delete(name),
+        add: (name) => classes.add(name), remove: (name) => classes.delete(name), contains: (name) => classes.has(name),
         toggle(name, force) { if (force ?? !classes.has(name)) classes.add(name); else classes.delete(name); },
         [Symbol.iterator]: () => classes.values()
       },
@@ -62,67 +120,82 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [] } = {
         this.parentElement = null;
       },
       setAttribute(name, value) { attributes.set(name, String(value)); },
+      // Like a browser, a disabled control dispatches no click at all.
       click() {
+        if (FORM_CONTROLS.has(this.tagName) && this.disabled) return;
         if (this.tagName === "A" && this.download) downloads.push({ name: this.download, blob: blobs.get(this.href) });
-        this.emit("click", { target: this });
+        dispatch(this, "click");
       },
       getAttribute: (name) => attributes.get(name) ?? null,
       removeAttribute: (name) => attributes.delete(name),
       contains(candidate) { return candidate === this || this.children.some((child) => child.contains(candidate)); },
+      // Disabled controls and anything inside a hidden subtree cannot take focus.
       focus() {
-        if (!this.isConnected || this.hidden) return;
+        if (!this.isConnected || (FORM_CONTROLS.has(this.tagName) && this.disabled)) return;
+        for (let ancestor = this; ancestor; ancestor = ancestor.parentElement) if (ancestor.hidden) return;
         document.activeElement?.emit("blur");
         document.activeElement = this;
         this.emit("focus");
       },
-      matches(selector) {
-        if (selector === ":hover") return Boolean(this.hovered);
-        if (/^[a-z]+$/.test(selector)) return this.tagName === selector.toUpperCase();
-        if (selector.startsWith(".")) return classes.has(selector.slice(1));
-        const key = selectorDataset(selector);
-        return key !== undefined && Object.hasOwn(this.dataset, key);
-      },
+      matches(selector) { return matchesSelector(this, selector); },
       closest(selector) { return this.matches(selector) ? this : this.parentElement?.closest(selector) || null; },
       querySelectorAll(selector) { return this.children.flatMap((child) => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]); },
       querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
       getBoundingClientRect() { return { left: 0, top: 0, right: 200, bottom: 100, width: 200, height: 100 }; }
     };
+    if (FORM_CONTROLS.has(node.tagName)) node.disabled = false;
+    if (node.tagName === "INPUT") node.checked = false;
+    if (node.tagName === "OPTION") node.selected = false;
     let html = "";
     Object.defineProperty(node, "innerHTML", {
       get: () => html,
       set(value) {
         html = value;
-        if (Object.hasOwn(node.dataset, "plList")) {
-          node.children.slice().forEach((child) => child.remove());
-          for (const match of value.matchAll(/<article[^>]*data-feedback-id="([^"]+)"[^>]*>([\s\S]*?)<\/article>/g)) {
-            const article = element("article", "feedbackId");
-            article.dataset.feedbackId = match[1];
-            for (const button of match[2].matchAll(/<button[^>]*data-pl-(edit|delete|retry)[^>]*>/g)) {
-              const child = element("button", { edit: "plEdit", delete: "plDelete", retry: "plRetry" }[button[1]]);
-              child.disabled = / disabled/.test(button[0]);
-              article.append(child);
-            }
-            node.append(article);
-          }
-          return;
-        }
-        if (!node.dataset.patchloopRoot) return;
-        node.children = [];
-        for (const key of ["plPanel", "plCollapse", "plMode", "plDownloadAll", "plDownloadAgain", "plClear", "plCancel", "plList", "plTooltip", "plHelp", "plNotice", "plCount"]) node.append(element("div", key));
-        const tooltipMarkup = /<div[^>]*data-pl-tooltip[^>]*>/.exec(value)[0];
-        for (const attribute of tooltipMarkup.matchAll(/(id|role)="([^"]+)"/g)) node.querySelector("[data-pl-tooltip]").setAttribute(attribute[1], attribute[2]);
-        node.querySelector("[data-pl-tooltip]").hidden = true;
-        const guide = element("div", "plCaptureGuide");
-        guide.hidden = true;
-        guide.append(element("button", "plStopCapture"));
-        node.append(guide);
-        const form = element("form", "plComment");
-        form.hidden = true;
-        for (const key of ["plCommentText", "plReviewer", "plFormError", "plIncludeScreenshot", "plScreenshotField", "plCaptureNote", "plEditNote", "plFormTitle", "plSubmit"]) form.append(element("input", key));
-        node.append(form);
+        node.children.slice().forEach((child) => child.remove());
+        parseInto(node, value);
       }
     });
     return node;
+  }
+
+  function setMarkupAttribute(node, name, value) {
+    node.setAttribute(name, value);
+    if (name.startsWith("data-")) node.dataset[datasetKey(name)] = value;
+    else if (name === "class") value.split(/\s+/).filter(Boolean).forEach((className) => node.classList.add(className));
+    else if (BOOLEAN_PROPERTIES.has(name)) node[name] = true;
+    else if (REFLECTED_PROPERTIES.has(name)) node[name] = value;
+  }
+
+  function finishMarkupElement(node) {
+    if (node.tagName === "TEXTAREA") node.value = node.textContent;
+    if (node.tagName === "OPTION" && node.getAttribute("value") === null) node.value = node.textContent.trim();
+    if (node.tagName === "SELECT") {
+      const options = node.querySelectorAll("option");
+      node.value = (options.find((option) => option.selected) || options[0])?.value ?? "";
+    }
+  }
+
+  function parseInto(parent, markup) {
+    const open = [parent];
+    parent.textContent = "";
+    for (const match of markup.matchAll(TOKEN)) {
+      const [, closing, tagName, attributeText = "", text, stray] = match;
+      if (stray !== undefined) throw new Error(`widget-dom: unparsed markup at ${JSON.stringify(markup.slice(match.index, match.index + 40))}`);
+      if (text !== undefined) {
+        const decoded = decodeEntities(text);
+        open.forEach((node) => { node.textContent += decoded; });
+      } else if (closing !== undefined) {
+        if (open.length === 1 || open.at(-1).tagName !== closing.toUpperCase()) throw new Error(`widget-dom: unexpected </${closing}> inside <${open.at(-1).tagName.toLowerCase()}>`);
+        finishMarkupElement(open.pop());
+      } else if (tagName !== undefined) {
+        const node = element(tagName);
+        for (const [, name, ...values] of attributeText.matchAll(ATTRIBUTE)) setMarkupAttribute(node, name.toLowerCase(), decodeEntities(values.find((value) => value !== undefined) ?? ""));
+        open.at(-1).append(node);
+        if (VOID_TAGS.has(tagName.toLowerCase())) finishMarkupElement(node);
+        else open.push(node);
+      }
+    }
+    if (open.length > 1) throw new Error(`widget-dom: unclosed <${open.at(-1).tagName.toLowerCase()}>`);
   }
 
   const body = element("body");
@@ -191,4 +264,4 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [] } = {
 }
 
 
-module.exports = { widgetHarness };
+module.exports = { bundle, widgetHarness };
