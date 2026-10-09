@@ -89,7 +89,7 @@ function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scro
     <head>
       <style><![CDATA[${styles.replaceAll("]]>", "]]]]><![CDATA[>")}]]></style>
     </head>
-    <body${bodyClassAttr} style="${escapeHtml(bodyStylePrefix)}margin:0;width:${documentWidth}px;min-height:${documentHeight}px;background:${escapeHtml(background)};color:${escapeHtml(color)};font:${escapeHtml(font)};transform:translate(${-Math.round(scrollX)}px, ${-Math.round(scrollY)}px);transform-origin:top left;">
+    <body${bodyClassAttr} style="${escapeHtml(bodyStylePrefix)}margin:0;width:${documentWidth}px;min-height:${documentHeight}px;background:${escapeHtml(background)};color:${escapeHtml(color)};font:${escapeHtml(font)};${snapshotScrollStyle(scrollX, scrollY)}">
       ${bodyMarkup}
     </body>
   </html>
@@ -193,6 +193,17 @@ function renderScreenshotOverlay(overlay) {
   return `
 <circle cx="${overlay.x}" cy="${overlay.y}" r="18" fill="#d1495b" stroke="#ffffff" stroke-width="4"/>
 <circle cx="${overlay.x}" cy="${overlay.y}" r="30" fill="none" stroke="#d1495b" stroke-width="3" opacity="0.35"/>`;
+}
+
+// Shift the cloned body to the scroll position with relative positioning, not
+// a transform: a transformed body becomes the containing block of its
+// position:fixed descendants, so fixed and sticky elements (banners, badges,
+// sticky headers) were laid out against the document top and scrolled out of
+// the snapshot (#171). z-index:0 keeps the body a stacking context as the
+// transform did, so negative z-index children stay above its background.
+// !important beats page rules such as body { position: static !important }.
+export function snapshotScrollStyle(scrollX, scrollY) {
+  return `position:relative !important;left:${-Math.round(scrollX)}px !important;top:${-Math.round(scrollY)}px !important;z-index:0 !important;`;
 }
 
 export function byteLength(value) {
