@@ -50,7 +50,7 @@ function capturedBodyStyle() {
 }
 
 test("the snapshot shifts a scrolled static body by positioning it, not with a transform (#171)", () => {
-  installPage({ bodyStyle: { position: "static", top: "auto", left: "auto" }, scrollY: 500 });
+  installPage({ bodyStyle: { position: "static", top: "auto", left: "auto", zIndex: "auto" }, scrollY: 500 });
   const style = capturedBodyStyle();
   assert.doesNotMatch(style, /transform/);
   assert.ok(style.endsWith(
@@ -60,13 +60,15 @@ test("the snapshot shifts a scrolled static body by positioning it, not with a t
 
 test("the snapshot keeps a scroll-locked fixed body where the page put it (#171)", () => {
   installPage({
-    bodyStyle: { position: "fixed", top: "-500px", left: "0px" },
+    bodyStyle: { position: "fixed", top: "-500px", left: "0px", zIndex: "auto" },
     bodyInlineStyle: "position: fixed; top: -500px;",
     scrollY: 0
   });
   const style = capturedBodyStyle();
-  // The page's inline style is carried over first; the snapshot's placement
-  // comes last and reproduces the same offset.
+  // The page's inline placement is carried over and nothing overrides it: no
+  // transform (fixed descendants such as the modal stay in view) and no
+  // position or offset of the snapshot's own.
   assert.ok(style.startsWith("position: fixed; top: -500px;"));
-  assert.match(style, /position:fixed !important;top:-500px !important;left:0px !important;right:auto !important;/);
+  assert.ok(style.endsWith("z-index:0 !important;"));
+  assert.doesNotMatch(style, /transform|!important;top|position:relative/);
 });

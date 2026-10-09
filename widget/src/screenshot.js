@@ -195,25 +195,38 @@ function renderScreenshotOverlay(overlay) {
 <circle cx="${overlay.x}" cy="${overlay.y}" r="30" fill="none" stroke="#d1495b" stroke-width="3" opacity="0.35"/>`;
 }
 
-// Shift the cloned body to the scroll position with positioning, not a
-// transform: a transformed body becomes the containing block of its
-// position:fixed descendants, so fixed and sticky elements (banners, badges,
-// sticky headers) were laid out against the document top and scrolled out of
-// the snapshot (#171). The live body's own placement is kept: a relative,
-// absolute or fixed body keeps its resolved offsets (e.g. position:fixed;
-// top:-500px to lock scrolling under a modal), and a fixed body does not move
-// with the document scroll. right / bottom are cleared so they cannot override
-// left / top (a right-anchored body in an RTL page). z-index:0 keeps the body a
-// stacking context as the transform did, so negative z-index children stay
-// above its background. !important beats page rules such as
-// body { position: static !important }.
+// Shift the cloned body to the scroll position. A transform did this before,
+// but a transformed body becomes the containing block of its position:fixed
+// descendants, so fixed and sticky elements (banners, badges, sticky headers)
+// were laid out against the document top and scrolled out of the snapshot
+// (#171). The placement only departs from the transform where the transform
+// was wrong:
+// - A static, relative or sticky body (the usual case) moves by relative
+//   positioning. A relative body keeps its resolved offsets (a sticky body's
+//   top is a threshold, not an offset), right / bottom are cleared so they
+//   cannot cancel left / top (a right-anchored body in an RTL page), and the
+//   z-index keeps the body a stacking context at the level the transform gave
+//   it (0, or the z-index a positioned body already has), so negative z-index
+//   children stay above its background. !important beats page rules such as
+//   body { position: static !important }.
+// - An absolute or fixed body places and sizes itself from its own offsets
+//   and containing block (left + right, a transformed html), so it is left as
+//   the page placed it when nothing needs shifting (e.g. position:fixed;
+//   top:-500px to lock scrolling under a modal, where the scroll is 0), and
+//   keeps the transform when the page is scrolled.
 export function snapshotBodyOffsetStyle(bodyStyle, scrollX, scrollY) {
-  const keepsOffsets = ["relative", "absolute", "fixed"].includes(bodyStyle.position);
-  const position = keepsOffsets ? bodyStyle.position : "relative";
-  const scrolls = position !== "fixed";
-  const top = (keepsOffsets ? offsetPixels(bodyStyle.top) : 0) - (scrolls ? Math.round(scrollY) : 0);
-  const left = (keepsOffsets ? offsetPixels(bodyStyle.left) : 0) - (scrolls ? Math.round(scrollX) : 0);
-  return `position:${position} !important;top:${top}px !important;left:${left}px !important;right:auto !important;bottom:auto !important;z-index:0 !important;`;
+  const x = Math.round(scrollX);
+  const y = Math.round(scrollY);
+  const position = bodyStyle.position;
+  const positioned = ["relative", "sticky", "absolute", "fixed"].includes(position);
+  const zIndex = positioned && /^-?\d+$/.test(String(bodyStyle.zIndex)) ? bodyStyle.zIndex : "0";
+  if (position === "absolute" || position === "fixed") {
+    if (x === 0 && y === 0) return `z-index:${zIndex} !important;`;
+    return `transform:translate(${-x}px, ${-y}px);transform-origin:top left;`;
+  }
+  const top = (position === "relative" ? offsetPixels(bodyStyle.top) : 0) - y;
+  const left = (position === "relative" ? offsetPixels(bodyStyle.left) : 0) - x;
+  return `position:relative !important;top:${top}px !important;left:${left}px !important;right:auto !important;bottom:auto !important;z-index:${zIndex} !important;`;
 }
 
 // A resolved offset is a px length; "auto" (no offset) counts as 0.
