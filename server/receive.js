@@ -806,9 +806,6 @@ async function handleDeleteFeedback(req, res, id) {
   }
 }
 
-// Removes the stored screenshot for a deleted feedback. Confined to
-// SCREENSHOT_DIR so a tampered stored path cannot delete arbitrary files,
-// and missing files are ignored (the feedback is already gone).
 // Seeds the running disk total at startup by summing the files already under
 // SCREENSHOT_DIR. The O(n) scan happens once; every request after is O(1).
 async function computeScreenshotDirBytes() {
@@ -830,6 +827,10 @@ async function computeScreenshotDirBytes() {
   return total;
 }
 
+// Removes a feedback's stored screenshot file. Deletion removes the file
+// before the row so a failed cleanup can be retried, and a failed insert uses
+// it to drop the file it just wrote. Confined to SCREENSHOT_DIR so a tampered
+// stored path cannot delete arbitrary files; a missing file is ignored.
 async function deleteScreenshotFile(screenshot) {
   const storedPath = screenshot && screenshot.path;
   if (!storedPath) return;

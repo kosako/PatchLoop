@@ -14,7 +14,7 @@
 //   update(id, patch)  -> item|null shallow-merge patch into the stored item
 //   updateIntegration(id, provider, result) -> item|null atomically replace one
 //                                    provider result, preserving all other fields
-//   delete(id)         -> item|null returns the removed item (for screenshot cleanup)
+//   delete(id)         -> item|null returns the removed item (callers may ignore it)
 //   count()            -> number
 //   close()
 // Exported FEEDBACK_STATUSES is the shared status allowlist used by the receiver.
