@@ -123,6 +123,7 @@ async function inboxRequest(url, options) {
     button.addEventListener("click", async () => {
       if (button.disabled) return;
       const card = button.closest("[data-card]");
+      const cell = button.closest("[data-github-cell]");
       button.disabled = true;
       button.textContent = "作成中…";
       try {
@@ -134,8 +135,11 @@ async function inboxRequest(url, options) {
         card.dataset.github = "created";
         let url;
         try { url = new URL(result.github?.url); } catch { /* Show a recovery message below. */ }
+        // Once the issue exists, a failure the server rendered for an earlier
+        // attempt is stale, so the cell keeps only the created issue.
         if (!url || (url.protocol !== "https:" && url.protocol !== "http:")) {
           button.textContent = "Issue 作成済み";
+          cell.replaceChildren(button);
           applyFilters();
           showInboxMessage("Issue は作成されています。ページを更新して確認してください。", { card: card.hidden ? null : card });
           textInput?.focus();
@@ -145,8 +149,9 @@ async function inboxRequest(url, options) {
         link.href = url.href;
         link.target = "_blank";
         link.rel = "noopener";
-        link.textContent = "Issue #" + result.github.issueNumber;
-        button.replaceWith(link);
+        // Matches the link the server renders for a created issue.
+        link.textContent = (result.github.issueNumber != null ? "#" + result.github.issueNumber : "issue") + " created";
+        cell.replaceChildren(link);
         applyFilters();
         showInboxMessage(existing ? "作成済みの GitHub Issue を表示しました。" : "GitHub Issue を作成しました。", { card: card.hidden ? null : card });
         if (card.hidden) textInput?.focus();
