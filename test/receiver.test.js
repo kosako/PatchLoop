@@ -1243,6 +1243,57 @@ test("upload-only Slack config reports skipped, not failed, without a screenshot
   assert.equal(stored[0].integrations.slack.status, "skipped");
 });
 
+test("Slack fallback text escapes the comment like the blocks do (#150)", async (t) => {
+  const slack = await startMockGitHub(t, (res) => res.end("ok"));
+  const receiver = await startReceiver(t, { SLACK_WEBHOOK_URL: slack.baseUrl });
+  const payload = feedbackPayload("pl_slack_fallback");
+  delete payload.screenshot;
+  payload.comment = "<!channel> see <https://example.test|here> & fix";
+
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, payload)).status, 201);
+  assert.equal(slack.requests.length, 1);
+  assert.equal(
+    slack.requests[0].body.text,
+    "PatchLoop feedback: &lt;!channel&gt; see &lt;https://example.test|here&gt; &amp; fix"
+  );
+});
+
+test("received and imported feedback log one line per item even with newlines in id or comment (#150)", async (t) => {
+  const receiver = await startReceiver(t);
+  let stdout = "";
+  receiver.child.stdout.on("data", (chunk) => { stdout += chunk; });
+
+  const received = feedbackPayload("pl_log\nforged received");
+  delete received.screenshot;
+  received.comment = "first line\n[PatchLoop receiver] forged entry\r\"quoted\"";
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, received)).status, 201);
+
+  const imported = feedbackPayload("pl_log_import\u0007");
+  delete imported.screenshot;
+  imported.comment = "import line\n[PatchLoop receiver] forged import";
+  const importResponse = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 1,
+    exportedAt: "2026-06-03T00:00:00.000Z",
+    feedback: imported
+  });
+  assert.equal(importResponse.status, 201);
+
+  // stdout arrives on its own pipe, so it can trail the HTTP responses.
+  const deadline = Date.now() + 5000;
+  while (!stdout.includes("imported feedback id=pl_log_import") && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const lines = stdout.split("\n");
+  assert.ok(lines.includes(
+    "[PatchLoop receiver] received feedback id=pl_log\\nforged received comment=\"first line\\n[PatchLoop receiver] forged entry\\r\\\"quoted\\\"\""
+  ));
+  assert.ok(lines.includes(
+    "[PatchLoop receiver] imported feedback id=pl_log_import\\u0007 comment=\"import line\\n[PatchLoop receiver] forged import\""
+  ));
+  assert.ok(!lines.some((line) => line.startsWith("[PatchLoop receiver] forged")));
+});
+
 test("schemaVersion is stored, defaulted for legacy payloads, and validated", async (t) => {
   const receiver = await startReceiver(t);
 

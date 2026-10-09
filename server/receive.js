@@ -488,6 +488,13 @@ function warnIgnoredSetting(label, value, fallback) {
   console.warn(`[PatchLoop receiver] ignored invalid setting ${label}: ${JSON.stringify(String(value))} — using ${fallback}`);
 }
 
+// Request-supplied values (feedback ids, comments) go into one-line log
+// entries; escape newlines, control characters and quotes so a value cannot
+// split the entry or forge another one (#150).
+function logValue(value) {
+  return JSON.stringify(String(value)).slice(1, -1);
+}
+
 // Number("") is 0 and Number("abc") is NaN; both would silently disable or
 // corrupt a limit, so blank settings are treated as unset and non-numeric ones
 // fall back with a startup warning (#99: a misconfig must be visible).
@@ -653,7 +660,7 @@ function handlePostFeedback(req, res) {
       try {
         await deleteScreenshotFile(screenshot);
       } catch (cleanupError) {
-        console.warn(`[PatchLoop receiver] failed to clean up screenshot for feedback id=${stored.id}:`, cleanupError);
+        console.warn(`[PatchLoop receiver] failed to clean up screenshot for feedback id=${logValue(stored.id)}:`, cleanupError);
       }
       respondJson(res, error.statusCode || 500, { ok: false, error: error.message });
       return;
@@ -664,7 +671,7 @@ function handlePostFeedback(req, res) {
     const slackLog = slack.status === "disabled"
       ? ""
       : ` slack=${slack.status}`;
-    console.log(`[PatchLoop receiver] received feedback id=${payload?.id || "?"} comment="${truncateText(payload?.comment || "", 60)}"${slackLog}`);
+    console.log(`[PatchLoop receiver] received feedback id=${logValue(payload?.id || "?")} comment="${logValue(truncateText(payload?.comment || "", 60))}"${slackLog}`);
     respondJson(res, 201, {
       ok: true,
       id: payload?.id,
@@ -734,7 +741,7 @@ function handlePostImport(req, res) {
       try {
         await store.insert(stored);
         ids.push(stored.id);
-        console.log(`[PatchLoop receiver] imported feedback id=${stored.id || "?"} comment="${truncateText(stored.comment || "", 60)}"`);
+        console.log(`[PatchLoop receiver] imported feedback id=${logValue(stored.id || "?")} comment="${logValue(truncateText(stored.comment || "", 60))}"`);
       } catch (error) {
         // The insert failed, so drop the screenshot we just wrote for it
         // (saveScreenshot names files uniquely, so this never touches an
@@ -742,7 +749,7 @@ function handlePostImport(req, res) {
         try {
           await deleteScreenshotFile(screenshot);
         } catch (cleanupError) {
-          console.warn(`[PatchLoop receiver] failed to clean up screenshot for feedback id=${stored.id}:`, cleanupError);
+          console.warn(`[PatchLoop receiver] failed to clean up screenshot for feedback id=${logValue(stored.id)}:`, cleanupError);
         }
         if (error.statusCode === 409) {
           duplicates.push(stored.id);
@@ -783,10 +790,10 @@ async function handleDeleteFeedback(req, res, id) {
     // Keep the row until file cleanup succeeds so a failed deletion can retry.
     await deleteScreenshotFile(item.screenshot);
     await store.delete(id);
-    console.log(`[PatchLoop receiver] deleted feedback id=${id}`);
+    console.log(`[PatchLoop receiver] deleted feedback id=${logValue(id)}`);
     respondJson(res, 200, { ok: true, id, count: await store.count() });
   } catch (error) {
-    console.error(`[PatchLoop receiver] failed to delete feedback id=${id}:`, error);
+    console.error(`[PatchLoop receiver] failed to delete feedback id=${logValue(id)}:`, error);
     respondJson(res, 500, { ok: false, error: "Unable to delete feedback" });
   } finally {
     feedbackOperationsInFlight.delete(id);
@@ -881,7 +888,7 @@ function handlePostGitHubIssue(req, res, id) {
 
       const github = await createGitHubIssue(item);
       await store.updateIntegration(id, "github", github);
-      console.log(`[PatchLoop receiver] github issue ${github.status} id=${id}${github.url ? ` url=${github.url}` : ""}`);
+      console.log(`[PatchLoop receiver] github issue ${github.status} id=${logValue(id)}${github.url ? ` url=${github.url}` : ""}`);
 
       if (github.status === "created") {
         respondJson(res, 201, { ok: true, github });
@@ -1930,7 +1937,7 @@ function buildSlackMessage(item) {
   });
 
   return {
-    text: `PatchLoop feedback: ${truncateText(item.comment || "", 120)}`,
+    text: `PatchLoop feedback: ${slackEscape(truncateText(item.comment || "", 120))}`,
     blocks
   };
 }
