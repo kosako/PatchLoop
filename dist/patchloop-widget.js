@@ -650,9 +650,7 @@ function renderScreenshotOverlay(overlay) {
 // was wrong:
 // - Every body stays a stacking context, as the transform made it, so negative
 //   z-index children stay above its background. isolation does that without
-//   making the body a containing block or touching its z-index. A
-//   transform-style:preserve-3d body already is one, and isolation would
-//   flatten its 3D rendering context, so it gets none.
+//   making the body a containing block or touching its z-index.
 // - Nothing needs shifting when the page is not scrolled (including
 //   position:fixed; top:-500px to lock scrolling under a modal), so the body
 //   is left exactly as the page placed it.
@@ -670,7 +668,7 @@ function renderScreenshotOverlay(overlay) {
 function snapshotBodyOffsetStyle(bodyStyle, rootDisplay, scrollX, scrollY) {
   const x = Math.round(scrollX);
   const y = Math.round(scrollY);
-  const isolation = bodyStyle.transformStyle === "preserve-3d" ? "" : "isolation:isolate !important;";
+  const isolation = "isolation:isolate !important;";
   if (x === 0 && y === 0) return isolation;
   const position = bodyStyle.position;
   if (position === "absolute" || position === "fixed") {
