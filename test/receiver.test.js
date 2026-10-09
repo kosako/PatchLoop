@@ -1256,6 +1256,15 @@ test("Slack fallback text escapes the comment like the blocks do (#150)", async 
     slack.requests[0].body.text,
     "PatchLoop feedback: &lt;!channel&gt; see &lt;https://example.test|here&gt; &amp; fix"
   );
+
+  // Truncate first, then escape: escaping first would cut "&amp;" at the
+  // 120-character boundary and leave a broken entity.
+  const boundary = feedbackPayload("pl_slack_fallback_boundary");
+  delete boundary.screenshot;
+  boundary.comment = `${"x".repeat(119)}&tail`;
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, boundary)).status, 201);
+  assert.equal(slack.requests.length, 2);
+  assert.equal(slack.requests[1].body.text, `PatchLoop feedback: ${"x".repeat(119)}&amp;…`);
 });
 
 test("received and imported feedback log one line per item even with newlines in id or comment (#150)", async (t) => {
