@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PatchLoop ページの CSS からの切り離しの確認</title>
+    <!-- #174 で widget を崩した 3 つの規則 (そのまま)。widget の見た目は、この規則の有無で変わらないこと。 -->
+    <style id="issue-rules">
+      header { position: sticky; top: 0; background: #2f5d8a; color: #fff; padding: 12px 20px; font-weight: 600; }
+      section { background: #fff; border: 1px solid #d9e1dd; border-radius: 10px; padding: 16px 20px; margin: 16px 0; }
+      button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid #9aa8a2; background: #fff; }
+    </style>
+    <!-- 要素名・*・疑似要素・属性の規則と、body から継承する文字設定。 -->
+    <style id="wide-rules" media="not all">
+      body { font: italic 300 17px/2 Georgia, serif; color: #5b2a86; letter-spacing: .08em; text-transform: uppercase; text-indent: 12px; }
+      * { margin: 4px; }
+      *::before { content: "> "; color: #c0392b; }
+      div, p, span, label, small, strong, form, details, summary { padding: 4px; border: 1px dashed #c90; }
+      [type="button"], [type="submit"] { min-width: 160px; box-shadow: 0 3px 0 #000; }
+      input, textarea, select { display: block; height: 64px; border: 3px solid orange; background: #222; color: #0f0; }
+    </style>
+  </head>
+  <body>
+    <header>ページの CSS からの切り離しの確認</header>
+    <main>
+      <section>
+        <p>規則を切り替えても、右下の widget の見た目 (閉じたボタン・開いたパネル・選択モードの案内・コメント入力・ピンと範囲・送信後の一覧・送信先の設定) が変わらないことを確かめます。</p>
+        <label><input type="checkbox" data-toggle="issue-rules" checked /> #174 の 3 つの規則を当てる</label>
+        <label><input type="checkbox" data-toggle="wide-rules" /> 広い規則も当てる</label>
+      </section>
+      <section><button type="button">ページのボタン</button></section>
+    </main>
+    <script src="../../dist/patchloop-widget.js"></script>
+    <script>
+      window.PatchLoop.init({ projectId: "patchloop", demoId: "page-css-isolation", deliveryMode: "none", persistFeedback: false, showDeliverySettings: true });
+      document.querySelectorAll("[data-toggle]").forEach((input) => {
+        input.addEventListener("change", () => {
+          document.getElementById(input.dataset.toggle).media = input.checked ? "all" : "not all";
+        });
+      });
+    </script>
+  </body>
+</html>
