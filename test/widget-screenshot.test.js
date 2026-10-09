@@ -24,6 +24,15 @@ test("snapshotBodyOffsetStyle leaves an unscrolled body in place and only keeps 
   }
 });
 
+test("snapshotBodyOffsetStyle does not flatten a preserve-3d body with isolation (#171)", () => {
+  // A preserve-3d body already is a stacking context; isolation would flatten
+  // the 3D rendering context and reorder its children by DOM order.
+  const body = { position: "static", top: "auto", left: "auto", transformStyle: "preserve-3d" };
+  assert.equal(snapshotBodyOffsetStyle(body, "block", 0, 0), "");
+  assert.doesNotMatch(snapshotBodyOffsetStyle(body, "block", 0, 300), /isolation/);
+  assert.match(snapshotBodyOffsetStyle(body, "block", 0, 300), /^position:relative !important;top:-300px !important;/);
+});
+
 test("snapshotBodyOffsetStyle shifts a scrolled static body by relative positioning, not a transform (#171)", () => {
   const style = snapshotBodyOffsetStyle({ position: "static", top: "auto", left: "auto" }, "block", 12.4, 499.6);
   // A transform would make the body the containing block of position:fixed
