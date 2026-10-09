@@ -2455,19 +2455,22 @@ function injectStyles() {
   const style = document.createElement("style");
   style.dataset.patchloopStyle = "true";
   // The first three rules isolate the widget from the host page's CSS (#174).
-  // Page rules on bare element names, * and pseudo-elements (header, section,
-  // button, p, *::before, ...) would otherwise fill every property the widget
-  // leaves unset. Top-level widget nodes drop to initial values, so no page
-  // typography is inherited, except the lang-derived locale (-webkit-locale)
-  // that all: initial would also clear and that picks the Japanese glyphs.
-  // Their descendants and pseudo-elements revert to the browser defaults.
+  // Page rules on bare element names, * and ::before / ::after (header,
+  // section, button, p, *::before, ...) would otherwise fill every property
+  // the widget leaves unset. Top-level widget nodes drop to initial values, so
+  // no page typography is inherited, except the lang-derived locale
+  // (-webkit-locale) that all: initial would also clear and that picks the
+  // Japanese glyphs. Their descendants and their ::before / ::after revert to
+  // the browser defaults.
   // The reset is (0,1,0) ((0,1,1) for pseudo-elements) and comes first, so
   // every widget rule below must start with a .pl- class or a data-patchloop
   // attribute to win over it. The descendant reset is kept apart from the
   // :is() rule so that a browser without :is() still applies it.
   // Not covered: page rules of (0,1,1) or more (button:hover, textarea:focus,
-  // section > header:first-child), !important, and (0,1,0) attribute rules
-  // loaded after init. Full isolation would need a shadow root.
+  // section > header:first-child), !important, (0,1,0) attribute rules loaded
+  // after init, other pseudo-elements (::placeholder, ::marker, ::selection),
+  // and direction / unicode-bidi, which all does not reset. Full isolation
+  // would need a shadow root.
   style.textContent = `
     .pl-root, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-selection] { all: initial; -webkit-locale: inherit; }
     .pl-root *, [data-patchloop-area] * { all: revert; }

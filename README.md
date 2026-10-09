@@ -366,7 +366,7 @@ GitHub Issue 作成は receiver inbox からの手動操作のみで、自動作
 - Slack App / OAuth 連携
 - チーム向けのユーザー・権限管理、定期バックアップ・保存期間の自動管理
 - pixel-perfect なブラウザ screenshot capture
-- ページの CSS からの完全な切り離し（要素名・`*`・疑似要素の規則は widget に効かないが、詳細度が (0,1,1) 以上の規則（`button:hover` など）、`!important`、widget の起動より後に読まれた属性の規則は効きうる。ページの CSS で widget を隠すときは、`!important` を付けるか `body [data-patchloop-root]` のような selector を使う）
+- ページの CSS からの完全な切り離し（要素名・`*`・`::before` / `::after` の規則は widget に効かないが、詳細度が (0,1,1) 以上の規則（`button:hover` など）、`!important`、widget の起動より後に読まれた属性の規則、ほかの疑似要素（`::placeholder`・`::marker`・`::selection` など）の規則と、`all` がリセットしない `direction` / `unicode-bidi` は効きうる。ページの CSS で widget を隠すときは、`!important` を付けるか `body [data-patchloop-root]` のような selector を使う）
 - レビュアー個人の認証（ingest key はプロジェクト単位の公開キーで、個人を識別しない。デモ側ログイン前提の署名付き token は将来スコープ）
 - AI PR 連携
 

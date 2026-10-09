@@ -367,7 +367,7 @@ Not included yet:
 - Slack App / OAuth integration
 - Team user and permission management, scheduled backups, and retention management
 - Pixel-perfect browser screenshot capture
-- Full isolation from page CSS (page rules on bare element names, `*` and pseudo-elements no longer reach the widget, but rules of specificity (0,1,1) or higher such as `button:hover`, `!important`, and attribute rules loaded after the widget starts still can. To hide the widget with page CSS, use `!important` or a selector such as `body [data-patchloop-root]`)
+- Full isolation from page CSS (page rules on bare element names, `*`, `::before` and `::after` no longer reach the widget, but rules of specificity (0,1,1) or higher such as `button:hover`, `!important`, attribute rules loaded after the widget starts, rules on other pseudo-elements (`::placeholder`, `::marker`, `::selection` and so on), and `direction` / `unicode-bidi`, which `all` does not reset, still can. To hide the widget with page CSS, use `!important` or a selector such as `body [data-patchloop-root]`)
 - Per-reviewer authentication (the ingest key is a per-project public key and does not identify individuals; signed tokens issued behind a demo-side login are future scope)
 - AI PR integration
 
