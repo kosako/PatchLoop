@@ -59,7 +59,7 @@ script-tag widget:
 - Target element outline while a draft is pending
 - Per-feedback comment list with reviewer, kind, comment, and delivery status
 - Hover tooltip on markers showing the comment (disabled in feedback mode)
-- Per-item edit and delete inside the drawer with marker renumbering
+- Per-item edit and delete inside the panel with marker renumbering
 - Payload with URL, point/area position, selector, viewport, browser, reviewer, and timestamp
 - Lightweight viewport screenshot snapshot (SVG) attached to each payload
 - `localStorage` persistence for the feedback list, including pin / area overlay restoration after reload
@@ -68,7 +68,7 @@ script-tag widget:
 - Optional `onSubmit(payload)` callback
 - Optional `endpoint` setting that POSTs payloads to the bundled local receiver
 - Optional Slack Incoming Webhook forwarding from the local receiver with screenshot links, image blocks, and optional file upload
-- Download mode that batches unsent feedback for a demo into one versioned JSON bundle (tracked with a sent flag)
+- Download mode that batches unsent feedback for a demo into one versioned JSON bundle (tracked with an `exported` flag)
 - Receiver inbox import for download-mode bundles (both single and batch)
 - Configurable delivery mode for receiver forwarding, direct Slack webhook delivery, download, or no delivery
 
@@ -104,7 +104,7 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 - `endpoint` (string, optional) — URL the widget POSTs each payload to; nothing is sent when omitted
 - `ingestKey` (string, optional) — per-project public key sent to the receiver in the `X-PatchLoop-Ingest-Key` header; required when the receiver sets `INGEST_KEYS` / `ingestKeys`. It is embedded in the page, so it is not a secret — it identifies the project, deters indiscriminate spam, and can be rotated to revoke
 - `slackWebhookUrl` (string, optional) — Slack Incoming Webhook URL used when `deliveryMode: "slack-webhook"`
-- `showDeliverySettings` (boolean, optional) — show the delivery target controls in the drawer; defaults to `false`
+- `showDeliverySettings` (boolean, optional) — show the delivery target controls in the panel; defaults to `false`
 - `captureScreenshot` (boolean, optional) — include a viewport snapshot in the payload; defaults to `true`
 - `screenshotMaxBytes` (number, optional) — widget-side byte limit before omitting the snapshot; defaults to `1200000`
 - `onSubmit(payload)` (function, optional) — called on every submit. Synchronous exceptions and rejections from a returned Promise are reported in the console; receiver / Slack delivery continues independently of the callback's success or completion
@@ -182,7 +182,7 @@ node server/receive.js
 - Accepts payload at `POST /feedback`, storing it in `server/feedback.db` (sqlite) by default
 - Imports download-mode JSON bundles at `POST /import` (single v1 feedback or array-based v2 batch), storing them in the same inbox format. Duplicate ids are skipped, and the response returns `imported` / `duplicates` / `failed`
 - Renders an inbox of received feedback at `GET /`
-- The inbox has text search plus status / kind / project / demo / reviewer / source / Slack filters
+- The inbox has text search, project, and status filters, plus detailed filters for kind / demo / reviewer / source / Slack / GitHub
 - The sidebar shows counts by status. Search and filters remain in place after actions, with inline success/error messages. Imports show added/duplicate/failed counts before an explicit inbox refresh.
 - Each feedback has a triage status (`new` / `accepted` / `fixed` / `ignored`) editable from the card; statuses persist to sqlite
 - `POST /feedback/:id/status` updates the status via the API (body: `{"status": "accepted"}`)
@@ -303,7 +303,7 @@ HOST=127.0.0.1 PORT=4000 node server/receive.js
 
 ## Slack Direct Mode
 
-Use `deliveryMode: "slack-webhook"` to send directly from the browser to a Slack Incoming Webhook without running the receiver. When the drawer delivery settings are enabled, you can switch the target to `Slack に直接送信（結果確認不可）` and enter the webhook URL in the UI.
+Use `deliveryMode: "slack-webhook"` to send directly from the browser to a Slack Incoming Webhook without running the receiver. When the panel's delivery settings (`showDeliverySettings`) are enabled, you can switch the target to `Slack に直接送信（結果確認不可）` and enter the webhook URL in the UI.
 
 ```js
 window.PatchLoop.init({

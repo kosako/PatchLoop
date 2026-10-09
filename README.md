@@ -57,7 +57,7 @@ script-tag widget:
 - 送信後もコメントモードは継続し、連続でコメントできる
 - コメント入力中は Cmd+Enter（Windows は Ctrl+Enter）で送信
 - ドラフト中、対象要素にダッシュドラインの outline
-- ドロワー内のコメント一覧（番号 / kind / reviewer / 本文 / 配送ステータス）
+- パネル内のコメント一覧（番号 / kind / reviewer / 本文 / 配送ステータス）
 - マーカーホバーでコメントのツールチップ表示（feedback モード中は無効）
 - 個別の編集・削除と残りマーカーの自動再番号付け
 - URL / 点・範囲位置 / selector / viewport / browser / reviewer / timestamp を含む payload
@@ -68,9 +68,9 @@ script-tag widget:
 - 任意の `onSubmit(payload)` callback
 - 任意の `endpoint` 設定で payload を receiver に POST
 - ローカル receiver から任意の Slack Incoming Webhook へ、スクショリンク / image block / 任意の file upload 付きで転送
-- Download mode で、未送信ぶんをデモ単位でまとめた versioned JSON bundle を一括保存（送り済みフラグで管理）
+- Download mode で、未送信ぶんをデモ単位でまとめた versioned JSON bundle を一括保存（書き出し済みの印 `exported` で管理）
 - receiver inbox から download mode の bundle（単一・batch の両方）を import
-- 設定または drawer UI から、receiver 経由送信 / Slack webhook 直送 / download / 送信なしを切り替え
+- 設定またはパネルの「送信先・設定」から、receiver 経由送信 / Slack webhook 直送 / download / 送信なしを切り替え
 
 ## 埋め込み Widget
 
@@ -104,7 +104,7 @@ PatchLoop は、普通の HTML に `script` tag で埋め込める standalone wi
 - `endpoint` (string, optional) — payload を `POST` する URL。未設定なら送信しない
 - `ingestKey` (string, optional) — receiver に `X-PatchLoop-Ingest-Key` ヘッダーで送るプロジェクトごとの公開キー。receiver 側で `INGEST_KEYS` / `ingestKeys` を設定している場合は必須。ページに埋め込まれるため秘密ではなく、プロジェクト識別・無差別 spam の抑止・ローテーションによる失効が目的
 - `slackWebhookUrl` (string, optional) — `deliveryMode: "slack-webhook"` 時にブラウザから直接送る Slack Incoming Webhook URL
-- `showDeliverySettings` (boolean, optional) — drawer 内に送信先切替 UI を表示するか。デフォルトは `false`
+- `showDeliverySettings` (boolean, optional) — パネル内に送信先切替 UI（「送信先・設定」）を表示するか。デフォルトは `false`
 - `captureScreenshot` (boolean, optional) — viewport snapshot を payload に含めるか。デフォルトは `true`
 - `screenshotMaxBytes` (number, optional) — widget 側で snapshot を省略する最大バイト数。デフォルトは `1200000`
 - `onSubmit(payload)` (function, optional) — submit のたびに呼ばれる callback。同期例外・返したPromiseのrejectionはconsoleに警告し、receiver / Slackへの配送はcallbackの成功・完了に依存せず継続します
@@ -131,7 +131,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 
 編集・削除はこの端末の一覧だけに反映され、受信箱や GitHub Issue は変更されません。送信済み・書き出し済みコメントを変更すると「ローカル変更・送信先には未反映」と表示します。画像の非表示箇所の除外や機密情報の自動マスキングは保証しません。画像には画面外の内容が含まれる場合があるため、機密情報のあるページでは画像を外してください。
 
-投稿者名は送信後に `localStorage` へ保存され、次回以降の widget 起動時に復元されます。feedback list もデフォルトで `localStorage` に保存され、同じ project / demo / page URL の reload 後に drawer list と pin / area overlay が復元されます。パネルの「この端末のコメントを消す」は、表示中の marker と保存済み feedback の両方を削除します。永続化を使わず memory-only にしたい場合は `persistFeedback: false` を指定してください。
+投稿者名は送信後に `localStorage` へ保存され、次回以降の widget 起動時に復元されます。feedback list もデフォルトで `localStorage` に保存され、同じ project / demo / page URL の reload 後に パネルのコメント一覧と pin / area overlay が復元されます。パネルの「この端末のコメントを消す」は、表示中の marker と保存済み feedback の両方を削除します。永続化を使わず memory-only にしたい場合は `persistFeedback: false` を指定してください。
 
 コメントのマーカーは Tab でフォーカスしても内容を確認でき、Escape で tooltip を閉じられます。コメントフォームでは Escape で入力・編集を取り消し、元の操作位置へフォーカスを戻します。
 
@@ -302,7 +302,7 @@ HOST=127.0.0.1 PORT=4000 node server/receive.js
 
 ## Slack direct mode
 
-`deliveryMode: "slack-webhook"` を使うと、receiver を立てずにブラウザから Slack Incoming Webhook に直接送信できます。drawer UI を有効にしている場合は、画面上で送信先を `Slack に直接送信（結果確認不可）` に切り替えて webhook URL を入力できます。
+`deliveryMode: "slack-webhook"` を使うと、receiver を立てずにブラウザから Slack Incoming Webhook に直接送信できます。パネルの送信先切替 UI（`showDeliverySettings`）を有効にしている場合は、画面上で送信先を `Slack に直接送信（結果確認不可）` に切り替えて webhook URL を入力できます。
 
 ```js
 window.PatchLoop.init({

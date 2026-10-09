@@ -1617,7 +1617,7 @@ function restorePersistedFeedback() {
 function shouldDeliverFeedback() {
   if (state.options.deliveryMode === "none") return false;
   // Download mode no longer ships per comment; the reviewer exports the
-  // unsent batch on demand via the drawer button.
+  // unsent batch on demand via the panel button.
   if (state.options.deliveryMode === "download") return false;
   if (state.options.deliveryMode === "slack-webhook") return Boolean(state.options.slackWebhookUrl);
   return Boolean(state.options.endpoint);
