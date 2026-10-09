@@ -31,7 +31,7 @@ function installPage({ bodyStyle, bodyInlineStyle = null, scrollX = 0, scrollY =
     matchMedia: () => ({ matches: true }),
     getComputedStyle: (node) => (node === body
       ? { backgroundColor: "rgb(255, 255, 255)", color: "rgb(0, 0, 0)", font: "16px sans-serif", ...bodyStyle }
-      : { backgroundColor: "rgba(0, 0, 0, 0)" })
+      : { backgroundColor: "rgba(0, 0, 0, 0)", display: "block" })
   };
   globalThis.XMLSerializer = class {
     serializeToString() {
@@ -50,17 +50,17 @@ function capturedBodyStyle() {
 }
 
 test("the snapshot shifts a scrolled static body by positioning it, not with a transform (#171)", () => {
-  installPage({ bodyStyle: { position: "static", top: "auto", left: "auto", zIndex: "auto" }, scrollY: 500 });
+  installPage({ bodyStyle: { position: "static", top: "auto", left: "auto" }, scrollY: 500 });
   const style = capturedBodyStyle();
   assert.doesNotMatch(style, /transform/);
   assert.ok(style.endsWith(
-    "position:relative !important;top:-500px !important;left:0px !important;right:auto !important;bottom:auto !important;z-index:0 !important;"
+    "position:relative !important;top:-500px !important;left:0px !important;right:auto !important;bottom:auto !important;z-index:auto !important;isolation:isolate !important;"
   ));
 });
 
 test("the snapshot keeps a scroll-locked fixed body where the page put it (#171)", () => {
   installPage({
-    bodyStyle: { position: "fixed", top: "-500px", left: "0px", zIndex: "auto" },
+    bodyStyle: { position: "fixed", top: "-500px", left: "0px" },
     bodyInlineStyle: "position: fixed; top: -500px;",
     scrollY: 0
   });
@@ -69,6 +69,6 @@ test("the snapshot keeps a scroll-locked fixed body where the page put it (#171)
   // transform (fixed descendants such as the modal stay in view) and no
   // position or offset of the snapshot's own.
   assert.ok(style.startsWith("position: fixed; top: -500px;"));
-  assert.ok(style.endsWith("z-index:0 !important;"));
+  assert.ok(style.endsWith("isolation:isolate !important;"));
   assert.doesNotMatch(style, /transform|!important;top|position:relative/);
 });

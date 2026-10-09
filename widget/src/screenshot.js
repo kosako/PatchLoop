@@ -64,10 +64,11 @@ function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scro
   bodyClone.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
 
   const bodyStyle = window.getComputedStyle(document.body);
+  const rootStyle = window.getComputedStyle(document.documentElement);
   // A transparent body paints the html (or default white) background; the
   // snapshot must do the same instead of losing the page background.
   const background = visibleBackground(bodyStyle.backgroundColor)
-    || visibleBackground(window.getComputedStyle(document.documentElement).backgroundColor)
+    || visibleBackground(rootStyle.backgroundColor)
     || "#ffffff";
   const color = bodyStyle.color || "#14211d";
   const font = bodyStyle.font || bodyStyle.fontFamily || "system-ui, sans-serif";
@@ -89,7 +90,7 @@ function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scro
     <head>
       <style><![CDATA[${styles.replaceAll("]]>", "]]]]><![CDATA[>")}]]></style>
     </head>
-    <body${bodyClassAttr} style="${escapeHtml(bodyStylePrefix)}margin:0;width:${documentWidth}px;min-height:${documentHeight}px;background:${escapeHtml(background)};color:${escapeHtml(color)};font:${escapeHtml(font)};${snapshotBodyOffsetStyle(bodyStyle, scrollX, scrollY)}">
+    <body${bodyClassAttr} style="${escapeHtml(bodyStylePrefix)}margin:0;width:${documentWidth}px;min-height:${documentHeight}px;background:${escapeHtml(background)};color:${escapeHtml(color)};font:${escapeHtml(font)};${snapshotBodyOffsetStyle(bodyStyle, rootStyle.display, scrollX, scrollY)}">
       ${bodyMarkup}
     </body>
   </html>
@@ -201,32 +202,37 @@ function renderScreenshotOverlay(overlay) {
 // were laid out against the document top and scrolled out of the snapshot
 // (#171). The placement only departs from the transform where the transform
 // was wrong:
-// - A static, relative or sticky body (the usual case) moves by relative
-//   positioning. A relative body keeps its resolved offsets (a sticky body's
-//   top is a threshold, not an offset), right / bottom are cleared so they
-//   cannot cancel left / top (a right-anchored body in an RTL page), and the
-//   z-index keeps the body a stacking context at the level the transform gave
-//   it (0, or the z-index a positioned body already has), so negative z-index
-//   children stay above its background. !important beats page rules such as
-//   body { position: static !important }.
-// - An absolute or fixed body places and sizes itself from its own offsets
-//   and containing block (left + right, a transformed html), so it is left as
-//   the page placed it when nothing needs shifting (e.g. position:fixed;
-//   top:-500px to lock scrolling under a modal, where the scroll is 0), and
-//   keeps the transform when the page is scrolled.
-export function snapshotBodyOffsetStyle(bodyStyle, scrollX, scrollY) {
+// - Every body stays a stacking context, as the transform made it, so negative
+//   z-index children stay above its background. isolation does that without
+//   making the body a containing block or touching its z-index.
+// - Nothing needs shifting when the page is not scrolled (including
+//   position:fixed; top:-500px to lock scrolling under a modal), so the body
+//   is left exactly as the page placed it.
+// - A scrolled static, relative or sticky body (the usual case) moves by
+//   relative positioning. A relative body keeps its resolved offsets (a sticky
+//   body's top is a threshold, not an offset), and right / bottom are cleared
+//   so they cannot cancel left / top (a right-anchored body in an RTL page).
+//   A z-index that applies to the body (positioned, or a flex / grid item of
+//   html) is kept; one that did not apply to a static body is reset so the
+//   new positioning does not activate it. !important beats page rules such
+//   as body { position: static !important }.
+// - A scrolled absolute or fixed body places and sizes itself from its own
+//   offsets and containing block (left + right, a transformed html), so it
+//   keeps the transform.
+export function snapshotBodyOffsetStyle(bodyStyle, rootDisplay, scrollX, scrollY) {
   const x = Math.round(scrollX);
   const y = Math.round(scrollY);
+  const isolation = "isolation:isolate !important;";
+  if (x === 0 && y === 0) return isolation;
   const position = bodyStyle.position;
-  const positioned = ["relative", "sticky", "absolute", "fixed"].includes(position);
-  const zIndex = positioned && /^-?\d+$/.test(String(bodyStyle.zIndex)) ? bodyStyle.zIndex : "0";
   if (position === "absolute" || position === "fixed") {
-    if (x === 0 && y === 0) return `z-index:${zIndex} !important;`;
     return `transform:translate(${-x}px, ${-y}px);transform-origin:top left;`;
   }
-  const top = (position === "relative" ? offsetPixels(bodyStyle.top) : 0) - y;
-  const left = (position === "relative" ? offsetPixels(bodyStyle.left) : 0) - x;
-  return `position:relative !important;top:${top}px !important;left:${left}px !important;right:auto !important;bottom:auto !important;z-index:${zIndex} !important;`;
+  const relative = position === "relative";
+  const zIndexApplies = relative || position === "sticky" || /\b(flex|grid)\b/.test(String(rootDisplay));
+  const top = (relative ? offsetPixels(bodyStyle.top) : 0) - y;
+  const left = (relative ? offsetPixels(bodyStyle.left) : 0) - x;
+  return `position:relative !important;top:${top}px !important;left:${left}px !important;right:auto !important;bottom:auto !important;${zIndexApplies ? "" : "z-index:auto !important;"}${isolation}`;
 }
 
 // A resolved offset is a px length; "auto" (no offset) counts as 0.
