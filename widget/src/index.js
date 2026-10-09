@@ -1079,11 +1079,14 @@ function repositionMarker(marker, target) {
 // #173: markers are position: absolute children of body, so their left/top
 // resolve against body's padding box whenever body (or html) is a containing
 // block: a scroll-locked modal (position: fixed; top: -<scroll>px), a
-// positioned / transformed body, etc. Measure where left/top 0 lands with a
-// throwaway probe instead of listing every CSS property that makes a
-// containing block, and subtract it from the page coordinates. The probe's
-// inline !important declarations keep host rules such as `body > div` off it.
-const ORIGIN_PROBE_STYLE = "all:initial!important;display:block!important;position:absolute!important;left:0!important;top:0!important";
+// positioned body, a body moved by a translate, etc. Measure where left/top 0
+// lands with a throwaway probe instead of listing every CSS property that
+// makes a containing block, and subtract it from the page coordinates. Only
+// the origin is compensated: a body that is scaled or rotated still places
+// markers off. The probe's inline !important declarations keep host rules
+// such as `body > div` off it, and its fixed zero size and hidden overflow
+// keep a host ::before / ::after from growing it while it is measured.
+const ORIGIN_PROBE_STYLE = "all:initial!important;display:block!important;position:absolute!important;left:0!important;top:0!important;width:0!important;height:0!important;overflow:hidden!important";
 
 function markerPosition(pageX, pageY) {
   const probe = document.createElement("div");
