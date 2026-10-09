@@ -1270,7 +1270,8 @@ test("received and imported feedback log one line per item even with newlines in
 
   const imported = feedbackPayload("pl_log_import\u0007");
   delete imported.screenshot;
-  imported.comment = "import line\n[PatchLoop receiver] forged import";
+  // DEL, NEL and the Unicode line/paragraph separators survive JSON.stringify.
+  imported.comment = "import line\nLS\u2028PS\u2029NEL\u0085DEL\u007f[PatchLoop receiver] forged import";
   const importResponse = await postJson(`${receiver.baseUrl}/import`, {
     kind: "patchloop-feedback-bundle",
     version: 1,
@@ -1279,19 +1280,20 @@ test("received and imported feedback log one line per item even with newlines in
   });
   assert.equal(importResponse.status, 201);
 
-  // stdout arrives on its own pipe, so it can trail the HTTP responses.
+  const expected = [
+    "[PatchLoop receiver] received feedback id=pl_log\\nforged received comment=\"first line\\n[PatchLoop receiver] forged entry\\r\\\"quoted\\\"\"",
+    "[PatchLoop receiver] imported feedback id=pl_log_import\\u0007 comment=\"import line\\nLS\\u2028PS\\u2029NEL\\u0085DEL\\u007f[PatchLoop receiver] forged import\""
+  ];
+  // stdout arrives on its own pipe and can split mid-line, so wait for the
+  // complete lines rather than a prefix.
   const deadline = Date.now() + 5000;
-  while (!stdout.includes("imported feedback id=pl_log_import") && Date.now() < deadline) {
+  while (!expected.every((line) => stdout.split("\n").includes(line)) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   const lines = stdout.split("\n");
-  assert.ok(lines.includes(
-    "[PatchLoop receiver] received feedback id=pl_log\\nforged received comment=\"first line\\n[PatchLoop receiver] forged entry\\r\\\"quoted\\\"\""
-  ));
-  assert.ok(lines.includes(
-    "[PatchLoop receiver] imported feedback id=pl_log_import\\u0007 comment=\"import line\\n[PatchLoop receiver] forged import\""
-  ));
+  for (const line of expected) assert.ok(lines.includes(line), line);
   assert.ok(!lines.some((line) => line.startsWith("[PatchLoop receiver] forged")));
+  assert.doesNotMatch(stdout, /[\u007f-\u009f\u2028\u2029]/);
 });
 
 test("schemaVersion is stored, defaulted for legacy payloads, and validated", async (t) => {
@@ -1471,11 +1473,11 @@ for (const failure of ["duplicate", "database"]) {
     });
     const errors = [];
     receiver.child.stderr.on("data", (chunk) => errors.push(chunk.toString()));
-    const existing = feedbackPayload(`pl_cleanup_${failure}`);
+    const existing = feedbackPayload(`pl_cleanup_%c_${failure}`);
     assert.equal((await postJson(`${receiver.baseUrl}/feedback`, existing)).status, 201);
     const before = await readStoredFeedback(receiver.dbPath);
     await fs.writeFile(triggerPath, "enabled");
-    const rejected = feedbackPayload(failure === "duplicate" ? existing.id : "pl_cleanup_db_rejected");
+    const rejected = feedbackPayload(failure === "duplicate" ? existing.id : "pl_cleanup_db_%c_rejected");
     const db = new DatabaseSync(receiver.dbPath);
     try {
       if (failure === "database") {
@@ -1516,7 +1518,7 @@ for (const failure of ["duplicate", "database"]) {
     });
     const errors = [];
     receiver.child.stderr.on("data", (chunk) => errors.push(chunk.toString()));
-    const rejected = feedbackPayload(`pl_import_cleanup_${failure}`);
+    const rejected = feedbackPayload(`pl_import_cleanup_%c_${failure}`);
     const raced = { ...rejected, comment: "concurrent writer" };
     delete raced.screenshot;
     await fs.writeFile(triggerPath, "enabled");
