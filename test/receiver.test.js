@@ -1243,6 +1243,68 @@ test("upload-only Slack config reports skipped, not failed, without a screenshot
   assert.equal(stored[0].integrations.slack.status, "skipped");
 });
 
+test("Slack fallback text escapes the comment like the blocks do (#150)", async (t) => {
+  const slack = await startMockGitHub(t, (res) => res.end("ok"));
+  const receiver = await startReceiver(t, { SLACK_WEBHOOK_URL: slack.baseUrl });
+  const payload = feedbackPayload("pl_slack_fallback");
+  delete payload.screenshot;
+  payload.comment = "<!channel> see <https://example.test|here> & fix";
+
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, payload)).status, 201);
+  assert.equal(slack.requests.length, 1);
+  assert.equal(
+    slack.requests[0].body.text,
+    "PatchLoop feedback: &lt;!channel&gt; see &lt;https://example.test|here&gt; &amp; fix"
+  );
+
+  // Truncate first, then escape: escaping first would cut "&amp;" at the
+  // 120-character boundary and leave a broken entity.
+  const boundary = feedbackPayload("pl_slack_fallback_boundary");
+  delete boundary.screenshot;
+  boundary.comment = `${"x".repeat(119)}&tail`;
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, boundary)).status, 201);
+  assert.equal(slack.requests.length, 2);
+  assert.equal(slack.requests[1].body.text, `PatchLoop feedback: ${"x".repeat(119)}&amp;…`);
+});
+
+test("received and imported feedback log one line per item even with newlines in id or comment (#150)", async (t) => {
+  const receiver = await startReceiver(t);
+  let stdout = "";
+  receiver.child.stdout.on("data", (chunk) => { stdout += chunk; });
+
+  const received = feedbackPayload("pl_log\nforged received");
+  delete received.screenshot;
+  received.comment = "first line\n[PatchLoop receiver] forged entry\r\"quoted\"";
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, received)).status, 201);
+
+  const imported = feedbackPayload("pl_log_import\u0007");
+  delete imported.screenshot;
+  // DEL, NEL and the Unicode line/paragraph separators survive JSON.stringify.
+  imported.comment = "import line\nLS\u2028PS\u2029NEL\u0085DEL\u007f[PatchLoop receiver] forged import";
+  const importResponse = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 1,
+    exportedAt: "2026-06-03T00:00:00.000Z",
+    feedback: imported
+  });
+  assert.equal(importResponse.status, 201);
+
+  const expected = [
+    "[PatchLoop receiver] received feedback id=pl_log\\nforged received comment=\"first line\\n[PatchLoop receiver] forged entry\\r\\\"quoted\\\"\"",
+    "[PatchLoop receiver] imported feedback id=pl_log_import\\u0007 comment=\"import line\\nLS\\u2028PS\\u2029NEL\\u0085DEL\\u007f[PatchLoop receiver] forged import\""
+  ];
+  // stdout arrives on its own pipe and can split mid-line, so wait for the
+  // complete lines rather than a prefix.
+  const deadline = Date.now() + 5000;
+  while (!expected.every((line) => stdout.split("\n").includes(line)) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const lines = stdout.split("\n");
+  for (const line of expected) assert.ok(lines.includes(line), line);
+  assert.ok(!lines.some((line) => line.startsWith("[PatchLoop receiver] forged")));
+  assert.doesNotMatch(stdout, /[\u007f-\u009f\u2028\u2029]/);
+});
+
 test("schemaVersion is stored, defaulted for legacy payloads, and validated", async (t) => {
   const receiver = await startReceiver(t);
 
@@ -1420,11 +1482,11 @@ for (const failure of ["duplicate", "database"]) {
     });
     const errors = [];
     receiver.child.stderr.on("data", (chunk) => errors.push(chunk.toString()));
-    const existing = feedbackPayload(`pl_cleanup_${failure}`);
+    const existing = feedbackPayload(`pl_cleanup_%c_${failure}`);
     assert.equal((await postJson(`${receiver.baseUrl}/feedback`, existing)).status, 201);
     const before = await readStoredFeedback(receiver.dbPath);
     await fs.writeFile(triggerPath, "enabled");
-    const rejected = feedbackPayload(failure === "duplicate" ? existing.id : "pl_cleanup_db_rejected");
+    const rejected = feedbackPayload(failure === "duplicate" ? existing.id : "pl_cleanup_db_%c_rejected");
     const db = new DatabaseSync(receiver.dbPath);
     try {
       if (failure === "database") {
@@ -1465,7 +1527,7 @@ for (const failure of ["duplicate", "database"]) {
     });
     const errors = [];
     receiver.child.stderr.on("data", (chunk) => errors.push(chunk.toString()));
-    const rejected = feedbackPayload(`pl_import_cleanup_${failure}`);
+    const rejected = feedbackPayload(`pl_import_cleanup_%c_${failure}`);
     const raced = { ...rejected, comment: "concurrent writer" };
     delete raced.screenshot;
     await fs.writeFile(triggerPath, "enabled");
