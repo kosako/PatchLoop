@@ -1824,8 +1824,7 @@ function addPin(point) {
   pin.type = "button";
   pin.dataset.patchloopPin = "true";
   pin.className = "pl-pin";
-  pin.style.left = `${point.pageX}px`;
-  pin.style.top = `${point.pageY}px`;
+  Object.assign(pin.style, markerPosition(point.pageX, point.pageY));
   pin.textContent = "…";
   pin.setAttribute("aria-label", "コメント入力中の位置");
   document.body.append(pin);
@@ -2007,15 +2006,31 @@ function repositionMarker(marker, target) {
   if (!marker || !marker.node) return;
   if (target.kind === "area" && target.area) {
     Object.assign(marker.node.style, {
-      left: `${target.area.pageX}px`,
-      top: `${target.area.pageY}px`,
+      ...markerPosition(target.area.pageX, target.area.pageY),
       width: `${target.area.clientWidth}px`,
       height: `${target.area.clientHeight}px`
     });
     return;
   }
-  marker.node.style.left = `${target.pageX}px`;
-  marker.node.style.top = `${target.pageY}px`;
+  Object.assign(marker.node.style, markerPosition(target.pageX, target.pageY));
+}
+
+// #173: markers are position: absolute children of body, so their left/top
+// resolve against body's padding box whenever body (or html) is a containing
+// block: a scroll-locked modal (position: fixed; top: -<scroll>px), a
+// positioned / transformed body, etc. Measure where left/top 0 lands with a
+// throwaway probe instead of listing every CSS property that makes a
+// containing block, and subtract it from the page coordinates. The probe's
+// inline !important declarations keep host rules such as `body > div` off it.
+const ORIGIN_PROBE_STYLE = "all:initial!important;display:block!important;position:absolute!important;left:0!important;top:0!important";
+
+function markerPosition(pageX, pageY) {
+  const probe = document.createElement("div");
+  probe.style.cssText = ORIGIN_PROBE_STYLE;
+  document.body.append(probe);
+  const origin = probe.getBoundingClientRect();
+  probe.remove();
+  return { left: `${pageX - window.scrollX - origin.left}px`, top: `${pageY - window.scrollY - origin.top}px` };
 }
 
 function setMarkerApproximate(marker, isApproximate) {
@@ -2432,8 +2447,7 @@ function addArea(rect) {
   area.dataset.patchloopArea = "true";
   area.className = "pl-area";
   Object.assign(area.style, {
-    left: `${rect.pageLeftPx}px`,
-    top: `${rect.pageTopPx}px`,
+    ...markerPosition(rect.pageLeftPx, rect.pageTopPx),
     width: `${rect.widthPx}px`,
     height: `${rect.heightPx}px`
   });
