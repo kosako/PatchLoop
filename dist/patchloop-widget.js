@@ -535,7 +535,7 @@ function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scro
     <head>
       <style><![CDATA[${styles.replaceAll("]]>", "]]]]><![CDATA[>")}]]></style>
     </head>
-    <body${bodyClassAttr} style="${escapeHtml(bodyStylePrefix)}margin:0;width:${documentWidth}px;min-height:${documentHeight}px;background:${escapeHtml(background)};color:${escapeHtml(color)};font:${escapeHtml(font)};${snapshotScrollStyle(scrollX, scrollY)}">
+    <body${bodyClassAttr} style="${escapeHtml(bodyStylePrefix)}margin:0;width:${documentWidth}px;min-height:${documentHeight}px;background:${escapeHtml(background)};color:${escapeHtml(color)};font:${escapeHtml(font)};${snapshotBodyOffsetStyle(bodyStyle, scrollX, scrollY)}">
       ${bodyMarkup}
     </body>
   </html>
@@ -641,15 +641,31 @@ function renderScreenshotOverlay(overlay) {
 <circle cx="${overlay.x}" cy="${overlay.y}" r="30" fill="none" stroke="#d1495b" stroke-width="3" opacity="0.35"/>`;
 }
 
-// Shift the cloned body to the scroll position with relative positioning, not
-// a transform: a transformed body becomes the containing block of its
+// Shift the cloned body to the scroll position with positioning, not a
+// transform: a transformed body becomes the containing block of its
 // position:fixed descendants, so fixed and sticky elements (banners, badges,
 // sticky headers) were laid out against the document top and scrolled out of
-// the snapshot (#171). z-index:0 keeps the body a stacking context as the
-// transform did, so negative z-index children stay above its background.
-// !important beats page rules such as body { position: static !important }.
-function snapshotScrollStyle(scrollX, scrollY) {
-  return `position:relative !important;left:${-Math.round(scrollX)}px !important;top:${-Math.round(scrollY)}px !important;z-index:0 !important;`;
+// the snapshot (#171). The live body's own placement is kept: a relative,
+// absolute or fixed body keeps its resolved offsets (e.g. position:fixed;
+// top:-500px to lock scrolling under a modal), and a fixed body does not move
+// with the document scroll. right / bottom are cleared so they cannot override
+// left / top (a right-anchored body in an RTL page). z-index:0 keeps the body a
+// stacking context as the transform did, so negative z-index children stay
+// above its background. !important beats page rules such as
+// body { position: static !important }.
+function snapshotBodyOffsetStyle(bodyStyle, scrollX, scrollY) {
+  const keepsOffsets = ["relative", "absolute", "fixed"].includes(bodyStyle.position);
+  const position = keepsOffsets ? bodyStyle.position : "relative";
+  const scrolls = position !== "fixed";
+  const top = (keepsOffsets ? offsetPixels(bodyStyle.top) : 0) - (scrolls ? Math.round(scrollY) : 0);
+  const left = (keepsOffsets ? offsetPixels(bodyStyle.left) : 0) - (scrolls ? Math.round(scrollX) : 0);
+  return `position:${position} !important;top:${top}px !important;left:${left}px !important;right:auto !important;bottom:auto !important;z-index:0 !important;`;
+}
+
+// A resolved offset is a px length; "auto" (no offset) counts as 0.
+function offsetPixels(value) {
+  const pixels = Number.parseFloat(value);
+  return Number.isFinite(pixels) ? Math.round(pixels) : 0;
 }
 
 function byteLength(value) {
@@ -666,7 +682,7 @@ function base64Encode(value) {
   return btoa(binary);
 }
 
-return { captureScreenshot, snapshotScrollStyle, byteLength, base64Encode };
+return { captureScreenshot, snapshotBodyOffsetStyle, byteLength, base64Encode };
 })();
 // --- widget/src/payload.js ---
 const __pl_widget_src_payload = (() => {
