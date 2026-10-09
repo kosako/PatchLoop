@@ -2454,7 +2454,24 @@ function injectStyles() {
   if (document.querySelector("[data-patchloop-style]")) return;
   const style = document.createElement("style");
   style.dataset.patchloopStyle = "true";
+  // The first three rules isolate the widget from the host page's CSS (#174).
+  // Page rules on bare element names, * and pseudo-elements (header, section,
+  // button, p, *::before, ...) would otherwise fill every property the widget
+  // leaves unset. Top-level widget nodes drop to initial values, so no page
+  // typography is inherited, except the lang-derived locale (-webkit-locale)
+  // that all: initial would also clear and that picks the Japanese glyphs.
+  // Their descendants and pseudo-elements revert to the browser defaults.
+  // The reset is (0,1,0) ((0,1,1) for pseudo-elements) and comes first, so
+  // every widget rule below must start with a .pl- class or a data-patchloop
+  // attribute to win over it. The descendant reset is kept apart from the
+  // :is() rule so that a browser without :is() still applies it.
+  // Not covered: page rules of (0,1,1) or more (button:hover, textarea:focus,
+  // section > header:first-child), !important, and (0,1,0) attribute rules
+  // loaded after init. Full isolation would need a shadow root.
   style.textContent = `
+    .pl-root, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-selection] { all: initial; -webkit-locale: inherit; }
+    .pl-root *, [data-patchloop-area] * { all: revert; }
+    :is(.pl-root, .pl-root *, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-area] *, [data-patchloop-selection])::before, :is(.pl-root, .pl-root *, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-area] *, [data-patchloop-selection])::after { all: revert; }
     .pl-root, .pl-root * { box-sizing: border-box; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: normal; }
     .pl-root [hidden], .pl-comment[hidden], .pl-tooltip[hidden] { display: none !important; }
     .pl-root { position: fixed; z-index: 2147483000; color: #14211d; right: 20px; bottom: max(20px, env(safe-area-inset-bottom)); font-size: 14px; line-height: 1.5; text-align: left; }
