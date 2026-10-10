@@ -36,5 +36,6 @@ export const state = {
   resizeTimer: null,
   editingId: null,
   commentReturnFocus: null,
-  collapsed: true
+  collapsed: true,
+  displayMode: "normal"
 };

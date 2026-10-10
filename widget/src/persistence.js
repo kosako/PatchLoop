@@ -22,6 +22,28 @@ export function saveReviewer(reviewer) {
   }
 }
 
+// The marker display mode (#147) is a viewer preference, so it is kept per
+// origin rather than per project / demo / page like the feedback list.
+const DISPLAY_MODE_STORAGE_KEY = "patchloop:display-mode";
+const DISPLAY_MODES = ["normal", "dots", "all"];
+
+export function loadDisplayMode() {
+  try {
+    const stored = window.localStorage.getItem(DISPLAY_MODE_STORAGE_KEY);
+    return DISPLAY_MODES.includes(stored) ? stored : "normal";
+  } catch (_) {
+    return "normal";
+  }
+}
+
+export function saveDisplayMode(mode) {
+  try {
+    window.localStorage.setItem(DISPLAY_MODE_STORAGE_KEY, mode);
+  } catch (_) {
+    // Storage can be unavailable in privacy-restricted contexts.
+  }
+}
+
 export function loadPersistedFeedback() {
   if (!state.options.feedbackStorageKey) return [];
 

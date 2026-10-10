@@ -299,7 +299,8 @@ const state = {
   resizeTimer: null,
   editingId: null,
   commentReturnFocus: null,
-  collapsed: true
+  collapsed: true,
+  displayMode: "normal"
 };
 
 return { DEFAULTS, state };
@@ -827,6 +828,28 @@ function saveReviewer(reviewer) {
   }
 }
 
+// The marker display mode (#147) is a viewer preference, so it is kept per
+// origin rather than per project / demo / page like the feedback list.
+const DISPLAY_MODE_STORAGE_KEY = "patchloop:display-mode";
+const DISPLAY_MODES = ["normal", "dots", "all"];
+
+function loadDisplayMode() {
+  try {
+    const stored = window.localStorage.getItem(DISPLAY_MODE_STORAGE_KEY);
+    return DISPLAY_MODES.includes(stored) ? stored : "normal";
+  } catch (_) {
+    return "normal";
+  }
+}
+
+function saveDisplayMode(mode) {
+  try {
+    window.localStorage.setItem(DISPLAY_MODE_STORAGE_KEY, mode);
+  } catch (_) {
+    // Storage can be unavailable in privacy-restricted contexts.
+  }
+}
+
 function loadPersistedFeedback() {
   if (!state.options.feedbackStorageKey) return [];
 
@@ -935,7 +958,7 @@ function isMatchingFeedbackEnvelope(value) {
   return Array.isArray(value.feedback);
 }
 
-return { FEEDBACK_STORAGE_VERSION, loadStoredReviewer, saveReviewer, loadPersistedFeedback, persistFeedbackList, clearPersistedFeedback, serializeFeedbackForStorage, normalizePersistedFeedback, isMatchingFeedbackEnvelope };
+return { FEEDBACK_STORAGE_VERSION, loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadPersistedFeedback, persistFeedbackList, clearPersistedFeedback, serializeFeedbackForStorage, normalizePersistedFeedback, isMatchingFeedbackEnvelope };
 })();
 const { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarget, rectFromStoredArea, round, numberOrNull } = __pl_widget_src_geometry;
 const { pointAnchorOffsets, areaAnchorOffsets, geometryFromAnchor, viewportDiffersFromCreation } = __pl_widget_src_anchoring;
@@ -943,7 +966,7 @@ const { selectorFor, textFor } = __pl_widget_src_selector;
 const { resolveSourceContext } = __pl_widget_src_source_context;
 const { DEFAULTS, state } = __pl_widget_src_state;
 const { buildPayload } = __pl_widget_src_payload;
-const { loadStoredReviewer, saveReviewer, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback } = __pl_widget_src_persistence;
+const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback } = __pl_widget_src_persistence;
 const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } = __pl_shared_format;
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
@@ -981,6 +1004,7 @@ function init(options = {}) {
   // Resolved once here (option first, meta tags as fallback) so every payload
   // built later carries the same provenance without re-reading the DOM.
   state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
+  state.displayMode = loadDisplayMode();
   injectStyles();
   renderShell();
   bindGlobalCapture();
@@ -1045,6 +1069,12 @@ function renderShell() {
       <div class="pl-panel-body" data-pl-body>
         <div class="pl-compose"><button type="button" class="pl-mode" data-pl-mode aria-pressed="false">コメントを追加</button><p data-pl-help>気になる場所を選んで、改善のヒントを残しましょう。</p></div>
         <p class="pl-notice" data-pl-notice role="status" aria-live="polite" hidden></p>
+        <fieldset class="pl-display-mode" data-pl-display-mode>
+          <legend>マーカーの表示</legend>
+          <label><input type="radio" name="patchloop-display-mode" value="normal"${state.displayMode === "normal" ? " checked" : ""} />通常</label>
+          <label><input type="radio" name="patchloop-display-mode" value="dots"${state.displayMode === "dots" ? " checked" : ""} />ドットだけ</label>
+          <label><input type="radio" name="patchloop-display-mode" value="all"${state.displayMode === "all" ? " checked" : ""} />全部</label>
+        </fieldset>
         <div class="pl-list-heading"><strong>このページのコメント</strong><span data-pl-count>0</span></div>
         <div class="pl-feedback-list" data-pl-list>
           <p class="pl-feedback-list-empty">まだコメントはありません。</p>
@@ -1098,9 +1128,16 @@ function renderShell() {
   root.querySelector("[data-pl-reviewer]").addEventListener("input", () => clearFormError(root.querySelector("[data-pl-comment]")));
   root.querySelector("[data-pl-comment-text]").addEventListener("input", () => clearFormError(root.querySelector("[data-pl-comment]")));
   root.querySelector("[data-pl-list]").addEventListener("click", handleListClick);
+  root.querySelector("[data-pl-display-mode]").addEventListener("change", handleDisplayModeChange);
   root.querySelector("[data-pl-delivery-settings]")?.addEventListener("input", handleDeliverySettingsInput);
   root.querySelector("[data-pl-delivery-settings]")?.addEventListener("change", handleDeliverySettingsInput);
   syncDeliverySettingsVisibility();
+}
+
+function handleDisplayModeChange(event) {
+  state.displayMode = event.target.value;
+  saveDisplayMode(state.displayMode);
+  applyMarkerDisplay();
 }
 
 function renderDeliverySettings() {
@@ -1842,6 +1879,7 @@ function restoreFeedbackMarkers() {
     marker.node.dataset.patchloopFeedbackId = item.id;
     state.feedbackMarkers.set(item.id, marker);
     bindMarkerHover(marker, item.id);
+    bindMarkerActivation(marker, item.id);
     setMarkerApproximate(marker, state.approximateIds.has(item.id));
   });
 }
@@ -2119,6 +2157,7 @@ function finalizePendingMarker(item) {
     updateMarkerLabel(marker, item, state.feedback.length);
     state.feedbackMarkers.set(item.id, marker);
     bindMarkerHover(marker, item.id);
+    bindMarkerActivation(marker, item.id);
   }
 }
 
@@ -2187,6 +2226,7 @@ function renderFeedbackList() {
   const list = root.querySelector("[data-pl-list]");
   if (!list) return;
   updateDownloadAllButton();
+  applyMarkerDisplay();
   const count = root.querySelector("[data-pl-count]");
   if (count) count.textContent = String(state.feedback.length);
   const clear = root.querySelector("[data-pl-clear]");
@@ -2218,7 +2258,7 @@ function renderFeedbackList() {
         ? `<span class="pl-feedback-exported" title="${escapeHtml(`書き出し済み: ${item.exportedFileName || ""}`.trim())}">書き出し済み</span>`
         : "";
       return `
-        <article class="pl-feedback-item${item.exported ? " pl-feedback-item-exported" : ""}" data-feedback-id="${escapeHtml(item.id)}">
+        <article class="pl-feedback-item${item.exported ? " pl-feedback-item-exported" : ""}" data-feedback-id="${escapeHtml(item.id)}" tabindex="-1">
           <span class="pl-feedback-num kind-${escapeHtml(kind)}">${num}</span>
           <div class="pl-feedback-body">
             <div class="pl-feedback-meta">${escapeHtml(item.reviewer || "(no name)")} ${delivery}${exported}${approximate}</div>
@@ -2233,6 +2273,14 @@ function renderFeedbackList() {
       `;
     })
     .join("");
+}
+
+// The display mode is applied to every committed marker here, so markers added
+// or restored take it when the list is rendered. The marker of a comment still
+// being written keeps its full look, so the chosen spot stays visible while the
+// comment is typed.
+function applyMarkerDisplay() {
+  state.feedbackMarkers.forEach((marker) => marker.node.classList.toggle("pl-marker-dot", state.displayMode === "dots"));
 }
 
 function deliveryStatusText(delivery) {
@@ -2373,6 +2421,18 @@ function bindMarkerHover(marker, feedbackId) {
     event.preventDefault();
     event.stopPropagation();
     hideTooltip();
+  });
+}
+
+// Activating a marker (click, Enter, Space) opens the panel on its comment: the
+// way to read a dot-only marker on touch screens, and the way to its edit and
+// delete actions from the page.
+function bindMarkerActivation(marker, feedbackId) {
+  marker.label.addEventListener("click", () => {
+    if (state.active) return;
+    expandPanel();
+    const item = Array.from(getRoot().querySelectorAll("[data-feedback-id]")).find((node) => node.dataset.feedbackId === feedbackId);
+    item.focus();
   });
 }
 
@@ -2548,6 +2608,9 @@ function injectStyles() {
     .pl-selection { position: fixed; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; }
     .pl-area { position: absolute; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.16); }
     .pl-area button { position: absolute; top: 6px; left: 6px; width: 30px; height: 30px; min-width: 30px; min-height: 30px; padding: 0; box-sizing: border-box; display: grid; place-items: center; border-radius: 50%; border: 3px solid #fff; background: #b83d4d; color: #fff; font: 900 13px/1 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); pointer-events: auto; cursor: pointer; }
+    .pl-pin.pl-marker-dot, .pl-area.pl-marker-dot button { width: 24px; height: 24px; min-width: 24px; min-height: 24px; max-width: 24px; max-height: 24px; border: 0; background: radial-gradient(circle, #b83d4d 0 5px, #fff 5px 6.5px, transparent 6.5px); box-shadow: none; font-size: 0; }
+    .pl-area.pl-marker-dot button { top: 9px; left: 9px; }
+    .pl-area.pl-marker-dot:not(:hover):not(:focus-within) { border-color: transparent; background: transparent; box-shadow: none; outline: none !important; }
     .pl-feedback-active [data-patchloop-pin], .pl-feedback-active .pl-area button { pointer-events: none; }
     .pl-target-highlight { outline: 2px dashed #d1495b; outline-offset: 2px; }
     .pl-marker-approx { outline: 3px dashed #f2a33c !important; outline-offset: 2px; }
@@ -2566,6 +2629,11 @@ function injectStyles() {
     .pl-compose p { padding: 10px 0 0; font-size: 11px; }
     .pl-list-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 0 20px 10px; font-size: 11px; color: #53695d; }
     .pl-list-heading span { border-radius: 5px; padding: 1px 7px; background: #edf4ef; font-variant-numeric: tabular-nums; }
+    .pl-display-mode { margin: 0 20px 12px; padding: 0; border: 0; min-width: 0; }
+    .pl-display-mode legend { padding: 0 0 4px; font-size: 11px; font-weight: 600; color: #53695d; }
+    .pl-display-mode label { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; margin-right: 16px; color: #14211d; font-size: 12px; cursor: pointer; }
+    .pl-display-mode input { width: 16px; height: 16px; margin: 0; accent-color: #0f7b63; cursor: pointer; }
+    .pl-feedback-item:focus { outline: 3px solid #168565; outline-offset: -3px; }
     .pl-actions [data-pl-clear] { border: 0; color: #65716d; font-size: 10px; padding: 5px 0; min-height: 32px; }
     .pl-actions [data-pl-download-again] { font-size: 11px; }
     .pl-panel .pl-notice { margin: 0 20px 16px; padding: 10px 12px; border-radius: 8px; background: #edf6ef; color: #245840; font-size: 11px; }
