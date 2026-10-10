@@ -73,3 +73,20 @@ test("the hint goes away when the next spot touches nothing the screenshot canno
   widget.capture();
   assert.equal(hint(widget).hidden, true);
 });
+
+test("the hint follows the box that includes the screenshot (#148)", () => {
+  const widget = widgetHarness();
+  widget.init({ captureScreenshot: true });
+  addToPage(widget, "iframe");
+  widget.capture();
+  const box = widget.document.querySelector("[data-pl-include-screenshot]");
+  assert.equal(hint(widget).hidden, false);
+  box.checked = false;
+  box.emit("change");
+  assert.equal(hint(widget).hidden, true);
+  assert.equal(hint(widget).textContent, "");
+  box.checked = true;
+  box.emit("change");
+  assert.equal(hint(widget).hidden, false);
+  assert.match(hint(widget).textContent, /（iframe）/);
+});

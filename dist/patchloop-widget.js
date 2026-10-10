@@ -463,7 +463,10 @@ const state = {
   inboxStatus: null,
   statusLookup: initialLookupState(),
   // The lookup request in flight, if any; see refreshInboxStatuses.
-  statusLookupRequest: null
+  statusLookupRequest: null,
+  // The comment form's note about elements the screenshot will not show (#148),
+  // shown while the screenshot is included.
+  uncapturedHint: ""
 };
 
 return { DEFAULTS, state };
@@ -1510,6 +1513,7 @@ function renderShell() {
   root.querySelector("[data-pl-cancel]").addEventListener("click", cancelPendingComment);
   root.querySelector("[data-pl-comment]").addEventListener("submit", submitComment);
   root.querySelector("[data-pl-comment]").addEventListener("keydown", handleCommentKeydown);
+  root.querySelector("[data-pl-include-screenshot]").addEventListener("change", () => syncUncapturedHint(root.querySelector("[data-pl-comment]")));
   root.querySelector("[data-pl-reviewer]").addEventListener("input", () => clearFormError(root.querySelector("[data-pl-comment]")));
   root.querySelector("[data-pl-comment-text]").addEventListener("input", () => clearFormError(root.querySelector("[data-pl-comment]")));
   root.querySelector("[data-pl-list]").addEventListener("click", handleListClick);
@@ -1798,10 +1802,9 @@ function openCommentForm(point, options = {}) {
   if (screenshotInput) screenshotInput.checked = state.options.captureScreenshot;
   // Before anything is sent, point the reviewer at elements the screenshot will
   // not show where they are pointing (#148), so they can describe what they see.
-  const uncapturedHint = form.querySelector("[data-pl-uncaptured-hint]");
   const touching = !editing && state.options.captureScreenshot && state.pendingTarget ? uncapturedTouching(state.pendingTarget) : [];
-  uncapturedHint.hidden = touching.length === 0;
-  uncapturedHint.textContent = touching.length > 0 ? uncapturedHintText(touching) : "";
+  state.uncapturedHint = touching.length > 0 ? uncapturedHintText(touching) : "";
+  syncUncapturedHint(form);
   clearFormError(form);
   const commentEl = form.querySelector("[data-pl-comment-text]");
   const reviewerEl = form.querySelector("[data-pl-reviewer]");
@@ -1811,6 +1814,15 @@ function openCommentForm(point, options = {}) {
   }
   positionCommentForm(form, point);
   commentEl.focus({ preventScroll: true });
+}
+
+// The note is about the screenshot, so it follows the "画面画像を含める" box.
+function syncUncapturedHint(form) {
+  const hint = form.querySelector("[data-pl-uncaptured-hint]");
+  const included = form.querySelector("[data-pl-include-screenshot]").checked;
+  const text = included ? state.uncapturedHint : "";
+  hint.hidden = !text;
+  hint.textContent = text;
 }
 
 function uncapturedHintText(touching) {

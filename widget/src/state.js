@@ -45,5 +45,8 @@ export const state = {
   inboxStatus: null,
   statusLookup: initialLookupState(),
   // The lookup request in flight, if any; see refreshInboxStatuses.
-  statusLookupRequest: null
+  statusLookupRequest: null,
+  // The comment form's note about elements the screenshot will not show (#148),
+  // shown while the screenshot is included.
+  uncapturedHint: ""
 };
