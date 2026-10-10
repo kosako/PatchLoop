@@ -259,8 +259,165 @@ function cleanValue(value) {
 
 return { resolveSourceContext };
 })();
+// --- shared/format.js ---
+const __pl_shared_format = (() => {
+// Formatting helpers shared by the widget (bundled into dist) and the
+// receiver (require(ESM) from CommonJS). Environment-free by design: plain
+// string/number formatting only, no DOM and no Node APIs. Receiver-specific
+// link hardening (safeLinkUrl / mdLinkUrl) and the screenshot status texts
+// stay in their respective owners because their semantics differ per side.
+
+// Inbox triage statuses and their labels, shown by the inbox and, next to a
+// comment's delivery status, by the widget (#147).
+const FEEDBACK_STATUS_LABELS = { new: "未確認", accepted: "対応予定", fixed: "修正済み", ignored: "見送り" };
+
+function safeFilePart(value) {
+  return String(value || "feedback")
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "feedback";
+}
+
+function truncateText(value, max) {
+  const text = String(value ?? "");
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function present(value) {
+  return value === undefined || value === null || value === "" ? "?" : value;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function escapeXml(value) {
+  return escapeHtml(value).replaceAll("'", "&apos;");
+}
+
+function slackEscape(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function formatSlackCode(value) {
+  return `\`${slackEscape(truncateText(String(value ?? "").replaceAll("`", "'"), 180))}\``;
+}
+
+function formatSlackLink(url, label) {
+  if (!/^https?:\/\//.test(url || "")) {
+    return slackEscape(label || url || "(unknown)");
+  }
+  return `<${slackEscape(url)}|${slackEscape(truncateText(String(label || url).replaceAll("|", "/"), 120))}>`;
+}
+
+function formatViewport(viewport) {
+  if (!viewport) return "(unknown)";
+  return `${present(viewport.width)}x${present(viewport.height)}`;
+}
+
+function formatTarget(target) {
+  if (target.kind === "area" && target.area) {
+    return `area ${present(target.area.clientWidth)}x${present(target.area.clientHeight)} at ${present(target.area.clientX)},${present(target.area.clientY)}`;
+  }
+  return `${target.kind || "point"} at ${present(target.clientX)},${present(target.clientY)}`;
+}
+
+return { FEEDBACK_STATUS_LABELS, safeFilePart, truncateText, present, escapeHtml, escapeXml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget };
+})();
+// --- widget/src/inbox-status.js ---
+const __pl_widget_src_inbox_status = (() => {
+const { FEEDBACK_STATUS_LABELS } = __pl_shared_format;
+// The inbox triage status of the comments this page sent (#147), asked from
+// the receiver's POST /feedback-status. The statuses only live in memory: they
+// are never written to the stored items, localStorage or exports, and when they
+// cannot be had the widget hides nothing. This module holds the decisions;
+// index.js does the request and the drawing.
+
+
+const FINISHED_STATUSES = ["fixed", "ignored"];
+// The receiver answers at most 200 ids per query; the newest comments go first.
+const MAX_LOOKUP_IDS = 200;
+// Lookups run on load, when the panel opens and when the tab comes back, but
+// no closer together than this; failures back off up to the maximum.
+const LOOKUP_MIN_GAP_MS = 30_000;
+const LOOKUP_MAX_GAP_MS = 10 * 60_000;
+
+// The lookup sits next to POST /feedback on the receiver. No endpoint, or one
+// whose path does not end in /feedback, has no known lookup URL. baseUrl is the
+// one fetch resolves a relative endpoint against (document.baseURI).
+function statusLookupUrl(endpoint, baseUrl) {
+  if (!String(endpoint || "").trim()) return null;
+  let url;
+  try {
+    url = new URL(endpoint, baseUrl);
+  } catch (_) {
+    return null;
+  }
+  if (!url.pathname.endsWith("/feedback")) return null;
+  url.pathname = `${url.pathname}-status`;
+  url.search = "";
+  url.hash = "";
+  return url.href;
+}
+
+// Comments the receiver has: delivered, or refused as an id it already holds.
+function statusLookupIds(feedback) {
+  return feedback
+    .filter((item) => item.delivery && (item.delivery.ok === true || item.delivery.status === 409))
+    .slice(0, MAX_LOOKUP_IDS)
+    .map((item) => item.id);
+}
+
+// The id -> status pairs of a successful answer, or null when the answer does
+// not have the expected shape. Unknown statuses are left out.
+function statusesFromAnswer(body) {
+  if (!body || body.ok !== true || !Array.isArray(body.statuses)) return null;
+  const statuses = new Map();
+  for (const entry of body.statuses) {
+    if (entry && typeof entry.id === "string" && Object.prototype.hasOwnProperty.call(FEEDBACK_STATUS_LABELS, entry.status)) {
+      statuses.set(entry.id, entry.status);
+    }
+  }
+  return statuses;
+}
+
+// Handled in the inbox, unless the comment was edited here since: that edit
+// has not reached the inbox.
+function isFinished(item, statuses) {
+  return Boolean(statuses) && FINISHED_STATUSES.includes(statuses.get(item.id)) && !item.localEdited;
+}
+
+function initialLookupState() {
+  return { stopped: false, failures: 0, nextAt: 0 };
+}
+
+// outcome: "ok", "unavailable" (the receiver has no lookup for this page:
+// 401 / 403 / 404, so asking again will not help) or "failed" (anything else:
+// network errors, timeouts, 5xx, 429, a malformed answer).
+function lookupOutcome(httpStatus, statuses) {
+  if (httpStatus === 401 || httpStatus === 403 || httpStatus === 404) return "unavailable";
+  return httpStatus === 200 && statuses ? "ok" : "failed";
+}
+
+function lookupAfter(lookup, outcome, now) {
+  if (outcome === "unavailable") return { ...lookup, stopped: true };
+  const failures = outcome === "ok" ? 0 : lookup.failures + 1;
+  return { stopped: false, failures, nextAt: now + Math.min(LOOKUP_MIN_GAP_MS * 2 ** failures, LOOKUP_MAX_GAP_MS) };
+}
+
+return { FINISHED_STATUSES, LOOKUP_MIN_GAP_MS, LOOKUP_MAX_GAP_MS, statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter };
+})();
 // --- widget/src/state.js ---
 const __pl_widget_src_state = (() => {
+const { initialLookupState } = __pl_widget_src_inbox_status;
+
 const DEFAULTS = {
   projectId: "local-demo",
   demoId: "plain-html",
@@ -300,7 +457,13 @@ const state = {
   editingId: null,
   commentReturnFocus: null,
   collapsed: true,
-  displayMode: "normal"
+  displayMode: "normal",
+  // Inbox triage status (#147): { statuses: Map(id -> status), asked: Set(id) }
+  // after a successful lookup, null otherwise. Kept in memory only.
+  inboxStatus: null,
+  statusLookup: initialLookupState(),
+  // The lookup request in flight, if any; see refreshInboxStatuses.
+  statusLookupRequest: null
 };
 
 return { DEFAULTS, state };
@@ -539,74 +702,6 @@ function touchesTarget(rect, overlay) {
 }
 
 return { UNCAPTURED_VERSION, WIDGET_NODES, UNCAPTURED_KINDS, detectUncaptured };
-})();
-// --- shared/format.js ---
-const __pl_shared_format = (() => {
-// Formatting helpers shared by the widget (bundled into dist) and the
-// receiver (require(ESM) from CommonJS). Environment-free by design: plain
-// string/number formatting only, no DOM and no Node APIs. Receiver-specific
-// link hardening (safeLinkUrl / mdLinkUrl) and the screenshot status texts
-// stay in their respective owners because their semantics differ per side.
-
-function safeFilePart(value) {
-  return String(value || "feedback")
-    .replace(/[^a-zA-Z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "feedback";
-}
-
-function truncateText(value, max) {
-  const text = String(value ?? "");
-  return text.length > max ? `${text.slice(0, max)}…` : text;
-}
-
-function present(value) {
-  return value === undefined || value === null || value === "" ? "?" : value;
-}
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-function escapeXml(value) {
-  return escapeHtml(value).replaceAll("'", "&apos;");
-}
-
-function slackEscape(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
-function formatSlackCode(value) {
-  return `\`${slackEscape(truncateText(String(value ?? "").replaceAll("`", "'"), 180))}\``;
-}
-
-function formatSlackLink(url, label) {
-  if (!/^https?:\/\//.test(url || "")) {
-    return slackEscape(label || url || "(unknown)");
-  }
-  return `<${slackEscape(url)}|${slackEscape(truncateText(String(label || url).replaceAll("|", "/"), 120))}>`;
-}
-
-function formatViewport(viewport) {
-  if (!viewport) return "(unknown)";
-  return `${present(viewport.width)}x${present(viewport.height)}`;
-}
-
-function formatTarget(target) {
-  if (target.kind === "area" && target.area) {
-    return `area ${present(target.area.clientWidth)}x${present(target.area.clientHeight)} at ${present(target.area.clientX)},${present(target.area.clientY)}`;
-  }
-  return `${target.kind || "point"} at ${present(target.clientX)},${present(target.clientY)}`;
-}
-
-return { safeFilePart, truncateText, present, escapeHtml, escapeXml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget };
 })();
 // --- widget/src/screenshot.js ---
 const __pl_widget_src_screenshot = (() => {
@@ -1150,8 +1245,9 @@ const { selectorFor, textFor } = __pl_widget_src_selector;
 const { resolveSourceContext } = __pl_widget_src_source_context;
 const { DEFAULTS, state } = __pl_widget_src_state;
 const { buildPayload } = __pl_widget_src_payload;
+const { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } = __pl_widget_src_inbox_status;
 const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback } = __pl_widget_src_persistence;
-const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } = __pl_shared_format;
+const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } = __pl_shared_format;
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
 // v2 carries an array of feedback (batch export). v1 wrapped a single
@@ -1189,12 +1285,14 @@ function init(options = {}) {
   // built later carries the same provenance without re-reading the DOM.
   state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
   state.displayMode = loadDisplayMode();
+  resetInboxStatus();
   injectStyles();
   renderShell();
   bindGlobalCapture();
   restorePersistedFeedback();
   applyCollapseState();
   renderFeedbackList();
+  refreshInboxStatuses();
   return api;
 }
 
@@ -1211,7 +1309,9 @@ function destroy() {
   window.removeEventListener("resize", handleWindowResize);
   window.visualViewport?.removeEventListener("resize", positionVisibleCommentForm);
   window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
   window.clearTimeout(state.resizeTimer);
+  resetInboxStatus();
   state.approximateIds.clear();
   document.querySelector("[data-patchloop-root]")?.remove();
   document.querySelectorAll("[data-patchloop-pin]").forEach((node) => node.remove());
@@ -1370,6 +1470,8 @@ function bindGlobalCapture() {
   window.visualViewport?.addEventListener("resize", positionVisibleCommentForm);
   window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
   window.visualViewport?.addEventListener("scroll", positionVisibleCommentForm);
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
 }
 
 function cancelCaptureDrag() {
@@ -1667,9 +1769,16 @@ function handleDeliverySettingsInput() {
   const endpoint = root.querySelector("[data-pl-endpoint]")?.value;
   const slackWebhookUrl = root.querySelector("[data-pl-slack-webhook]")?.value;
 
+  const previous = [state.options.deliveryMode, state.options.endpoint];
   if (mode) state.options.deliveryMode = mode;
   if (endpoint != null) state.options.endpoint = endpoint.trim();
   if (slackWebhookUrl != null) state.options.slackWebhookUrl = slackWebhookUrl.trim();
+  // Statuses belong to the receiver they were asked of (#147): another
+  // destination shows everything again until it is asked.
+  if (state.options.deliveryMode !== previous[0] || state.options.endpoint !== previous[1]) {
+    resetInboxStatus();
+    renderFeedbackList();
+  }
   syncDeliverySettingsVisibility();
 }
 
@@ -1807,11 +1916,13 @@ async function postFeedback(payload) {
   console.info("[PatchLoop] delivery", payload.id, payload.delivery);
 }
 
-async function fetchWithTimeout(url, options) {
+// read runs within the timeout too, so a body that stalls after the headers
+// is aborted as well.
+async function fetchWithTimeout(url, options, read = (response) => response) {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), 15000);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    return await read(await fetch(url, { ...options, signal: controller.signal }));
   } finally {
     window.clearTimeout(timer);
   }
@@ -2381,6 +2492,7 @@ function unhighlightTarget(element) {
 function toggleCollapse() {
   state.collapsed = !state.collapsed;
   applyCollapseState();
+  if (!state.collapsed) refreshInboxStatuses();
 }
 
 function applyCollapseState() {
@@ -2449,7 +2561,7 @@ function renderFeedbackList() {
         <article class="pl-feedback-item${item.exported ? " pl-feedback-item-exported" : ""}" data-feedback-id="${escapeHtml(item.id)}" tabindex="-1">
           <span class="pl-feedback-num kind-${escapeHtml(kind)}">${num}</span>
           <div class="pl-feedback-body">
-            <div class="pl-feedback-meta">${escapeHtml(item.reviewer || "(no name)")} ${delivery}${exported}${approximate}</div>
+            <div class="pl-feedback-meta">${escapeHtml(item.reviewer || "(no name)")} ${delivery}${inboxStatusChip(item)}${exported}${approximate}</div>
             <div class="pl-feedback-text">${escapeHtml(item.comment || "")}</div>
           </div>
           <div class="pl-feedback-actions">
@@ -2470,12 +2582,81 @@ function feedbackListItem(id) {
   return Array.from(getRoot().querySelectorAll("[data-feedback-id]")).find((node) => node.dataset.feedbackId === id);
 }
 
-// The display mode is applied to every committed marker here, so markers added
-// or restored take it when the list is rendered. The marker of a comment still
-// being written keeps its full look, so the chosen spot stays visible while the
-// comment is typed.
+// The display mode and the inbox status are applied to every committed marker
+// here, so markers added or restored take them when the list is rendered. A
+// comment finished in the inbox (#147) is hidden in 通常 and ドットだけ and
+// grayed out in 全部. The marker of a comment still being written keeps its
+// full look, so the chosen spot stays visible while the comment is typed.
 function applyMarkerDisplay() {
-  state.feedbackMarkers.forEach((marker) => marker.node.classList.toggle("pl-marker-dot", state.displayMode === "dots"));
+  const statuses = state.inboxStatus?.statuses;
+  state.feedback.forEach((item) => {
+    const marker = state.feedbackMarkers.get(item.id);
+    if (!marker) return;
+    const finished = isFinished(item, statuses);
+    marker.node.classList.toggle("pl-marker-dot", state.displayMode === "dots");
+    marker.node.classList.toggle("pl-marker-done", finished && state.displayMode === "all");
+    marker.node.hidden = finished && state.displayMode !== "all";
+  });
+}
+
+// The inbox status next to the delivery status (#147), shown once a lookup has
+// answered for the comment. An asked id missing from the answer was deleted in
+// the inbox, or sent to another receiver.
+function inboxStatusChip(item) {
+  const lookup = state.inboxStatus;
+  if (!lookup || !lookup.asked.has(item.id)) return "";
+  const status = lookup.statuses.get(item.id);
+  if (!status) return '<span class="pl-inbox-status pl-inbox-status-missing" title="受信箱で削除されたか、別の受信箱に送られています">受信箱に無い</span>';
+  const finished = isFinished(item, lookup.statuses);
+  return `<span class="pl-inbox-status${finished ? " pl-inbox-status-done" : ""}" title="受信箱の対応状況">受信箱: ${escapeHtml(FEEDBACK_STATUS_LABELS[status])}</span>`;
+}
+
+// Asks the receiver for the inbox status of the delivered comments (#147). It
+// runs on load, when the user opens the panel (its button or a marker) and when
+// the tab comes back, no more often than the lookup state allows (longer after
+// failures), and stops for the page once the receiver has no lookup for it.
+// Only the receiver delivery mode asks.
+async function refreshInboxStatuses() {
+  if (state.statusLookupRequest || state.statusLookup.stopped || Date.now() < state.statusLookup.nextAt) return;
+  if (state.options.deliveryMode !== "receiver") return;
+  const url = statusLookupUrl(state.options.endpoint, document.baseURI);
+  const ids = statusLookupIds(state.feedback);
+  if (!url || ids.length === 0) return;
+  // Re-init, destroy and a change of the delivery settings drop the request in
+  // flight; its answer is then left unused.
+  const request = {};
+  state.statusLookupRequest = request;
+  let answer = { httpStatus: 0, statuses: null };
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (state.options.ingestKey) headers["X-PatchLoop-Ingest-Key"] = state.options.ingestKey;
+    answer = await fetchWithTimeout(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ projectId: state.options.projectId, ids })
+    }, async (response) => ({
+      httpStatus: response.status,
+      statuses: response.ok ? statusesFromAnswer(await response.json()) : null
+    }));
+  } catch (error) {
+    console.info("[PatchLoop] inbox status lookup failed", error);
+  }
+  if (state.statusLookupRequest !== request) return;
+  state.statusLookupRequest = null;
+  const outcome = lookupOutcome(answer.httpStatus, answer.statuses);
+  state.statusLookup = lookupAfter(state.statusLookup, outcome, Date.now());
+  state.inboxStatus = outcome === "ok" ? { statuses: answer.statuses, asked: new Set(ids) } : null;
+  renderFeedbackList();
+}
+
+function resetInboxStatus() {
+  state.inboxStatus = null;
+  state.statusLookup = initialLookupState();
+  state.statusLookupRequest = null;
+}
+
+function handleVisibilityChange() {
+  if (document.visibilityState === "visible") refreshInboxStatuses();
 }
 
 function deliveryStatusText(delivery) {
@@ -2627,6 +2808,7 @@ function bindMarkerActivation(marker, feedbackId) {
     if (state.active) return;
     expandPanel();
     feedbackListItem(feedbackId).focus();
+    refreshInboxStatuses();
   });
 }
 
@@ -2750,7 +2932,7 @@ function injectStyles() {
     .pl-root *, [data-patchloop-area] * { all: revert; }
     :is(.pl-root, .pl-root *, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-area] *, [data-patchloop-selection])::before, :is(.pl-root, .pl-root *, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-area] *, [data-patchloop-selection])::after { all: revert; }
     .pl-root, .pl-root * { box-sizing: border-box; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: normal; }
-    .pl-root [hidden], .pl-comment[hidden], .pl-tooltip[hidden] { display: none !important; }
+    .pl-root [hidden], .pl-comment[hidden], .pl-tooltip[hidden], [data-patchloop-pin][hidden], [data-patchloop-area][hidden] { display: none !important; }
     .pl-root { position: fixed; z-index: 2147483000; color: #14211d; right: 20px; bottom: max(20px, env(safe-area-inset-bottom)); font-size: 14px; line-height: 1.5; text-align: left; }
     .pl-panel { position: absolute; right: 0; bottom: 0; width: min(400px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); background: #fff; border: 1px solid #d9e1dd; border-radius: 16px; box-shadow: 0 18px 65px rgba(20, 33, 29, 0.16); overflow: auto; overscroll-behavior: contain; }
     .pl-panel header { min-height: 64px; padding: 12px 20px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #edf1ee; }
@@ -2808,6 +2990,8 @@ function injectStyles() {
     .pl-pin.pl-marker-dot, .pl-area.pl-marker-dot button { width: 24px; height: 24px; min-width: 24px; min-height: 24px; max-width: 24px; max-height: 24px; border: 0; background: transparent; box-shadow: none; font-size: 0; }
     .pl-pin.pl-marker-dot::before, .pl-area.pl-marker-dot button::before { content: ""; width: 13px; height: 13px; box-sizing: border-box; border: 1.5px solid #fff; border-radius: 50%; background: #b83d4d; }
     .pl-area.pl-marker-dot button { top: 9px; left: 9px; }
+    .pl-pin.pl-marker-done, .pl-area.pl-marker-done button { background: #6b7570; border-style: dashed; }
+    .pl-area.pl-marker-done { border-color: #6b7570; border-style: dashed; background: rgba(107, 117, 112, 0.10); }
     .pl-area.pl-marker-dot:not(:hover):not(:focus-within) { border-color: transparent; background: transparent; box-shadow: none; outline: none !important; }
     .pl-feedback-active [data-patchloop-pin], .pl-feedback-active .pl-area button { pointer-events: none; }
     .pl-target-highlight { outline: 2px dashed #d1495b; outline-offset: 2px; }
@@ -2845,6 +3029,9 @@ function injectStyles() {
     .pl-comment .pl-edit-note { padding: 10px; background: #fff8e7; color: #785011; border-radius: 6px; }
     .pl-keyboard-hint { color: #65716d; font-size: 10px; text-align: right; }
     .pl-feedback-status { display: inline-block; margin-left: 5px; font-weight: 600; }
+    .pl-inbox-status { display: inline-block; margin-left: 5px; padding: 0 6px; border: 1px solid #d9e1dd; border-radius: 999px; color: #42584c; font-weight: 600; }
+    .pl-inbox-status-done { border-color: #0f7b63; color: #0f7b63; }
+    .pl-inbox-status-missing { border-color: #e2c48a; color: #785011; }
     @media (max-width: 480px) {
       .pl-root { right: 12px; bottom: max(12px, env(safe-area-inset-bottom)); }
       .pl-panel { width: calc(100vw - 24px); }

@@ -62,7 +62,8 @@ script-tag widget:
 - パネル内のコメント一覧（番号 / kind / reviewer / 本文 / 配送ステータス）
 - マーカーホバーでコメントのツールチップ表示（feedback モード中は無効）
 - マーカーを押すとパネルが開き、一覧のそのコメントにフォーカスが移る（feedback モード中は無効）
-- パネルの「マーカーの表示」で 通常 / ドットだけ / 全部 を切り替え。ドットだけは送信済みのマーカーを番号も範囲の枠もない小さな点にし、点に hover / focus している間だけ範囲の枠を出す。選んだ表示は origin ごとに `localStorage` の `patchloop:display-mode` に保存。今は受信箱の status を読まないため、通常と全部は同じ表示
+- パネルの「マーカーの表示」で 通常 / ドットだけ / 全部 を切り替え。ドットだけは送信済みのマーカーを番号も範囲の枠もない小さな点にし、点に hover / focus している間だけ範囲の枠を出す。選んだ表示は origin ごとに `localStorage` の `patchloop:display-mode` に保存。通常とドットだけでは、受信箱で終わった（修正済み・見送り）コメントのマーカーを隠し、全部では灰色の破線で出す
+- receiver に送ったコメントの受信箱の status を `POST /feedback-status` で照会し、一覧の送信状態の隣に「受信箱: 修正済み」などを出す（照会の応答に無いものは「受信箱に無い」）。照会は読み込み時・パネルを開いたとき・タブに戻ったときに、30 秒以上あけて行い、失敗が続くと最大 10 分まで間隔を延ばし、401 / 403 / 404 ならそのページでは止める。送信先が receiver で、`endpoint` の path が `/feedback` で終わるときだけ照会する。status はメモリにだけ持ち（端末にも書き出しにも保存しない）、取れないときは何も隠さない。この端末で編集した後のコメントは、受信箱で終わっていても隠さない
 - 個別の編集・削除と残りマーカーの自動再番号付け
 - URL / 点・範囲位置 / selector / viewport / browser / reviewer / timestamp を含む payload
 - viewport の lightweight screenshot snapshot（SVG）を payload に添付
