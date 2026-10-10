@@ -10,6 +10,7 @@ const { safeFilePart, truncateText, present, slackEscape, formatSlackCode, forma
 const { createStore, FEEDBACK_STATUSES } = require("./store.js");
 const { createInboxView } = require("./inbox-view.js");
 const { feedbackForExport } = require("./feedback-export.js");
+const { normalizeUncaptured } = require("./uncaptured.js");
 
 const CONFIG_PATH = process.env.PATCHLOOP_RECEIVER_CONFIG || path.join(__dirname, "receiver.config.json");
 const config = loadConfig(CONFIG_PATH);
@@ -1210,6 +1211,11 @@ function normalizeFeedbackPayload(payload) {
   delete imported.exported;
   delete imported.exportedAt;
   delete imported.exportedFileName;
+  // A malformed screenshot.uncaptured (#148) does not cost the feedback: it is
+  // replaced with an "invalid" record that later readers can rely on.
+  if (imported.screenshot && Object.hasOwn(imported.screenshot, "uncaptured")) {
+    imported.screenshot.uncaptured = normalizeUncaptured(imported.screenshot.uncaptured);
+  }
   return imported;
 }
 

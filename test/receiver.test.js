@@ -49,6 +49,37 @@ test("POST /feedback stores valid feedback and saves screenshot data URLs", asyn
   assert.equal(screenshotResponse.headers.get("content-security-policy"), "default-src 'none'; style-src 'unsafe-inline'; sandbox");
 });
 
+test("POST /feedback and POST /import keep a feedback whose screenshot.uncaptured is malformed (#148)", async (t) => {
+  const receiver = await startReceiver(t);
+  const region = { kind: "shadow-host", tag: "nextjs-portal", relation: "covers-target", rects: [{ x: 20, y: 869, width: 40, height: 40 }] };
+  const wellFormed = {
+    version: 1, status: "detected", scannedElements: 79, scanTruncated: false,
+    counts: { "shadow-host": 1, canvas: 0, frame: 0, embed: 0, video: 0 }, regions: [region]
+  };
+  const withUncaptured = (id, uncaptured) => {
+    const payload = feedbackPayload(id);
+    payload.screenshot.uncaptured = uncaptured;
+    return payload;
+  };
+
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, withUncaptured("pl_uncaptured_ok", { ...wellFormed, extra: 1 }))).status, 201);
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, withUncaptured("pl_uncaptured_bad", { ...wellFormed, regions: [{ ...region, relation: "near" }] }))).status, 201);
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, withUncaptured("pl_uncaptured_junk", "junk"))).status, 201);
+  const imported = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle",
+    version: 2,
+    exportedAt: "2026-10-10T00:00:00.000Z",
+    feedback: [withUncaptured("pl_uncaptured_import", { ...wellFormed, counts: { canvas: 1 } })]
+  });
+  assert.equal(imported.status, 201);
+
+  const byId = Object.fromEntries((await readStoredFeedback(receiver.dbPath)).map((item) => [item.id, item.screenshot.uncaptured]));
+  assert.deepEqual(byId.pl_uncaptured_ok, wellFormed);
+  assert.deepEqual(byId.pl_uncaptured_bad, { version: 1, status: "invalid" });
+  assert.deepEqual(byId.pl_uncaptured_junk, { version: null, status: "invalid" });
+  assert.deepEqual(byId.pl_uncaptured_import, { version: 1, status: "invalid" });
+});
+
 test("POST /feedback rejects malformed feedback payloads", async (t) => {
   const receiver = await startReceiver(t);
   const payload = feedbackPayload("pl_invalid_feedback");
