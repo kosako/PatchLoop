@@ -422,9 +422,11 @@ function detectUncaptured(root, viewport, overlay, topElementAt) {
     if (kind) {
       const rects = kind === "shadow-host" ? shadowHostRects(element, viewport, budget) : [clippedRect(element, viewport)].filter(Boolean);
       if (rects.length) found.push({ element, kind, rects });
-      // A candidate's own subtree is part of what goes missing (fallback
-      // content, slotted light DOM), so it is not scanned for more.
-      continue;
+      // The children of canvas, frames, embeds and video are fallback content
+      // that is not rendered, so they are not scanned. A shadow host's light
+      // DOM is: slotted children render in the page (and the snapshot draws
+      // them as plain children of the host), so it is scanned like any other.
+      if (kind !== "shadow-host") continue;
     }
     stack.push({ children: element.children, next: 0 });
   }

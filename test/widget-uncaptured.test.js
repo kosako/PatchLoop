@@ -98,7 +98,7 @@ test("a shadow host keeps at most four boxes, and falls back to its own box when
   ]);
 });
 
-test("the subtree of a detected element and the widget's own nodes are not scanned", () => {
+test("the fallback content of canvas, frames, embeds and video and the widget's own nodes are not scanned", () => {
   const body = el("body", {
     children: [
       el("object", { box: [0, 0, 100, 100], children: [el("video", { box: [0, 0, 50, 50] })] }),
@@ -207,4 +207,19 @@ test("rectangles are rounded at their edges, never reach past the viewport, and 
   const result = detectUncaptured(body, VIEWPORT, POINT, nothingOnTop);
   assert.deepEqual(result.regions.map((region) => region.rects), [[{ x: 1, y: 0, width: 799, height: 100 }]]);
   assert.equal(result.counts.video, 0);
+});
+
+test("the light DOM of a shadow host is scanned, so a slotted canvas is found even when the host has no box", () => {
+  // A display: contents host whose shadow root only holds a slot: neither has
+  // a box, but the light DOM canvas assigned to the slot is on screen.
+  const slotted = el("canvas", { box: [100, 100, 200, 100] });
+  const host = el("chart-frame", { shadow: [el("slot")], children: [slotted] });
+  const result = detectUncaptured(el("body", { children: [host] }), VIEWPORT, POINT, nothingOnTop);
+  assert.deepEqual(result.regions.map((region) => [region.kind, region.tag, region.rects]), [
+    ["canvas", "canvas", [{ x: 100, y: 100, width: 200, height: 100 }]]
+  ]);
+
+  const boxedHost = el("chart-frame", { box: [0, 0, 400, 300], shadow: [el("slot")], children: [el("canvas", { box: [10, 10, 50, 50] })] });
+  const both = detectUncaptured(el("body", { children: [boxedHost] }), VIEWPORT, POINT, nothingOnTop);
+  assert.deepEqual(both.regions.map((region) => region.tag), ["chart-frame", "canvas"]);
 });
