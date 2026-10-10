@@ -149,12 +149,12 @@ Not captured:
 - What is drawn on a `canvas`
 - `iframe` / `frame` contents (same-origin and `srcdoc` ones included) and `object` / `embed` contents
 - `video` frames
-- Images loaded from a URL (an `img` shows as a broken image) and CSS background images. Data URL images and `svg` written in the page are captured
+- Images loaded from a URL (an `img` shows as a broken image) and CSS background images loaded from a URL. Data URL images and `svg` written in the page are captured
 
 Captured differently from the screen:
 
 - Web fonts loaded from a URL (drawn in another font)
-- Rules from stylesheets loaded from another origin (they cannot be read, so they do not apply)
+- Rules from stylesheets loaded from another origin without CORS (their `cssRules` cannot be read, so they do not apply)
 - Form state changed after load (typed text, checkbox and `select` choices), which shows in its initial state from the HTML
 - The scroll position inside scrollable elements (back at the top)
 - When any of the above changes an element's size, the layout after it shifts too. The point / area marks are drawn at the coordinates on the actual screen, so they can look slightly off from the elements in the image
