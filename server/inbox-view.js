@@ -1,10 +1,9 @@
 "use strict";
 
-const { escapeHtml } = require("../shared/format.js");
+const { escapeHtml, FEEDBACK_STATUS_LABELS: STATUS_LABELS } = require("../shared/format.js");
 const { FEEDBACK_STATUSES } = require("./store.js");
 const { feedbackForExport } = require("./feedback-export.js");
 
-const STATUS_LABELS = { new: "未確認", accepted: "対応予定", fixed: "修正済み", ignored: "見送り" };
 const KIND_LABELS = { point: "ポイント", area: "範囲" };
 
 function displayDate(value) {

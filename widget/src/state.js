@@ -1,3 +1,5 @@
+import { initialLookupState } from "./inbox-status.js";
+
 export const DEFAULTS = {
   projectId: "local-demo",
   demoId: "plain-html",
@@ -37,5 +39,10 @@ export const state = {
   editingId: null,
   commentReturnFocus: null,
   collapsed: true,
-  displayMode: "normal"
+  displayMode: "normal",
+  // Inbox triage status (#147): { statuses: Map(id -> status), asked: Set(id) }
+  // after a successful lookup, null otherwise. Kept in memory only.
+  inboxStatus: null,
+  statusLookup: initialLookupState(),
+  statusLookupInFlight: false
 };

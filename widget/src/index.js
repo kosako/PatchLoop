@@ -4,8 +4,9 @@ import { selectorFor, textFor } from "./selector.js";
 import { resolveSourceContext } from "./source-context.js";
 import { DEFAULTS, state } from "./state.js";
 import { buildPayload } from "./payload.js";
+import { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } from "./inbox-status.js";
 import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback } from "./persistence.js";
-import { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } from "../../shared/format.js";
+import { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } from "../../shared/format.js";
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
 // v2 carries an array of feedback (batch export). v1 wrapped a single
@@ -43,12 +44,16 @@ function init(options = {}) {
   // built later carries the same provenance without re-reading the DOM.
   state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
   state.displayMode = loadDisplayMode();
+  state.inboxStatus = null;
+  state.statusLookup = initialLookupState();
+  state.statusLookupInFlight = false;
   injectStyles();
   renderShell();
   bindGlobalCapture();
   restorePersistedFeedback();
   applyCollapseState();
   renderFeedbackList();
+  refreshInboxStatuses();
   return api;
 }
 
@@ -65,7 +70,9 @@ function destroy() {
   window.removeEventListener("resize", handleWindowResize);
   window.visualViewport?.removeEventListener("resize", positionVisibleCommentForm);
   window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
   window.clearTimeout(state.resizeTimer);
+  state.inboxStatus = null;
   state.approximateIds.clear();
   document.querySelector("[data-patchloop-root]")?.remove();
   document.querySelectorAll("[data-patchloop-pin]").forEach((node) => node.remove());
@@ -224,6 +231,8 @@ function bindGlobalCapture() {
   window.visualViewport?.addEventListener("resize", positionVisibleCommentForm);
   window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
   window.visualViewport?.addEventListener("scroll", positionVisibleCommentForm);
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
 }
 
 function cancelCaptureDrag() {
@@ -1235,6 +1244,7 @@ function unhighlightTarget(element) {
 function toggleCollapse() {
   state.collapsed = !state.collapsed;
   applyCollapseState();
+  if (!state.collapsed) refreshInboxStatuses();
 }
 
 function applyCollapseState() {
@@ -1303,7 +1313,7 @@ function renderFeedbackList() {
         <article class="pl-feedback-item${item.exported ? " pl-feedback-item-exported" : ""}" data-feedback-id="${escapeHtml(item.id)}" tabindex="-1">
           <span class="pl-feedback-num kind-${escapeHtml(kind)}">${num}</span>
           <div class="pl-feedback-body">
-            <div class="pl-feedback-meta">${escapeHtml(item.reviewer || "(no name)")} ${delivery}${exported}${approximate}</div>
+            <div class="pl-feedback-meta">${escapeHtml(item.reviewer || "(no name)")} ${delivery}${inboxStatusChip(item)}${exported}${approximate}</div>
             <div class="pl-feedback-text">${escapeHtml(item.comment || "")}</div>
           </div>
           <div class="pl-feedback-actions">
@@ -1324,12 +1334,74 @@ function feedbackListItem(id) {
   return Array.from(getRoot().querySelectorAll("[data-feedback-id]")).find((node) => node.dataset.feedbackId === id);
 }
 
-// The display mode is applied to every committed marker here, so markers added
-// or restored take it when the list is rendered. The marker of a comment still
-// being written keeps its full look, so the chosen spot stays visible while the
-// comment is typed.
+// The display mode and the inbox status are applied to every committed marker
+// here, so markers added or restored take them when the list is rendered. A
+// comment finished in the inbox (#147) is hidden in 通常 and ドットだけ and
+// grayed out in 全部. The marker of a comment still being written keeps its
+// full look, so the chosen spot stays visible while the comment is typed.
 function applyMarkerDisplay() {
-  state.feedbackMarkers.forEach((marker) => marker.node.classList.toggle("pl-marker-dot", state.displayMode === "dots"));
+  const statuses = state.inboxStatus?.statuses;
+  state.feedback.forEach((item) => {
+    const marker = state.feedbackMarkers.get(item.id);
+    if (!marker) return;
+    const finished = isFinished(item, statuses);
+    marker.node.classList.toggle("pl-marker-dot", state.displayMode === "dots");
+    marker.node.classList.toggle("pl-marker-done", finished && state.displayMode === "all");
+    marker.node.hidden = finished && state.displayMode !== "all";
+  });
+}
+
+// The inbox status next to the delivery status (#147), shown once a lookup has
+// answered for the comment. An asked id missing from the answer was deleted in
+// the inbox, or sent to another receiver.
+function inboxStatusChip(item) {
+  const lookup = state.inboxStatus;
+  if (!lookup || !lookup.asked.has(item.id)) return "";
+  const status = lookup.statuses.get(item.id);
+  if (!status) return '<span class="pl-inbox-status pl-inbox-status-missing" title="受信箱で削除されたか、別の受信箱に送られています">受信箱に無い</span>';
+  const finished = isFinished(item, lookup.statuses);
+  return `<span class="pl-inbox-status${finished ? " pl-inbox-status-done" : ""}" title="受信箱の対応状況">受信箱: ${escapeHtml(FEEDBACK_STATUS_LABELS[status])}</span>`;
+}
+
+// Asks the receiver for the inbox status of the delivered comments (#147). It
+// runs on load, when the panel opens and when the tab comes back, no more often
+// than the lookup state allows (longer after failures), and stops for the page
+// once the receiver has no lookup for it. Only the receiver delivery mode asks.
+async function refreshInboxStatuses() {
+  if (state.statusLookupInFlight || state.statusLookup.stopped || Date.now() < state.statusLookup.nextAt) return;
+  if (state.options.deliveryMode !== "receiver") return;
+  const url = statusLookupUrl(state.options.endpoint, window.location.href);
+  const ids = statusLookupIds(state.feedback);
+  if (!url || ids.length === 0) return;
+  const root = getRoot();
+  state.statusLookupInFlight = true;
+  let httpStatus = 0;
+  let statuses = null;
+  try {
+    const headers = { "Content-Type": "application/json" };
+    if (state.options.ingestKey) headers["X-PatchLoop-Ingest-Key"] = state.options.ingestKey;
+    const response = await fetchWithTimeout(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ projectId: state.options.projectId, ids })
+    });
+    httpStatus = response.status;
+    if (response.ok) statuses = statusesFromAnswer(await response.json());
+  } catch (error) {
+    console.info("[PatchLoop] inbox status lookup failed", error);
+  } finally {
+    state.statusLookupInFlight = false;
+  }
+  // A re-init or destroy while the request was out leaves this answer behind.
+  if (getRoot() !== root) return;
+  const outcome = lookupOutcome(httpStatus, statuses);
+  state.statusLookup = lookupAfter(state.statusLookup, outcome, Date.now());
+  state.inboxStatus = outcome === "ok" ? { statuses, asked: new Set(ids) } : null;
+  renderFeedbackList();
+}
+
+function handleVisibilityChange() {
+  if (document.visibilityState === "visible") refreshInboxStatuses();
 }
 
 function deliveryStatusText(delivery) {
@@ -1604,7 +1676,7 @@ function injectStyles() {
     .pl-root *, [data-patchloop-area] * { all: revert; }
     :is(.pl-root, .pl-root *, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-area] *, [data-patchloop-selection])::before, :is(.pl-root, .pl-root *, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-area] *, [data-patchloop-selection])::after { all: revert; }
     .pl-root, .pl-root * { box-sizing: border-box; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: normal; }
-    .pl-root [hidden], .pl-comment[hidden], .pl-tooltip[hidden] { display: none !important; }
+    .pl-root [hidden], .pl-comment[hidden], .pl-tooltip[hidden], [data-patchloop-pin][hidden], [data-patchloop-area][hidden] { display: none !important; }
     .pl-root { position: fixed; z-index: 2147483000; color: #14211d; right: 20px; bottom: max(20px, env(safe-area-inset-bottom)); font-size: 14px; line-height: 1.5; text-align: left; }
     .pl-panel { position: absolute; right: 0; bottom: 0; width: min(400px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); background: #fff; border: 1px solid #d9e1dd; border-radius: 16px; box-shadow: 0 18px 65px rgba(20, 33, 29, 0.16); overflow: auto; overscroll-behavior: contain; }
     .pl-panel header { min-height: 64px; padding: 12px 20px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #edf1ee; }
@@ -1662,6 +1734,8 @@ function injectStyles() {
     .pl-pin.pl-marker-dot, .pl-area.pl-marker-dot button { width: 24px; height: 24px; min-width: 24px; min-height: 24px; max-width: 24px; max-height: 24px; border: 0; background: transparent; box-shadow: none; font-size: 0; }
     .pl-pin.pl-marker-dot::before, .pl-area.pl-marker-dot button::before { content: ""; width: 13px; height: 13px; box-sizing: border-box; border: 1.5px solid #fff; border-radius: 50%; background: #b83d4d; }
     .pl-area.pl-marker-dot button { top: 9px; left: 9px; }
+    .pl-pin.pl-marker-done, .pl-area.pl-marker-done button { background: #6b7570; border-style: dashed; }
+    .pl-area.pl-marker-done { border-color: #6b7570; border-style: dashed; background: rgba(107, 117, 112, 0.10); }
     .pl-area.pl-marker-dot:not(:hover):not(:focus-within) { border-color: transparent; background: transparent; box-shadow: none; outline: none !important; }
     .pl-feedback-active [data-patchloop-pin], .pl-feedback-active .pl-area button { pointer-events: none; }
     .pl-target-highlight { outline: 2px dashed #d1495b; outline-offset: 2px; }
@@ -1699,6 +1773,9 @@ function injectStyles() {
     .pl-comment .pl-edit-note { padding: 10px; background: #fff8e7; color: #785011; border-radius: 6px; }
     .pl-keyboard-hint { color: #65716d; font-size: 10px; text-align: right; }
     .pl-feedback-status { display: inline-block; margin-left: 5px; font-weight: 600; }
+    .pl-inbox-status { display: inline-block; margin-left: 5px; padding: 0 6px; border: 1px solid #d9e1dd; border-radius: 999px; color: #42584c; font-weight: 600; }
+    .pl-inbox-status-done { border-color: #0f7b63; color: #0f7b63; }
+    .pl-inbox-status-missing { border-color: #e2c48a; color: #785011; }
     @media (max-width: 480px) {
       .pl-root { right: 12px; bottom: max(12px, env(safe-area-inset-bottom)); }
       .pl-panel { width: calc(100vw - 24px); }

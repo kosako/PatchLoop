@@ -55,7 +55,11 @@ function matchesSelector(node, selector) {
 // The bundle runs unchanged against a small DOM adapter. These tests drive the
 // public API and registered input/submit listeners; layout and screenshot
 // fidelity belong to browser tests rather than this deterministic harness.
-function widgetHarness({ ready = true, pointerEvents = false, replies = [] } = {}) {
+// The inbox status lookup (#147) answers 404 unless a test supplies statusReply
+// ((query) => response), like a receiver without the lookup.
+const NO_STATUS_LOOKUP = () => ({ ok: false, status: 404, json: async () => ({ ok: false, error: "Not Found" }) });
+
+function widgetHarness({ ready = true, pointerEvents = false, replies = [], statusReply = NO_STATUS_LOOKUP } = {}) {
   const mountedRoots = [];
   const downloads = [];
   const blobs = new Map();
@@ -235,6 +239,7 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [] } = {
     dispatchEvent(event) { this.emit(event.type, event); }
   };
   const requests = [];
+  const statusRequests = [];
   const warnings = [];
   const storage = new Map();
   const window = {
@@ -254,6 +259,12 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [] } = {
     CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
     console: { info() {}, warn: (...args) => warnings.push(args) },
     fetch: async (url, options) => {
+      // Status lookups get their own reply and record, so tests that count
+      // deliveries in requests are not affected by them.
+      if (String(url).endsWith("/feedback-status")) {
+        statusRequests.push({ url, ...options });
+        return statusReply(JSON.parse(options.body));
+      }
       requests.push({ url, ...options });
       const reply = replies.shift();
       if (reply instanceof Error) throw reply;
@@ -270,7 +281,7 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [] } = {
     document.emit(pointerEvents ? "pointerup" : "mouseup", area ? { ...mouse, clientX: 100, clientY: 80 } : mouse);
   }
   return {
-    api, requests, warnings, document, window, capture, downloads, target,
+    api, requests, statusRequests, warnings, document, window, capture, downloads, target,
     init(options = {}) { api.init({ persistFeedback: false, captureScreenshot: false, reviewer: "Reviewer", endpoint: "https://receiver.example/feedback", ...options }); },
     ready() { document.body = body; document.activeElement = body; document.emit("DOMContentLoaded"); },
     roots: () => document.querySelectorAll("[data-patchloop-root]"),

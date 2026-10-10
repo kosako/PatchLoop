@@ -4,6 +4,10 @@
 // link hardening (safeLinkUrl / mdLinkUrl) and the screenshot status texts
 // stay in their respective owners because their semantics differ per side.
 
+// Inbox triage statuses and their labels, shown by the inbox and, next to a
+// comment's delivery status, by the widget (#147).
+export const FEEDBACK_STATUS_LABELS = { new: "未確認", accepted: "対応予定", fixed: "修正済み", ignored: "見送り" };
+
 export function safeFilePart(value) {
   return String(value || "feedback")
     .replace(/[^a-zA-Z0-9_-]+/g, "-")
