@@ -1322,7 +1322,8 @@ test("GitHub Issues and Slack say which elements the screenshot cannot show near
   const body = github.requests[0].body.body;
   assert.match(body, /### Not in the screenshot\n\nThese elements do not show in the screenshot and may overlap the selected spot/);
   assert.match(body, /- \[1\] `nextjs-portal`: shadow DOM, on top at the selected spot/);
-  assert.match(body, /2 more elsewhere on the page\./);
+  assert.match(body, /1 more elsewhere on the page\./);
+  assert.match(body, /1 more not listed by the widget, so where they are is not known\./);
 
   // Without the record (an older widget) the Issue says it was not checked, and Slack says nothing.
   const older = feedbackPayload("pl_uncaptured_older");
@@ -1330,6 +1331,27 @@ test("GitHub Issues and Slack say which elements the screenshot cannot show near
   assert.doesNotMatch(JSON.stringify(slack.requests[1].body.blocks), /Not in the screenshot/);
   assert.equal((await postJson(`${receiver.baseUrl}/feedback/${older.id}/github-issue`, {})).status, 201);
   assert.match(github.requests[1].body.body, /### Not in the screenshot\n\nNot checked: the widget predates this check\./);
+
+  // A tag cannot change the Issue's layout, and Slack lists a few, within its
+  // 3,000 characters even when every character of a name is escaped.
+  const rect = { x: 0, y: 0, width: 10, height: 10 };
+  const many = feedbackPayload("pl_uncaptured_many");
+  many.screenshot.uncaptured = {
+    version: 1, status: "detected", scannedElements: 50, scanTruncated: false,
+    counts: { "shadow-host": 0, canvas: 20, frame: 0, embed: 0, video: 0 },
+    regions: [
+      { kind: "canvas", tag: "canvas\n\n## forged\n\n[open](https://example.invalid)", relation: "covers-target", rects: [rect] },
+      ...Array.from({ length: 19 }, () => ({ kind: "canvas", tag: "&".repeat(200), relation: "overlaps-target", rects: [rect] }))
+    ]
+  };
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, many)).status, 201);
+  const section = slack.requests[2].body.blocks.find((block) => block.text?.text?.startsWith("*Not in the screenshot*"));
+  assert.ok(section.text.text.length <= 3000, `${section.text.text.length} characters`);
+  assert.match(section.text.text, /… and 15 more \(see the inbox\)$/);
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback/${many.id}/github-issue`, {})).status, 201);
+  const manyBody = github.requests[2].body.body;
+  assert.match(manyBody, /^- \[1\] `canvas ## forged \[open\]\(https:\/\/example\.invalid\)`: canvas, on top at the selected spot$/m);
+  assert.doesNotMatch(manyBody, /^## forged/m);
 });
 
 test("Slack fallback text escapes the comment like the blocks do (#150)", async (t) => {

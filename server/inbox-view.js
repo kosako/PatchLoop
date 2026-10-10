@@ -1,6 +1,6 @@
 "use strict";
 
-const { escapeHtml, truncateText, FEEDBACK_STATUS_LABELS: STATUS_LABELS } = require("../shared/format.js");
+const { escapeHtml, FEEDBACK_STATUS_LABELS: STATUS_LABELS } = require("../shared/format.js");
 const { FEEDBACK_STATUSES } = require("./store.js");
 const { feedbackForExport } = require("./feedback-export.js");
 const { summarizeUncaptured } = require("./uncaptured.js");
@@ -296,7 +296,7 @@ function createInboxView(deps) {
 function renderUncapturedNote(summary) {
   if (!summary || summary.state !== "detected" || summary.touching.length === 0) return "";
   const list = summary.touching
-    .map((region) => `${region.number}. ${escapeHtml(truncateText(region.tag, 80))}（${escapeHtml(region.kindName)}・${UNCAPTURED_RELATION_LABELS[region.relation]}）`)
+    .map((region) => `${region.number}. ${escapeHtml(region.tag)}（${escapeHtml(region.kindName)}・${UNCAPTURED_RELATION_LABELS[region.relation]}）`)
     .join("、");
   return `<p class="uncaptured-note">画像に写っていない要素が指摘箇所に重なっている可能性があります（番号は画像の点線の枠）: ${list}</p>`;
 }
@@ -307,6 +307,7 @@ function uncapturedSummaryText(summary) {
     const parts = [];
     if (summary.touching.length > 0) parts.push(`指摘箇所に ${summary.touching.length} 件`);
     if (summary.elsewhere > 0) parts.push(`${summary.touching.length > 0 ? "ほかに" : "指摘箇所の外に"} ${summary.elsewhere} 件`);
+    if (summary.unlisted > 0) parts.push(`一覧にない ${summary.unlisted} 件（位置は不明）`);
     const text = parts.length > 0 ? parts.join("、") : "なし";
     return summary.scanTruncated ? `${text}（ページの走査は途中で打ち切り）` : text;
   }

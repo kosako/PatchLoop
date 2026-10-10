@@ -1081,6 +1081,7 @@ function gitHubIssueBody(item) {
   return lines.join("\n");
 }
 
+const SLACK_UNCAPTURED_LIMIT = 5;
 const UNCAPTURED_RELATION_TEXT = { "covers-target": "on top at the selected spot", "overlaps-target": "overlaps the selected spot" };
 
 // What the screenshot cannot show (#148). Elements that touch the selected spot
@@ -1092,10 +1093,11 @@ function uncapturedIssueLines(summary) {
   if (summary.state === "detected" && summary.touching.length > 0) {
     lines.push("These elements do not show in the screenshot and may overlap the selected spot, so the cause may be missing from the image (the numbers match its dashed frames):", "");
     for (const region of summary.touching) {
-      lines.push(`- [${region.number}] \`${String(truncateText(region.tag, 80)).replaceAll("\`", "'")}\`: ${region.kindName}, ${UNCAPTURED_RELATION_TEXT[region.relation]}`);
+      lines.push(`- [${region.number}] \`${region.tag.replaceAll("\`", "'")}\`: ${region.kindName}, ${UNCAPTURED_RELATION_TEXT[region.relation]}`);
     }
     lines.push("");
     if (summary.elsewhere > 0) lines.push(`${summary.elsewhere} more elsewhere on the page.`, "");
+    if (summary.unlisted > 0) lines.push(`${summary.unlisted} more not listed by the widget, so where they are is not known.`, "");
     if (summary.scanTruncated) lines.push("_The page scan stopped early, so there may be more._", "");
     return lines;
   }
@@ -1105,9 +1107,10 @@ function uncapturedIssueLines(summary) {
 
 function uncapturedIssueSentence(summary) {
   if (summary.state === "detected") {
-    const found = summary.elsewhere > 0
-      ? `${summary.elsewhere} element(s) on the page do not show in the screenshot; none overlaps the selected spot.`
-      : "None detected.";
+    const parts = [];
+    if (summary.elsewhere > 0) parts.push(`${summary.elsewhere} element(s) on the page do not show in the screenshot; none overlaps the selected spot.`);
+    if (summary.unlisted > 0) parts.push(`${summary.unlisted} more are not listed by the widget, so where they are is not known.`);
+    const found = parts.length > 0 ? parts.join(" ") : "None detected.";
     return summary.scanTruncated ? `${found} The page scan stopped early, so there may be more.` : found;
   }
   if (summary.state === "failed") return "Not known: the widget's check failed.";
@@ -2052,11 +2055,16 @@ function buildSlackMessage(item) {
   }
 
   // Elements the screenshot cannot show that touch the selected spot (#148),
-  // numbered like their dashed frames on the image.
+  // numbered like their dashed frames on the image. A few are listed, with
+  // short names, so the section stays well within Slack's 3,000 characters
+  // even when every character of a name is escaped.
   const uncaptured = item.screenshot && item.screenshot.status === "saved" ? summarizeUncaptured(item.screenshot) : null;
   if (uncaptured && uncaptured.state === "detected" && uncaptured.touching.length > 0) {
-    const list = uncaptured.touching
-      .map((region) => `${region.number}. ${formatSlackCode(truncateText(region.tag, 80))} (${slackEscape(region.kindName)}, ${UNCAPTURED_RELATION_TEXT[region.relation]})`)
+    const shown = uncaptured.touching.slice(0, SLACK_UNCAPTURED_LIMIT);
+    const more = uncaptured.touching.length - shown.length;
+    const list = shown
+      .map((region) => `${region.number}. ${formatSlackCode(truncateText(region.tag, 60))} (${slackEscape(region.kindName)}, ${UNCAPTURED_RELATION_TEXT[region.relation]})`)
+      .concat(more > 0 ? [`… and ${more} more (see the inbox)`] : [])
       .join("\n");
     blocks.push({
       type: "section",

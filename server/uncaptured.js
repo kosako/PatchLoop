@@ -70,9 +70,12 @@ function cleanRect(rect) {
 // "not-checked" (no record: the widget predates the check), "detected",
 // "failed", "invalid" or "unknown-version". A detected record lists the
 // elements that touch the selected spot with their numbers on the image (their
-// place in regions) and counts the rest. The record is read through
-// normalizeUncaptured, so records stored before the receiver checked them read
-// the same way.
+// place in regions), counts the listed ones that do not (elsewhere) and the
+// ones the widget left off the list (unlisted, whose place is not known). A tag
+// is made one plain line (line breaks and control characters become spaces)
+// and cut to 80 characters, so no reader can have its layout changed by it.
+// The record is read through normalizeUncaptured, so records stored before the
+// receiver checked them read the same way.
 function summarizeUncaptured(screenshot) {
   if (!screenshot || !Object.hasOwn(screenshot, "uncaptured")) return { state: "not-checked" };
   const record = normalizeUncaptured(screenshot.uncaptured);
@@ -80,10 +83,21 @@ function summarizeUncaptured(screenshot) {
   if (record.version !== UNCAPTURED_VERSION) return { state: "unknown-version", version: record.version };
   if (record.status !== "detected") return { state: record.status };
   const touching = record.regions
-    .map((region, index) => ({ number: index + 1, kindName: KIND_NAMES[region.kind], tag: region.tag, relation: region.relation }))
+    .map((region, index) => ({ number: index + 1, kindName: KIND_NAMES[region.kind], tag: displayTag(region.tag), relation: region.relation }))
     .filter((region) => region.relation !== "none");
   const total = UNCAPTURED_KINDS.reduce((sum, kind) => sum + record.counts[kind], 0);
-  return { state: "detected", touching, elsewhere: Math.max(0, total - touching.length), scanTruncated: record.scanTruncated };
+  return {
+    state: "detected",
+    touching,
+    elsewhere: record.regions.length - touching.length,
+    unlisted: Math.max(0, total - record.regions.length),
+    scanTruncated: record.scanTruncated
+  };
+}
+
+function displayTag(tag) {
+  const line = tag.replace(/[\s\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").trim() || "?";
+  return line.length > 80 ? `${line.slice(0, 79)}…` : line;
 }
 
 function isCount(value) {

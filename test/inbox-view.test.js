@@ -92,7 +92,7 @@ test("a card's details tell none, not checked and failed apart, and say nothing 
   const failed = renderInbox([feedback({ screenshot: savedScreenshot({ uncaptured: { version: 1, status: "failed" } }) })]);
   assert.match(failed, /<dt>写らない要素<\/dt><dd>検知に失敗<\/dd>/);
   const elsewhere = renderInbox([feedback({ screenshot: savedScreenshot({ uncaptured: uncapturedRecord([{ kind: "canvas", tag: "canvas", relation: "none", rects: [{ x: 0, y: 0, width: 10, height: 10 }] }], { "shadow-host": 0, canvas: 3, frame: 0, embed: 0, video: 0 }) }) })]);
-  assert.match(elsewhere, /<dt>写らない要素<\/dt><dd>指摘箇所の外に 3 件<\/dd>/);
+  assert.match(elsewhere, /<dt>写らない要素<\/dt><dd>指摘箇所の外に 1 件、一覧にない 2 件（位置は不明）<\/dd>/);
   for (const screenshot of [undefined, { status: "omitted", reason: "too-large", bytes: 1, maxBytes: 1 }]) {
     assert.doesNotMatch(renderInbox([feedback({ screenshot })]), /写らない要素/);
   }
