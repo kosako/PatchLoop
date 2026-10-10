@@ -113,7 +113,7 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [], stat
     const classes = new Set();
     const attributes = new Map();
     const node = {
-      ...eventTarget(), tagName: tagName.toUpperCase(), children: [], parentElement: null,
+      ...eventTarget(), tagName: tagName.toUpperCase(), localName: tagName.toLowerCase(), children: [], parentElement: null,
       dataset: {}, style: {}, value: "", textContent: "",
       get isConnected() { return this.tagName === "BODY" || this.tagName === "HEAD" || Boolean(this.parentElement?.isConnected); },
       classList: {
@@ -237,6 +237,8 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [], stat
     documentElement: Object.assign(element("html"), { clientWidth: 800, clientHeight: 600, scrollWidth: 800, scrollHeight: 600 }),
     createElement: element,
     elementFromPoint: () => target,
+    // Nothing on top at a point: the uncaptured detection then relies on boxes.
+    elementsFromPoint: () => [],
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
     querySelectorAll(selector) { return [...head.querySelectorAll(selector), ...(this.body?.querySelectorAll(selector) || [])]; },
     dispatchEvent(event) { this.emit(event.type, event); }

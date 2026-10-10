@@ -160,7 +160,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 - スクロールできる要素の中のスクロール位置（先頭に戻る）
 - 上のものが要素の大きさを変えると、その後ろの配置もずれる。指摘箇所の印（点・範囲）は実際の画面の座標に描くので、画像の中の要素と少しずれて見えることがある
 
-このうち open な shadow root を持つ要素・`canvas`・`iframe` / `frame`・`object` / `embed`・`video` は、widget が検知して payload の `screenshot.uncaptured` に残します（closed な shadow root は検知できません）。そのうち指摘箇所に重なるものは、画像の上に黒い点線の枠と番号で示します（番号は `screenshot.uncaptured.regions` の順で 1 から）。widget 自身の UI とマーカー、`script` は写しません。指摘箇所は画像の上に印として描きます。受信箱や GitHub Issue のリンクから画像を新しいタブで開いたとき（画像のファイルを文書として表示したとき）も配置は同じですが、data URL の画像が出ない、`srcdoc` の iframe は描かれる、という違いがあります（receiver が読み込みを止める CSP を付けて返すため）。
+このうち open な shadow root を持つ要素・`canvas`・`iframe` / `frame`・`object` / `embed`・`video` は、widget が検知して payload の `screenshot.uncaptured` に残します（closed な shadow root は検知できません）。そのうち指摘箇所に重なるものは、画像の上に黒い点線の枠と番号で示します（番号は `screenshot.uncaptured.regions` の順で 1 から）。コメントを書くときにも、選んだ場所にこれらの要素が重なっていれば、見えている内容を書き添えるようフォームで案内します（画面画像を撮る設定のとき）。widget 自身の UI とマーカー、`script` は写しません。指摘箇所は画像の上に印として描きます。受信箱や GitHub Issue のリンクから画像を新しいタブで開いたとき（画像のファイルを文書として表示したとき）も配置は同じですが、data URL の画像が出ない、`srcdoc` の iframe は描かれる、という違いがあります（receiver が読み込みを止める CSP を付けて返すため）。
 
 ## Payload
 
