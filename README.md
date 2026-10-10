@@ -159,7 +159,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 - スクロールできる要素の中のスクロール位置（先頭に戻る）
 - 上のものが要素の大きさを変えると、その後ろの配置もずれる。指摘箇所の印（点・範囲）は実際の画面の座標に描くので、画像の中の要素と少しずれて見えることがある
 
-widget 自身の UI とマーカー、`script` は写しません。指摘箇所は画像の上に印として描きます。受信箱から画像を新しいタブで開くと、CSS が効かずに崩れて見えます（[#180](https://github.com/kosako/PatchLoop/issues/180)）。
+このうち open な shadow root を持つ要素・`canvas`・`iframe` / `frame`・`object` / `embed`・`video` は、widget が検知して payload の `screenshot.uncaptured` に残します（closed な shadow root は検知できません）。widget 自身の UI とマーカー、`script` は写しません。指摘箇所は画像の上に印として描きます。受信箱から画像を新しいタブで開くと、CSS が効かずに崩れて見えます（[#180](https://github.com/kosako/PatchLoop/issues/180)）。
 
 ## Payload
 
@@ -190,6 +190,7 @@ widget 自身の UI とマーカー、`script` は写しません。指摘箇所
 - `environment.browser`
 - `environment.language`
 - `screenshot` — viewport snapshot。成功時は `status: "captured"`、`mimeType: "image/svg+xml"`、`dataUrl`、`targetOverlay` などを含む
+- `screenshot.uncaptured` — 画像に写らない要素のうち viewport にあるもの（open な shadow root を持つ要素・`canvas`・`iframe` / `frame`・`embed` / `object`・`video`）。`version`、`status`（`detected` / 検知に失敗した `failed`）、走査した要素数 `scannedElements` と 20,000 要素で打ち切ったか `scanTruncated`、種類ごとの件数 `counts`、最大 20 件の `regions`（`kind`、`tag`、viewport 上の矩形 `rects`、指摘箇所との関係 `relation`）を持ちます。`relation` は、指摘箇所でその要素が最前面にある `covers-target`、矩形が指摘箇所と重なる `overlaps-target`、どちらでもない `none` で、20 件を超えるときはこの順に残します。shadow root や frame の中身は含めません。画像を撮れたときだけ付き、この項目の無い payload（`schemaVersion` 2 以前の widget）は検知していないことを表します
 - `createdAt`
 - `delivery` — 外部送信を行う場合は、通知イベントと `onSubmit` の呼び出し前に `{ pending: true, target: "receiver" | "slack-webhook" }` を付与します。送信後は `{ ok, status }` または `{ ok: false, error }` に置き換わります。Slack 直送の結果は `{ ok: null, status: "unknown", target: "slack-webhook" }` です。送信中断後の復元時は `{ ok: null, interrupted: true, target }` で結果未確認を表します。receiver 向けは編集後も再送できますが、受信済み ID は上書きされません。これらは端末内の配送状態で、receiver の受信済みデータには保存されません
 

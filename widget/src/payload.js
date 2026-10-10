@@ -7,7 +7,8 @@ import { captureScreenshot } from "./screenshot.js";
 // envelope and export bundle versions). Bump when the payload shape changes
 // so the receiver can branch on it as the schema grows for team use.
 // v2 adds the optional sourceContext block (#96).
-const PAYLOAD_SCHEMA_VERSION = 2;
+// v3 adds screenshot.uncaptured (#148).
+const PAYLOAD_SCHEMA_VERSION = 3;
 
 export function buildPayload(comment, reviewer, target, includeScreenshot = state.options.captureScreenshot) {
   return {

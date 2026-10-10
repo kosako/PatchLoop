@@ -8,8 +8,10 @@ const { captureScreenshot } = require("../widget/src/screenshot.js");
 // captureScreenshot reads the live page through these globals. node --test
 // isolates globals per file, so a minimal page is enough to build the SVG and
 // check how the cloned body is placed (layout itself needs a real browser).
-function installPage({ bodyStyle, bodyInlineStyle = null, scrollX = 0, scrollY = 0 }) {
+function installPage({ bodyStyle, bodyInlineStyle = null, scrollX = 0, scrollY = 0, bodyChildren = [], elementsFromPoint = () => [] }) {
   const body = {
+    tagName: "BODY",
+    children: bodyChildren,
     getAttribute: (name) => (name === "style" ? bodyInlineStyle : null),
     cloneNode: () => ({ childNodes: [], querySelectorAll: () => [] })
   };
@@ -20,7 +22,7 @@ function installPage({ bodyStyle, bodyInlineStyle = null, scrollX = 0, scrollY =
     scrollWidth: 800,
     scrollHeight: 2000
   };
-  globalThis.document = { body, documentElement, styleSheets: [] };
+  globalThis.document = { body, documentElement, styleSheets: [], elementsFromPoint };
   globalThis.window = {
     Blob: globalThis.Blob,
     innerWidth: 800,
@@ -71,4 +73,45 @@ test("the snapshot keeps a scroll-locked fixed body where the page put it (#171)
   assert.ok(style.startsWith("position: fixed; top: -500px;"));
   assert.ok(style.endsWith("isolation:isolate !important;"));
   assert.doesNotMatch(style, /transform|!important;top|position:relative/);
+});
+
+// A page element the snapshot cannot draw, as the scan sees it.
+function iframeAt(left, top, width, height) {
+  const node = {
+    tagName: "IFRAME",
+    localName: "iframe",
+    children: [],
+    matches: () => false,
+    closest: () => null,
+    contains: (other) => other === node,
+    getBoundingClientRect: () => ({ left, top, right: left + width, bottom: top + height })
+  };
+  return node;
+}
+
+test("a captured screenshot records what the image cannot show next to the selected spot (#148)", () => {
+  const frame = iframeAt(50, 50, 200, 100);
+  installPage({ bodyStyle: { position: "static" }, bodyChildren: [frame], elementsFromPoint: () => [frame] });
+  const shot = captureScreenshot({ kind: "point", pageX: 100, pageY: 100 });
+  assert.equal(shot.status, "captured");
+  assert.equal(shot.uncaptured.status, "detected");
+  assert.equal(shot.uncaptured.version, 1);
+  assert.deepEqual(shot.uncaptured.regions, [
+    { kind: "frame", tag: "iframe", relation: "covers-target", rects: [{ x: 50, y: 50, width: 200, height: 100 }] }
+  ]);
+});
+
+test("the widget's own nodes on top of the spot are skipped when looking for what covers it (#148)", () => {
+  const frame = iframeAt(50, 50, 200, 100);
+  const pendingPin = { closest: (selector) => (selector.includes("[data-patchloop-pin]") ? pendingPin : null) };
+  installPage({ bodyStyle: { position: "static" }, bodyChildren: [frame], elementsFromPoint: () => [pendingPin, frame] });
+  const shot = captureScreenshot({ kind: "point", pageX: 100, pageY: 100 });
+  assert.equal(shot.uncaptured.regions[0].relation, "covers-target");
+});
+
+test("a failed detection is recorded and still leaves the screenshot captured (#148)", () => {
+  installPage({ bodyStyle: { position: "static" }, elementsFromPoint: () => { throw new Error("hit test failed"); } });
+  const shot = captureScreenshot({ kind: "point", pageX: 100, pageY: 100 });
+  assert.equal(shot.status, "captured");
+  assert.deepEqual(shot.uncaptured, { version: 1, status: "failed", error: "hit test failed" });
 });
