@@ -30,6 +30,12 @@ test("a well-formed record is kept, with only the fields of version 1", () => {
   assert.deepEqual(normalizeUncaptured(detected({ regions: [] })), detected({ regions: [] }));
 });
 
+test("a tag of any length is kept: the widget sends the element's name as the page has it", () => {
+  const longName = `x-${"a".repeat(200)}`;
+  const record = detected({ regions: [{ kind: "shadow-host", tag: longName, relation: "none", rects: [{ x: 0, y: 0, width: 10, height: 10 }] }] });
+  assert.equal(normalizeUncaptured(record).regions[0].tag, longName);
+});
+
 test("a failed detection is kept, with its error message when it is a string", () => {
   assert.deepEqual(normalizeUncaptured({ version: 1, status: "failed" }), { version: 1, status: "failed" });
   assert.deepEqual(normalizeUncaptured({ version: 1, status: "failed", error: "hit test failed", extra: 1 }), { version: 1, status: "failed", error: "hit test failed" });
@@ -53,7 +59,6 @@ test("a malformed version 1 record becomes invalid", () => {
     detected({ regions: [{ ...region, kind: "img" }] }),
     detected({ regions: [{ ...region, relation: "near" }] }),
     detected({ regions: [{ ...region, tag: "" }] }),
-    detected({ regions: [{ ...region, tag: "x".repeat(101) }] }),
     detected({ regions: [{ ...region, tag: 7 }] }),
     detected({ regions: [{ ...region, rects: [] }] }),
     detected({ regions: [{ ...region, rects: Array.from({ length: 5 }, () => region.rects[0]) }] }),

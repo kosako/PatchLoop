@@ -80,6 +80,27 @@ test("POST /feedback and POST /import keep a feedback whose screenshot.uncapture
   assert.deepEqual(byId.pl_uncaptured_import, { version: 1, status: "invalid" });
 });
 
+test("screenshot.uncaptured is judged as sent, before a non-finite number turns into null (#148)", async (t) => {
+  const receiver = await startReceiver(t);
+  // 1e400 parses to Infinity; a JSON round-trip would turn it into null.
+  const post = async (id, uncaptured, rawValue) => {
+    const payload = feedbackPayload(id);
+    payload.screenshot.uncaptured = uncaptured;
+    const response = await fetch(`${receiver.baseUrl}/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload).replace('"__RAW__"', rawValue)
+    });
+    assert.equal(response.status, 201);
+  };
+  await post("pl_uncaptured_inf_error", { version: 1, status: "failed", error: "__RAW__" }, "1e400");
+  await post("pl_uncaptured_later", { version: 2, status: "detected", score: "__RAW__" }, "1e400");
+  const byId = Object.fromEntries((await readStoredFeedback(receiver.dbPath)).map((item) => [item.id, item.screenshot.uncaptured]));
+  assert.deepEqual(byId.pl_uncaptured_inf_error, { version: 1, status: "invalid" });
+  // A later version is stored as sent, in its JSON form.
+  assert.deepEqual(byId.pl_uncaptured_later, { version: 2, status: "detected", score: null });
+});
+
 test("POST /feedback rejects malformed feedback payloads", async (t) => {
   const receiver = await startReceiver(t);
   const payload = feedbackPayload("pl_invalid_feedback");

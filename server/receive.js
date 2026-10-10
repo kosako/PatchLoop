@@ -1212,9 +1212,14 @@ function normalizeFeedbackPayload(payload) {
   delete imported.exportedAt;
   delete imported.exportedFileName;
   // A malformed screenshot.uncaptured (#148) does not cost the feedback: it is
-  // replaced with an "invalid" record that later readers can rely on.
+  // replaced with an "invalid" record that later readers can rely on. It is
+  // judged as parsed, since the clone above turns a non-finite number (1e400
+  // parses to Infinity) into null; a later version kept as sent is stored in
+  // its cloned form.
   if (imported.screenshot && Object.hasOwn(imported.screenshot, "uncaptured")) {
-    imported.screenshot.uncaptured = normalizeUncaptured(imported.screenshot.uncaptured);
+    const sent = payload.screenshot.uncaptured;
+    const normalized = normalizeUncaptured(sent);
+    imported.screenshot.uncaptured = normalized === sent ? imported.screenshot.uncaptured : normalized;
   }
   return imported;
 }

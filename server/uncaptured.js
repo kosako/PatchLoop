@@ -9,10 +9,11 @@
 const UNCAPTURED_VERSION = 1;
 const UNCAPTURED_KINDS = ["shadow-host", "canvas", "frame", "embed", "video"];
 const UNCAPTURED_RELATIONS = ["covers-target", "overlaps-target", "none"];
-// The widget sends at most 20 regions of at most 4 rects each.
+// The widget sends at most 20 regions of at most 4 rects each. A tag is the
+// element's name as the page has it; its length is left to the receiver's
+// field length limit.
 const MAX_REGIONS = 20;
 const MAX_RECTS = 4;
-const MAX_TAG_LENGTH = 100;
 
 function normalizeUncaptured(value) {
   if (!isPlainObject(value) || !Number.isInteger(value.version)) return { version: null, status: "invalid" };
@@ -48,7 +49,7 @@ function cleanVersion1(value) {
 function cleanRegion(region) {
   if (!isPlainObject(region)) return null;
   if (!UNCAPTURED_KINDS.includes(region.kind) || !UNCAPTURED_RELATIONS.includes(region.relation)) return null;
-  if (typeof region.tag !== "string" || region.tag.length === 0 || region.tag.length > MAX_TAG_LENGTH) return null;
+  if (typeof region.tag !== "string" || region.tag.length === 0) return null;
   if (!Array.isArray(region.rects) || region.rects.length === 0 || region.rects.length > MAX_RECTS) return null;
   const rects = region.rects.map(cleanRect);
   if (rects.includes(null)) return null;
