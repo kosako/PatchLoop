@@ -61,6 +61,8 @@ script-tag widget:
 - Target element outline while a draft is pending
 - Per-feedback comment list with reviewer, kind, comment, and delivery status
 - Hover tooltip on markers showing the comment (disabled in feedback mode)
+- Activating a marker opens the panel and moves focus to its comment in the list (disabled in feedback mode)
+- A "マーカーの表示" (marker display) switch in the panel: normal / dots only / all. Dots only turns sent markers into small dots without numbers or area frames, and shows an area's frame only while its dot is hovered or focused. The choice is saved per origin in `localStorage` under `patchloop:display-mode`. The widget does not read inbox statuses yet, so normal and all look the same
 - Per-item edit and delete inside the panel with marker renumbering
 - Payload with URL, point/area position, selector, viewport, browser, reviewer, and timestamp
 - Lightweight viewport screenshot snapshot (SVG) attached to each payload
@@ -135,7 +137,7 @@ Edits and deletions affect this browser only, not received feedback or GitHub Is
 
 The reviewer name is saved to `localStorage` after submit and restored the next time the widget starts. The feedback list is also saved to `localStorage` by default and restored after reloads on the same project / demo / page URL, including pins and area overlays. The panel’s “この端末のコメントを消す” action removes both visible markers and saved feedback from this browser. Set `persistFeedback: false` for memory-only behavior.
 
-Tab to a comment marker to read its tooltip, and press Escape to dismiss it. In the comment form, Escape cancels the entry or edit and restores focus to the previous control.
+Tab to a comment marker to read its tooltip, and press Escape to dismiss it. Press Enter to move to its comment in the list. In the comment form, Escape cancels the entry or edit and restores focus to the previous control.
 
 ## Payload
 
