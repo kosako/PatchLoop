@@ -212,7 +212,7 @@ node server/receive.js
 - inbox のサイドバーに対応状況別の件数を表示します。検索・プロジェクト・対応状況で絞り込み、詳細条件で kind / demo / reviewer / source / Slack / GitHub も指定できます。変更・失敗時にも検索条件を保持します
 - 各 feedback には triage status（`new` / `accepted` / `fixed` / `ignored`）があり、card 上の select から変更できます。status は sqlite に永続化されます
 - `POST /feedback/:id/status` で API からも status を更新できます（body は `{"status": "accepted"}` 形式）
-- `POST /feedback-status` で、widget が送ったコメントの status を照会できます（body は `{"ids": ["pl_..."], "projectId": "..."}`、`projectId` は省略可）。応答は `{"ok": true, "statuses": [{"id": "pl_...", "status": "fixed"}]}` で、見つからない id は含めず、feedback の本文などは返しません（`Cache-Control: no-store`）。`ids` は 1〜200 件・各 1〜200 文字、body は 64 KiB まで。`POST /feedback` と同じく許可 origin・ingest key（project に紐づく key ならその project の feedback だけ）・rate limit が効きます。id を知っていれば status を読めるので、`RECEIVER_TOKEN` を設定した receiver にはこの endpoint がありません（404）
+- `POST /feedback-status` で、widget が送ったコメントの status を照会できます（body は `{"ids": ["pl_..."], "projectId": "..."}`、`projectId` は省略可）。応答は `{"ok": true, "statuses": [{"id": "pl_...", "status": "fixed"}]}` で、見つからない id は含めず、feedback の本文などは返しません（`Cache-Control: no-store`）。`ids` は 1〜200 件・各 1〜200 文字、body は 64 KiB（`MAX_BODY_BYTES` がそれより小さければその値）まで。`POST /feedback` と同じく許可 origin・ingest key（project に紐づく key ならその project の feedback だけ）・rate limit が効きます。id を知っていれば status を読めるので、`RECEIVER_TOKEN` を設定した receiver にはこの endpoint がありません（404）
 - `DELETE /feedback/:id` で feedback と紐づく screenshot を削除できます（inbox の card の「削除」ボタンからも）
 - GitHub 連携を設定すると、inbox の各 card から GitHub Issue を作成できます（後述）
 - inbox UI から `.patchloop-feedback.json` を選択して import できます。追加・重複・失敗件数を確認し、「受信箱を更新」で一覧へ反映します

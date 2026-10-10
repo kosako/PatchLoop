@@ -35,10 +35,11 @@ const MAX_FIELD_LENGTH = positiveIntSetting(process.env.MAX_FIELD_LENGTH, positi
 const MAX_ARRAY_LENGTH = positiveIntSetting(process.env.MAX_ARRAY_LENGTH, positiveIntSetting(config.maxArrayLength, 1_000, "maxArrayLength (config)"), "MAX_ARRAY_LENGTH (env)");
 const MAX_OBJECT_DEPTH = positiveIntSetting(process.env.MAX_OBJECT_DEPTH, positiveIntSetting(config.maxObjectDepth, 32, "maxObjectDepth (config)"), "MAX_OBJECT_DEPTH (env)");
 // Fixed bounds of the widget's status lookup (POST /feedback-status, #147): a
-// query names at most 200 ids of at most 200 characters, in at most 64 KiB.
+// query names at most 200 ids of at most 200 characters, in at most 64 KiB (or
+// MAX_BODY_BYTES when that is set lower, so no route exceeds the body cap).
 const STATUS_LOOKUP_MAX_IDS = 200;
 const STATUS_LOOKUP_MAX_ID_LENGTH = 200;
-const STATUS_LOOKUP_MAX_BODY_BYTES = 64 * 1024;
+const STATUS_LOOKUP_MAX_BODY_BYTES = Math.min(MAX_BODY_BYTES, 64 * 1024);
 // Resource limits (DoS / disk exhaustion). A public receiver accepts unauth'd
 // POST /feedback, so without these an attacker can spam requests until the
 // process or disk is exhausted. All are tunable; lenient defaults stay on so

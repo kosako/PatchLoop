@@ -1831,6 +1831,13 @@ test("POST /feedback-status rejects malformed queries and bodies over 64 KiB (#1
   assert.equal(form.status, 415);
 });
 
+test("POST /feedback-status also keeps to a MAX_BODY_BYTES set below 64 KiB (#147)", async (t) => {
+  const receiver = await startReceiver(t, { MAX_BODY_BYTES: "1000" });
+  const url = `${receiver.baseUrl}/feedback-status`;
+  assert.equal((await postJson(url, { ids: ["pl_one"] })).status, 200);
+  assert.equal((await postJson(url, { ids: ["pl_one"], padding: "x".repeat(2000) })).status, 413);
+});
+
 test("POST /feedback-status keeps the ingest boundary: allowlist, ingest key and its project (#147)", async (t) => {
   const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-status-config-"));
   t.after(() => fs.rm(configDir, { recursive: true, force: true }));
