@@ -1878,6 +1878,65 @@ test("a receiver with RECEIVER_TOKEN has no status lookup (#147)", async (t) => 
   assert.equal(preflight.headers.get("access-control-allow-origin"), null);
 });
 
+test("statusLookup opens the status lookup on a receiver with RECEIVER_TOKEN, and warns (#147)", async (t) => {
+  // Stage 1 keeps a token for its inbox but is only reached locally, so it opts
+  // in through its config file.
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-status-optin-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  const configPath = path.join(configDir, "receiver.config.json");
+  await fs.writeFile(configPath, JSON.stringify({ receiverToken: "s3cret", statusLookup: true }));
+  const receiver = await startReceiver(t, { PATCHLOOP_RECEIVER_CONFIG: configPath });
+  assert.match(receiver.logs, /status lookup: enabled \(POST \/feedback-status\) although RECEIVER_TOKEN is set/);
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_optin"))).status, 201);
+  const response = await postJson(`${receiver.baseUrl}/feedback-status`, { ids: ["pl_optin"] });
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body.statuses, [{ id: "pl_optin", status: "new" }]);
+  // The rest of the receiver still requires the token.
+  assert.equal((await fetch(`${receiver.baseUrl}/feedback.json`)).status, 401);
+});
+
+test("statusLookup values from env and config decide the status lookup, env first (#147)", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-status-matrix-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  // [config, env STATUS_LOOKUP, expected HTTP status, expected startup log]
+  const cases = [
+    [{ receiverToken: "s3cret", statusLookup: null }, "", 404, /status lookup: disabled \(RECEIVER_TOKEN is set\)/],
+    [{ statusLookup: null }, "", 200, /status lookup: enabled \(POST \/feedback-status\)$/m],
+    [{ statusLookup: false }, "", 404, /status lookup: disabled \(statusLookup is off\)/],
+    [{ statusLookup: "false" }, "", 404, /status lookup: disabled \(statusLookup is off\)/],
+    [{ receiverToken: "s3cret", statusLookup: "true" }, "", 200, /although RECEIVER_TOKEN is set/],
+    // An empty env value counts as unset and leaves the config in charge.
+    [{ receiverToken: "s3cret", statusLookup: true }, "", 200, /although RECEIVER_TOKEN is set/],
+    // A non-empty env value wins over the config, either way.
+    [{ statusLookup: true }, "0", 404, /status lookup: disabled \(statusLookup is off\)/],
+    [{ receiverToken: "s3cret", statusLookup: false }, "1", 200, /although RECEIVER_TOKEN is set/]
+  ];
+  for (const [index, [config, env, expectedStatus, expectedLog]] of cases.entries()) {
+    const configPath = path.join(configDir, `receiver-${index}.config.json`);
+    await fs.writeFile(configPath, JSON.stringify(config));
+    const receiver = await startReceiver(t, { PATCHLOOP_RECEIVER_CONFIG: configPath, STATUS_LOOKUP: env });
+    const label = `${JSON.stringify(config)} STATUS_LOOKUP=${JSON.stringify(env)}`;
+    assert.match(receiver.logs, expectedLog, label);
+    const response = await fetch(`${receiver.baseUrl}/feedback-status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: ["pl_any"] })
+    });
+    assert.equal(response.status, expectedStatus, label);
+  }
+});
+
+test("STATUS_LOOKUP=0 closes the status lookup even without RECEIVER_TOKEN (#147)", async (t) => {
+  const receiver = await startReceiver(t, { STATUS_LOOKUP: "0" });
+  assert.match(receiver.logs, /status lookup: disabled \(statusLookup is off\)/);
+  const response = await fetch(`${receiver.baseUrl}/feedback-status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: ["pl_any"] })
+  });
+  assert.equal(response.status, 404);
+});
+
 test("POST /feedback requires a configured ingest key and rejects wrong ones", async (t) => {
   const receiver = await startReceiver(t, { INGEST_KEYS: "key-a, key-b" });
   assert.match(receiver.logs, /ingest auth: enabled \(2 keys\)/);
@@ -2027,6 +2086,7 @@ async function startReceiver(t, extraEnv = {}) {
       SLACK_UPLOAD_CHANNEL_ID: "",
       GITHUB_TOKEN: "",
       GITHUB_REPO: "",
+      STATUS_LOOKUP: "",
       PATCHLOOP_RECEIVER_CONFIG: path.join(tempDir, "missing-config.json"),
       ...extraEnv
     },
