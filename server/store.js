@@ -11,6 +11,8 @@
 //   insert(item)                   persist a new feedback object
 //   get(id)            -> item|null
 //   list({projectId, demoId, status}) -> item[]   newest first; filters are optional
+//   statusesFor(ids, {projectId})  -> [{id, status}]  for the ids that exist, in the
+//                                    given order; projectId (null = any) narrows them
 //   update(id, patch)  -> item|null shallow-merge patch into the stored item
 //   updateIntegration(id, provider, result) -> item|null atomically replace one
 //                                    provider result, preserving all other fields
@@ -209,6 +211,19 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
       const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
       const rows = db.prepare(`SELECT data FROM feedback${where} ORDER BY seq DESC`).all(...params);
       return rows.map((row) => JSON.parse(row.data));
+    },
+
+    // Reads only the id and status columns: the status lookup never touches
+    // the stored feedback itself. Callers pass 1 or more distinct ids.
+    async statusesFor(ids, { projectId }) {
+      const params = ids.map(String);
+      let sql = `SELECT id, status FROM feedback WHERE id IN (${params.map(() => "?").join(", ")})`;
+      if (projectId != null) {
+        sql += " AND project_id = ?";
+        params.push(String(projectId));
+      }
+      const found = new Map(db.prepare(sql).all(...params).map((row) => [row.id, row.status]));
+      return ids.map(String).filter((id) => found.has(id)).map((id) => ({ id, status: found.get(id) }));
     },
 
     async update(id, patch) {
