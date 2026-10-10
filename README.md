@@ -139,6 +139,28 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 
 コメントのマーカーは Tab でフォーカスしても内容を確認でき、Escape で tooltip を閉じられます。Enter で一覧のそのコメントへ移ります。コメントフォームでは Escape で入力・編集を取り消し、元の操作位置へフォーカスを戻します。
 
+### スクリーンショットに写らないもの
+
+画面画像は、ページの body を複製して SVG の `foreignObject` に入れ、画像として描いたものです（ブラウザの画面をそのまま撮ったものではありません）。そのため、次のものは画像に写らないか、実際の画面と違って写ります。受信箱の一覧のサムネイルと、GitHub Issue に埋め込まれた画像は、画像として描くので、この一覧のとおりに見えます（Chrome で確認。ほかのブラウザでは違いうる）。
+
+写らないもの:
+
+- shadow DOM の中身（open / closed とも）。Next.js の開発サーバーが出す dev indicator や、Web Components など
+- `canvas` に描いた内容
+- `iframe` / `frame` の中身（同じ origin や `srcdoc` も）と、`object` / `embed` の中身
+- `video` の映像
+- URL で読み込む画像（`img` は壊れた画像の表示になる）と、URL で読み込む CSS の背景画像。data URL の画像と、ページに直接書いた `svg` は写る
+
+実際の画面と違って写るもの:
+
+- URL で読み込む Web フォント（別のフォントで描かれる）
+- 別の origin から CORS なしで読み込んだ stylesheet の規則（`cssRules` を読めないので効かない）
+- 読み込んだ後に変わったフォームの状態（入力した文字、チェックボックスや `select` の選択）。HTML に書かれた初期の状態で写る
+- スクロールできる要素の中のスクロール位置（先頭に戻る）
+- 上のものが要素の大きさを変えると、その後ろの配置もずれる。指摘箇所の印（点・範囲）は実際の画面の座標に描くので、画像の中の要素と少しずれて見えることがある
+
+widget 自身の UI とマーカー、`script` は写しません。指摘箇所は画像の上に印として描きます。受信箱から画像を新しいタブで開くと、CSS が効かずに崩れて見えます（[#180](https://github.com/kosako/PatchLoop/issues/180)）。
+
 ## Payload
 
 主な payload 項目:
@@ -367,7 +389,7 @@ GitHub Issue 作成は receiver inbox からの手動操作のみで、自動作
 
 - Slack App / OAuth 連携
 - チーム向けのユーザー・権限管理、定期バックアップ・保存期間の自動管理
-- pixel-perfect なブラウザ screenshot capture
+- pixel-perfect なブラウザ screenshot capture（写らないものは「スクリーンショットに写らないもの」を参照）
 - ページの CSS からの完全な切り離し（要素名・`*`・`::before` / `::after` の規則は widget に効かないが、詳細度が (0,1,1) 以上の規則（`button:hover` など）、`!important`、widget の起動より後に読まれた属性の規則、ほかの疑似要素（`::placeholder`・`::marker`・`::selection` など）の規則と、`all` がリセットしない `direction` / `unicode-bidi` は効きうる。ページの CSS で widget を隠すときは、`!important` を付けるか `body [data-patchloop-root]` のような selector を使う）
 - レビュアー個人の認証（ingest key はプロジェクト単位の公開キーで、個人を識別しない。デモ側ログイン前提の署名付き token は将来スコープ）
 - AI PR 連携
