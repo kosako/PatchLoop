@@ -719,6 +719,7 @@ function captureScreenshot(target) {
     const documentWidth = Math.max(document.documentElement.scrollWidth, width);
     const documentHeight = Math.max(document.documentElement.scrollHeight, height);
     const overlay = screenshotOverlayFor(target);
+    const uncaptured = uncapturedFor({ width, height }, overlay);
     const svg = buildScreenshotSvg({
       width,
       height,
@@ -726,7 +727,8 @@ function captureScreenshot(target) {
       documentHeight,
       scrollX: window.scrollX,
       scrollY: window.scrollY,
-      overlay
+      overlay,
+      uncaptured
     });
     const bytes = byteLength(svg);
     const maxBytes = Number(state.options.screenshotMaxBytes || 0);
@@ -756,7 +758,7 @@ function captureScreenshot(target) {
       devicePixelRatio: window.devicePixelRatio || 1,
       bytes,
       targetOverlay: overlay,
-      uncaptured: uncapturedFor({ width, height }, overlay),
+      uncaptured,
       dataUrl: `data:image/svg+xml;base64,${base64Encode(svg)}`
     };
   } catch (error) {
@@ -767,7 +769,7 @@ function captureScreenshot(target) {
   }
 }
 
-function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scrollX, scrollY, overlay }) {
+function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scrollX, scrollY, overlay, uncaptured }) {
   const bodyClone = document.body.cloneNode(true);
   bodyClone.querySelectorAll(`${WIDGET_NODES}, script`).forEach((node) => node.remove());
   bodyClone.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
@@ -789,6 +791,7 @@ function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scro
   const bodyStylePrefix = bodyInlineStyle ? bodyInlineStyle.replace(/;?$/, ";") : "";
   const styles = `${freezeViewportUnits(collectReadableStyles(), width, height)}\n* { box-sizing: border-box; }\n`;
   const overlayMarkup = renderScreenshotOverlay(overlay);
+  const uncapturedMarkup = renderUncapturedMarks(uncaptured, width, height);
   const bodyMarkup = serializeAsXhtml(bodyClone);
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -805,6 +808,7 @@ function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scro
   </html>
 </foreignObject>
 <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" fill="none" stroke="#d9e1dd"/>
+${uncapturedMarkup}
 ${overlayMarkup}
 </svg>`;
 }
@@ -901,6 +905,36 @@ function screenshotOverlayFor(target) {
     x: Math.round(target.pageX - window.scrollX),
     y: Math.round(target.pageY - window.scrollY)
   };
+}
+
+// Elements the image cannot show that touch the selected spot (#148) get a
+// dashed frame and a number: their place in uncaptured.regions, counted from 1,
+// so text next to the image can point at them. The frame is dark over white to
+// stay visible on any page; the selected spot's own mark is drawn above it. The
+// number sits just outside the frame (above it, or below when there is no room)
+// so the spot's mark, which is often inside the frame, does not cover it.
+// Elements that do not touch the spot stay in the metadata only.
+function renderUncapturedMarks(uncaptured, width, height) {
+  if (!uncaptured || uncaptured.status !== "detected") return "";
+  return uncaptured.regions
+    .map((region, index) => ({ region, number: index + 1 }))
+    .filter(({ region }) => region.relation !== "none")
+    .map(({ region, number }) => {
+      const frames = region.rects.map(({ x, y, width: w, height: h }) => {
+        const box = `x="${x + 1}" y="${y + 1}" width="${Math.max(1, w - 2)}" height="${Math.max(1, h - 2)}" fill="none"`;
+        return `
+<rect ${box} stroke="#ffffff" stroke-width="4"/>
+<rect ${box} stroke="#14211d" stroke-width="2" stroke-dasharray="6 4"/>`;
+      }).join("");
+      const [first] = region.rects;
+      const labelX = Math.max(0, Math.min(first.x, width - 20));
+      const above = first.y - 24;
+      const labelY = above >= 0 ? above : Math.max(0, Math.min(first.y + first.height + 4, height - 20));
+      return `${frames}
+<rect x="${labelX}" y="${labelY}" width="20" height="20" rx="4" fill="#14211d" stroke="#ffffff" stroke-width="2"/>
+<text x="${labelX + 10}" y="${labelY + 14}" text-anchor="middle" fill="#ffffff" font-family="system-ui, sans-serif" font-size="12" font-weight="700">${number}</text>`;
+    })
+    .join("");
 }
 
 function renderScreenshotOverlay(overlay) {
