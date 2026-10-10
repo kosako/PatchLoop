@@ -151,6 +151,21 @@ function preventArchive(t) {
   });
 }
 
+test("statusesFor returns the status of the ids that exist, in the order asked, narrowed to a project when given", async (t) => {
+  const fixture = createFixture(t);
+  const store = await fixture.open();
+  await store.insert({ id: "a", projectId: "p1", status: "fixed", comment: "not returned" });
+  await store.insert({ id: "b", projectId: "p1", status: "new" });
+  await store.insert({ id: "c", projectId: "p2", status: "ignored" });
+  assert.deepEqual(await store.statusesFor(["c", "missing", "a", "b"], { projectId: null }), [
+    { id: "c", status: "ignored" },
+    { id: "a", status: "fixed" },
+    { id: "b", status: "new" }
+  ]);
+  assert.deepEqual(await store.statusesFor(["c", "a"], { projectId: "p1" }), [{ id: "a", status: "fixed" }]);
+  assert.deepEqual(await store.statusesFor(["missing"], { projectId: null }), []);
+});
+
 function createFixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "patchloop-store-test-"));
   const config = {

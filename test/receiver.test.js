@@ -1779,6 +1779,104 @@ test("without an allowlist, ingest CORS stays open and startup warns", async (t)
   assert.equal(inbox.headers.get("access-control-allow-origin"), null);
 });
 
+test("POST /feedback-status returns only the id and status of the feedback it knows (#147)", async (t) => {
+  const receiver = await startReceiver(t);
+  assert.match(receiver.logs, /status lookup: enabled \(POST \/feedback-status\)/);
+  for (const id of ["pl_status_new", "pl_status_fixed"]) {
+    assert.equal((await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload(id))).status, 201);
+  }
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback/pl_status_fixed/status`, { status: "fixed" })).status, 200);
+
+  const response = await fetch(`${receiver.baseUrl}/feedback-status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: "http://demo.example" },
+    body: JSON.stringify({ ids: ["pl_status_fixed", "pl_status_unknown", "pl_status_new", "pl_status_fixed"] })
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("access-control-allow-origin"), "*");
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    statuses: [{ id: "pl_status_fixed", status: "fixed" }, { id: "pl_status_new", status: "new" }]
+  });
+
+  // A widget posts JSON cross-origin, so the preflight must be granted too.
+  const preflight = await fetch(`${receiver.baseUrl}/feedback-status`, { method: "OPTIONS", headers: { Origin: "http://demo.example" } });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+  assert.match(preflight.headers.get("access-control-allow-headers"), /X-PatchLoop-Ingest-Key/);
+});
+
+test("POST /feedback-status rejects malformed queries and bodies over 64 KiB (#147)", async (t) => {
+  const receiver = await startReceiver(t);
+  const url = `${receiver.baseUrl}/feedback-status`;
+  for (const query of [
+    {},
+    { ids: "pl_one" },
+    { ids: [] },
+    { ids: Array.from({ length: 201 }, (_, i) => `pl_${i}`) },
+    { ids: [""] },
+    { ids: ["x".repeat(201)] },
+    { ids: [42] },
+    { ids: ["pl_one"], projectId: 7 }
+  ]) {
+    const response = await postJson(url, query);
+    assert.equal(response.status, 400, JSON.stringify(query).slice(0, 80));
+    assert.equal(response.body.ok, false);
+  }
+  assert.equal((await postJson(url, { ids: Array.from({ length: 200 }, (_, i) => `pl_${i}`.padEnd(200, "x")) })).status, 200);
+  const oversized = await postJson(url, { ids: ["pl_one"], padding: "x".repeat(64 * 1024) });
+  assert.equal(oversized.status, 413);
+  const form = await fetch(url, { method: "POST", headers: { "Content-Type": "text/plain" }, body: "{\"ids\":[\"pl_one\"]}" });
+  assert.equal(form.status, 415);
+});
+
+test("POST /feedback-status also keeps to a MAX_BODY_BYTES set below 64 KiB (#147)", async (t) => {
+  const receiver = await startReceiver(t, { MAX_BODY_BYTES: "1000" });
+  const url = `${receiver.baseUrl}/feedback-status`;
+  assert.equal((await postJson(url, { ids: ["pl_one"] })).status, 200);
+  assert.equal((await postJson(url, { ids: ["pl_one"], padding: "x".repeat(2000) })).status, 413);
+});
+
+test("POST /feedback-status keeps the ingest boundary: allowlist, ingest key and its project (#147)", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-status-config-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  const configPath = path.join(configDir, "receiver.config.json");
+  await fs.writeFile(configPath, JSON.stringify({
+    allowedOrigins: ["http://demo.example"],
+    ingestKeys: [{ key: "a-key", projectId: "proj-a" }, { key: "b-key", projectId: "proj-b" }]
+  }));
+  const receiver = await startReceiver(t, { PATCHLOOP_RECEIVER_CONFIG: configPath });
+  const url = `${receiver.baseUrl}/feedback-status`;
+  const aKey = { "X-PatchLoop-Ingest-Key": "a-key" };
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, { ...feedbackPayload("pl_a"), projectId: "proj-a" }, aKey)).status, 201);
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, { ...feedbackPayload("pl_b"), projectId: "proj-b" }, { "X-PatchLoop-Ingest-Key": "b-key" })).status, 201);
+
+  assert.equal((await postJson(url, { ids: ["pl_a"] })).status, 401);
+  assert.equal((await postJson(url, { ids: ["pl_a"] }, { ...aKey, Origin: "http://evil.example" })).status, 403);
+  // A key bound to a project only sees that project, whether or not the query
+  // names it, and cannot ask about another one.
+  const scoped = await postJson(url, { ids: ["pl_a", "pl_b"] }, { ...aKey, Origin: "http://demo.example" });
+  assert.equal(scoped.status, 200);
+  assert.deepEqual(scoped.body.statuses, [{ id: "pl_a", status: "new" }]);
+  const other = await postJson(url, { ids: ["pl_b"], projectId: "proj-b" }, aKey);
+  assert.equal(other.status, 403);
+});
+
+test("a receiver with RECEIVER_TOKEN has no status lookup (#147)", async (t) => {
+  const receiver = await startReceiver(t, { RECEIVER_TOKEN: "s3cret" });
+  assert.match(receiver.logs, /status lookup: disabled \(RECEIVER_TOKEN is set\)/);
+  const response = await fetch(`${receiver.baseUrl}/feedback-status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer s3cret", Origin: "http://demo.example" },
+    body: JSON.stringify({ ids: ["pl_any"] })
+  });
+  assert.equal(response.status, 404);
+  assert.equal(response.headers.get("access-control-allow-origin"), null);
+  const preflight = await fetch(`${receiver.baseUrl}/feedback-status`, { method: "OPTIONS", headers: { Origin: "http://demo.example" } });
+  assert.equal(preflight.headers.get("access-control-allow-origin"), null);
+});
+
 test("POST /feedback requires a configured ingest key and rejects wrong ones", async (t) => {
   const receiver = await startReceiver(t, { INGEST_KEYS: "key-a, key-b" });
   assert.match(receiver.logs, /ingest auth: enabled \(2 keys\)/);

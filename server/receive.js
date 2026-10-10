@@ -34,6 +34,12 @@ const MAX_IMPORT_ITEMS = positiveIntSetting(process.env.MAX_IMPORT_ITEMS, positi
 const MAX_FIELD_LENGTH = positiveIntSetting(process.env.MAX_FIELD_LENGTH, positiveIntSetting(config.maxFieldLength, 20_000, "maxFieldLength (config)"), "MAX_FIELD_LENGTH (env)");
 const MAX_ARRAY_LENGTH = positiveIntSetting(process.env.MAX_ARRAY_LENGTH, positiveIntSetting(config.maxArrayLength, 1_000, "maxArrayLength (config)"), "MAX_ARRAY_LENGTH (env)");
 const MAX_OBJECT_DEPTH = positiveIntSetting(process.env.MAX_OBJECT_DEPTH, positiveIntSetting(config.maxObjectDepth, 32, "maxObjectDepth (config)"), "MAX_OBJECT_DEPTH (env)");
+// Fixed bounds of the widget's status lookup (POST /feedback-status, #147): a
+// query names at most 200 ids of at most 200 characters, in at most 64 KiB (or
+// MAX_BODY_BYTES when that is set lower, so no route exceeds the body cap).
+const STATUS_LOOKUP_MAX_IDS = 200;
+const STATUS_LOOKUP_MAX_ID_LENGTH = 200;
+const STATUS_LOOKUP_MAX_BODY_BYTES = Math.min(MAX_BODY_BYTES, 64 * 1024);
 // Resource limits (DoS / disk exhaustion). A public receiver accepts unauth'd
 // POST /feedback, so without these an attacker can spam requests until the
 // process or disk is exhausted. All are tunable; lenient defaults stay on so
@@ -245,6 +251,12 @@ function redirect(res, location) {
 const ROUTE_AUTH_KINDS = new Set(["none", "ingest", "protected", "page"]);
 const ROUTES = [
   { method: "POST", pattern: /^\/feedback$/, auth: "ingest", cors: true, handler: handlePostFeedback },
+  // The widget's status lookup (#147) lets anyone who knows a feedback id read
+  // its triage status. It exists only on a receiver without RECEIVER_TOKEN (a
+  // local one, stages 1 and 2); a token-protected receiver has no such route.
+  ...(RECEIVER_TOKEN ? [] : [
+    { method: "POST", pattern: /^\/feedback-status$/, auth: "ingest", cors: true, handler: handlePostFeedbackStatus }
+  ]),
   { method: "GET", pattern: /^\/healthz$/, auth: "none", rateLimit: false, handler: handleGetHealthz },
   { method: "GET", pattern: /^\/login$/, auth: "none", handler: handleGetLogin },
   { method: "POST", pattern: /^\/login$/, auth: "none", handler: handlePostLogin },
@@ -440,6 +452,7 @@ async function start() {
   console.log(`[PatchLoop receiver] screenshot dir: ${SCREENSHOT_DIR}`);
   console.log(`[PatchLoop receiver] auth: ${RECEIVER_TOKEN ? "enabled (token + inbox login)" : "disabled (no RECEIVER_TOKEN)"}`);
   console.log(`[PatchLoop receiver] ingest auth: ${INGEST_KEYS.length > 0 ? `enabled (${INGEST_KEYS.length} key${INGEST_KEYS.length > 1 ? "s" : ""})` : "open (no INGEST_KEYS)"}`);
+  console.log(`[PatchLoop receiver] status lookup: ${RECEIVER_TOKEN ? "disabled (RECEIVER_TOKEN is set)" : "enabled (POST /feedback-status)"}`);
   if (ALLOWED_ORIGINS.length > 0) {
     console.log(`[PatchLoop receiver] CORS allowlist: ${ALLOWED_ORIGINS.join(", ")}`);
   } else {
@@ -462,7 +475,8 @@ start().catch((error) => {
   process.exit(1);
 });
 
-// CORS headers for the ingest route only. With no allowlist configured every
+// CORS headers for the widget's routes (ingest and status lookup) only. With
+// no allowlist configured every
 // origin may post (historical open default, warned at startup). With an
 // allowlist, the request's Origin is echoed back only when it matches; other
 // origins get no CORS headers, so the browser blocks the cross-origin POST at
@@ -685,6 +699,39 @@ function handlePostFeedback(req, res) {
       slack
     });
   });
+}
+
+// POST /feedback-status (#147): the widget asks for the triage status of the
+// comments it sent. Only { id, status } pairs come back, for the ids the store
+// has (within the project when the query names one or the ingest key is bound
+// to one), never the feedback itself.
+function handlePostFeedbackStatus(req, res) {
+  readJsonBody(req, res, async (body) => {
+    let query;
+    try {
+      query = normalizeStatusQuery(body);
+      enforceIngestProject(query, req.patchloopIngestKey);
+    } catch (error) {
+      respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
+      return;
+    }
+    const statuses = await store.statusesFor(query.ids, { projectId: query.projectId });
+    respondJson(res, 200, { ok: true, statuses }, { "Cache-Control": "no-store" });
+  }, { maxBytes: STATUS_LOOKUP_MAX_BODY_BYTES });
+}
+
+function normalizeStatusQuery(body) {
+  requirePlainObject(body, "Status query");
+  if (body.projectId != null) requireString(body.projectId, "statusQuery.projectId");
+  if (!Array.isArray(body.ids) || body.ids.length === 0 || body.ids.length > STATUS_LOOKUP_MAX_IDS) {
+    throw httpError(`statusQuery.ids must be an array of 1 to ${STATUS_LOOKUP_MAX_IDS} feedback ids`, 400);
+  }
+  for (const id of body.ids) {
+    if (typeof id !== "string" || id.length === 0 || id.length > STATUS_LOOKUP_MAX_ID_LENGTH) {
+      throw httpError(`statusQuery.ids entries must be strings of 1 to ${STATUS_LOOKUP_MAX_ID_LENGTH} characters`, 400);
+    }
+  }
+  return { projectId: body.projectId ?? null, ids: [...new Set(body.ids)] };
 }
 
 function handlePostImport(req, res) {
@@ -1018,9 +1065,10 @@ function mdTableCell(value) {
   return String(value ?? "").replaceAll("|", "\\|").replaceAll("\n", " ");
 }
 
-// Collects the request body (bounded by MAX_BODY_BYTES) and hands the raw text
-// to onBody. Shared by the JSON endpoints and the urlencoded login form.
-function readRequestBody(req, res, onBody) {
+// Collects the request body (bounded by MAX_BODY_BYTES, or a route's own
+// smaller cap) and hands the raw text to onBody. Shared by the JSON endpoints
+// and the urlencoded login form.
+function readRequestBody(req, res, onBody, { maxBytes = MAX_BODY_BYTES } = {}) {
   let received = 0;
   const chunks = [];
   let aborted = false;
@@ -1028,7 +1076,7 @@ function readRequestBody(req, res, onBody) {
   req.on("data", (chunk) => {
     if (aborted) return;
     received += chunk.length;
-    if (received > MAX_BODY_BYTES) {
+    if (received > maxBytes) {
       aborted = true;
       // Respond and drain the rest instead of destroying the socket:
       // an immediate destroy races the 413 and clients see ECONNRESET.
@@ -1056,7 +1104,7 @@ function readRequestBody(req, res, onBody) {
   });
 }
 
-function readJsonBody(req, res, onJson) {
+function readJsonBody(req, res, onJson, limits) {
   // A simple cross-origin request can carry cookies on the same site. Requiring
   // JSON prevents it from reaching mutation handlers without a CORS preflight.
   const mediaType = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
@@ -1074,7 +1122,7 @@ function readJsonBody(req, res, onJson) {
       return;
     }
     await onJson(payload);
-  });
+  }, limits);
 }
 
 // Resolves a bundle (single or batch) into a list of normalized payloads.
