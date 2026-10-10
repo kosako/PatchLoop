@@ -75,6 +75,15 @@ const GITHUB_CONFIGURED = Boolean(GITHUB_TOKEN && GITHUB_REPO);
 // and the inbox login form (a browser session holds an HMAC-derived cookie, not
 // the token itself, so rotating the token invalidates every session at once).
 const RECEIVER_TOKEN = process.env.RECEIVER_TOKEN || config.receiverToken || "";
+// The widget's status lookup (POST /feedback-status, #147) answers anyone who
+// knows a feedback id, so by default it is open only on a receiver without
+// RECEIVER_TOKEN. STATUS_LOOKUP / statusLookup overrides that: true opens it
+// on a receiver that keeps a token for its inbox but is only reached locally
+// (stage 1), false closes it everywhere.
+const STATUS_LOOKUP_SETTING = process.env.STATUS_LOOKUP || config.statusLookup;
+const STATUS_LOOKUP_ENABLED = STATUS_LOOKUP_SETTING === undefined || STATUS_LOOKUP_SETTING === null
+  ? !RECEIVER_TOKEN
+  : boolSetting(STATUS_LOOKUP_SETTING);
 // CORS allowlist for the widget ingest route (POST /feedback). Cross-origin
 // JSON POSTs preflight in browsers; the ingest handler also rejects a supplied
 // origin outside the list. Unset keeps the historical open default
@@ -252,11 +261,11 @@ const ROUTE_AUTH_KINDS = new Set(["none", "ingest", "protected", "page"]);
 const ROUTES = [
   { method: "POST", pattern: /^\/feedback$/, auth: "ingest", cors: true, handler: handlePostFeedback },
   // The widget's status lookup (#147) lets anyone who knows a feedback id read
-  // its triage status. It exists only on a receiver without RECEIVER_TOKEN (a
-  // local one, stages 1 and 2); a token-protected receiver has no such route.
-  ...(RECEIVER_TOKEN ? [] : [
+  // its triage status, so the route exists only when STATUS_LOOKUP_ENABLED
+  // (by default, on a receiver without RECEIVER_TOKEN).
+  ...(STATUS_LOOKUP_ENABLED ? [
     { method: "POST", pattern: /^\/feedback-status$/, auth: "ingest", cors: true, handler: handlePostFeedbackStatus }
-  ]),
+  ] : []),
   { method: "GET", pattern: /^\/healthz$/, auth: "none", rateLimit: false, handler: handleGetHealthz },
   { method: "GET", pattern: /^\/login$/, auth: "none", handler: handleGetLogin },
   { method: "POST", pattern: /^\/login$/, auth: "none", handler: handlePostLogin },
@@ -452,7 +461,13 @@ async function start() {
   console.log(`[PatchLoop receiver] screenshot dir: ${SCREENSHOT_DIR}`);
   console.log(`[PatchLoop receiver] auth: ${RECEIVER_TOKEN ? "enabled (token + inbox login)" : "disabled (no RECEIVER_TOKEN)"}`);
   console.log(`[PatchLoop receiver] ingest auth: ${INGEST_KEYS.length > 0 ? `enabled (${INGEST_KEYS.length} key${INGEST_KEYS.length > 1 ? "s" : ""})` : "open (no INGEST_KEYS)"}`);
-  console.log(`[PatchLoop receiver] status lookup: ${RECEIVER_TOKEN ? "disabled (RECEIVER_TOKEN is set)" : "enabled (POST /feedback-status)"}`);
+  if (!STATUS_LOOKUP_ENABLED) {
+    console.log(`[PatchLoop receiver] status lookup: disabled (${RECEIVER_TOKEN && STATUS_LOOKUP_SETTING == null ? "RECEIVER_TOKEN is set" : "statusLookup is off"})`);
+  } else if (RECEIVER_TOKEN) {
+    console.warn("[PatchLoop receiver] status lookup: enabled (POST /feedback-status) although RECEIVER_TOKEN is set — anyone who can reach this receiver and knows a feedback id can read its status; keep it local");
+  } else {
+    console.log("[PatchLoop receiver] status lookup: enabled (POST /feedback-status)");
+  }
   if (ALLOWED_ORIGINS.length > 0) {
     console.log(`[PatchLoop receiver] CORS allowlist: ${ALLOWED_ORIGINS.join(", ")}`);
   } else {

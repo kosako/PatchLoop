@@ -1878,6 +1878,34 @@ test("a receiver with RECEIVER_TOKEN has no status lookup (#147)", async (t) => 
   assert.equal(preflight.headers.get("access-control-allow-origin"), null);
 });
 
+test("statusLookup opens the status lookup on a receiver with RECEIVER_TOKEN, and warns (#147)", async (t) => {
+  // Stage 1 keeps a token for its inbox but is only reached locally, so it opts
+  // in through its config file.
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-status-optin-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  const configPath = path.join(configDir, "receiver.config.json");
+  await fs.writeFile(configPath, JSON.stringify({ receiverToken: "s3cret", statusLookup: true }));
+  const receiver = await startReceiver(t, { PATCHLOOP_RECEIVER_CONFIG: configPath });
+  assert.match(receiver.logs, /status lookup: enabled \(POST \/feedback-status\) although RECEIVER_TOKEN is set/);
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_optin"))).status, 201);
+  const response = await postJson(`${receiver.baseUrl}/feedback-status`, { ids: ["pl_optin"] });
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body.statuses, [{ id: "pl_optin", status: "new" }]);
+  // The rest of the receiver still requires the token.
+  assert.equal((await fetch(`${receiver.baseUrl}/feedback.json`)).status, 401);
+});
+
+test("STATUS_LOOKUP=0 closes the status lookup even without RECEIVER_TOKEN (#147)", async (t) => {
+  const receiver = await startReceiver(t, { STATUS_LOOKUP: "0" });
+  assert.match(receiver.logs, /status lookup: disabled \(statusLookup is off\)/);
+  const response = await fetch(`${receiver.baseUrl}/feedback-status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: ["pl_any"] })
+  });
+  assert.equal(response.status, 404);
+});
+
 test("POST /feedback requires a configured ingest key and rejects wrong ones", async (t) => {
   const receiver = await startReceiver(t, { INGEST_KEYS: "key-a, key-b" });
   assert.match(receiver.logs, /ingest auth: enabled \(2 keys\)/);
