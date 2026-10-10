@@ -145,6 +145,17 @@ test("an element the image cannot show that touches the spot gets a dashed frame
   assert.ok(svg.lastIndexOf("stroke-dasharray") < svg.indexOf('<circle cx="100" cy="100"'));
 });
 
+test("every frame is drawn before any number, so later frames do not cross a number (#148)", () => {
+  // Frames that run through the first frame's number, as in review round 2.
+  const frames = [[50, 50, 200, 100], [55, 0, 145, 150], [59, 0, 141, 150], [63, 0, 137, 150]].map(([x, y, w, h]) => iframeAt(x, y, w, h));
+  installPage({ bodyStyle: { position: "static" }, bodyChildren: frames, elementsFromPoint: () => [frames[0]] });
+  const svg = svgOf(captureScreenshot({ kind: "point", pageX: 100, pageY: 100 }));
+  const lastFrame = svg.lastIndexOf('stroke-dasharray="6 4"');
+  const firstNumber = svg.indexOf('width="20" height="20" rx="4"');
+  assert.ok(lastFrame > 0 && firstNumber > lastFrame);
+  assert.equal(numberBoxes(svg).length, 4);
+});
+
 test("no marks are drawn when nothing touches the spot or the detection failed (#148)", () => {
   installPage({ bodyStyle: { position: "static" }, bodyChildren: [iframeAt(600, 400, 100, 100)], elementsFromPoint: () => [] });
   const untouched = captureScreenshot({ kind: "point", pageX: 100, pageY: 100 });

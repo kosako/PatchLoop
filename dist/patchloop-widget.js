@@ -915,24 +915,25 @@ function screenshotOverlayFor(target) {
 // Elements that do not touch the spot stay in the metadata only.
 function renderUncapturedMarks(uncaptured, overlay, width, height) {
   if (!uncaptured || uncaptured.status !== "detected") return "";
-  const taken = overlay ? [overlayBox(overlay)] : [];
-  return uncaptured.regions
+  const marked = uncaptured.regions
     .map((region, index) => ({ region, number: index + 1 }))
-    .filter(({ region }) => region.relation !== "none")
-    .map(({ region, number }) => {
-      const frames = region.rects.map(({ x, y, width: w, height: h }) => {
-        const box = `x="${x + 1}" y="${y + 1}" width="${Math.max(1, w - 2)}" height="${Math.max(1, h - 2)}" fill="none"`;
-        return `
+    .filter(({ region }) => region.relation !== "none");
+  // Every frame first, then every number, so no frame line crosses a number.
+  const frames = marked.flatMap(({ region }) => region.rects.map(({ x, y, width: w, height: h }) => {
+    const box = `x="${x + 1}" y="${y + 1}" width="${Math.max(1, w - 2)}" height="${Math.max(1, h - 2)}" fill="none"`;
+    return `
 <rect ${box} stroke="#ffffff" stroke-width="4"/>
 <rect ${box} stroke="#14211d" stroke-width="2" stroke-dasharray="6 4"/>`;
-      }).join("");
-      const [labelX, labelY] = placeMarkNumber(region.rects[0], taken, width, height);
-      taken.push({ x: labelX, y: labelY, width: MARK_NUMBER_SIZE, height: MARK_NUMBER_SIZE });
-      return `${frames}
+  }));
+  const taken = overlay ? [overlayBox(overlay)] : [];
+  const numbers = marked.map(({ region, number }) => {
+    const [labelX, labelY] = placeMarkNumber(region.rects[0], taken, width, height);
+    taken.push({ x: labelX, y: labelY, width: MARK_NUMBER_SIZE, height: MARK_NUMBER_SIZE });
+    return `
 <rect x="${labelX}" y="${labelY}" width="20" height="20" rx="4" fill="#14211d" stroke="#ffffff" stroke-width="2"/>
 <text x="${labelX + 10}" y="${labelY + 14}" text-anchor="middle" fill="#ffffff" font-family="system-ui, sans-serif" font-size="12" font-weight="700">${number}</text>`;
-    })
-    .join("");
+  });
+  return frames.join("") + numbers.join("");
 }
 
 const MARK_NUMBER_SIZE = 20;
