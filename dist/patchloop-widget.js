@@ -406,9 +406,16 @@ const RELATION_ORDER = ["covers-target", "overlaps-target", "none"];
 function detectUncaptured(root, viewport, overlay, topElementAt) {
   const budget = { scanned: 0, truncated: false };
   const found = [];
-  const stack = [root];
+  // Depth-first. Each frame walks one element's children by index, so the scan
+  // touches no more elements than it counts, however many children there are.
+  const stack = [{ children: [root], next: 0 }];
   while (stack.length) {
-    const element = stack.pop();
+    const frame = stack[stack.length - 1];
+    if (frame.next >= frame.children.length) {
+      stack.pop();
+      continue;
+    }
+    const element = frame.children[frame.next++];
     if (!countScanned(budget)) break;
     if (element !== root && element.matches(WIDGET_NODES)) continue;
     const kind = kindOf(element);
@@ -419,7 +426,7 @@ function detectUncaptured(root, viewport, overlay, topElementAt) {
       // content, slotted light DOM), so it is not scanned for more.
       continue;
     }
-    pushChildren(stack, element);
+    stack.push({ children: element.children, next: 0 });
   }
 
   const points = targetPoints(overlay, viewport);
@@ -460,45 +467,49 @@ function kindOf(element) {
   return element.shadowRoot ? "shadow-host" : null;
 }
 
-function pushChildren(stack, element) {
-  const children = element.children;
-  for (let i = children.length - 1; i >= 0; i -= 1) stack.push(children[i]);
-}
-
 // A shadow host's own box says little: Next.js puts its dev overlay in a
 // zero-size <nextjs-portal> whose shadow tree starts with a zero-size fixed
 // wrapper. Walk the shadow tree breadth-first and take the first elements that
-// have a box in the viewport, without descending into them. A host whose shadow
-// tree has no box of its own may still paint itself through :host styles, so
-// its own box is the fallback.
+// have a box in the viewport, without descending into them. A zero-size element
+// is looked through: its children, and its own open shadow tree when it hosts
+// one (a component built from other components). A host whose shadow tree has
+// no box may still paint itself through :host styles, so its own box is the
+// fallback. Frames walk children by index, as in the main scan.
 function shadowHostRects(host, viewport, budget) {
   const rects = [];
-  const queue = Array.from(host.shadowRoot.children);
-  while (queue.length && rects.length < MAX_RECTS_PER_SHADOW_HOST) {
-    const element = queue.shift();
+  const queue = [{ children: host.shadowRoot.children, next: 0 }];
+  let head = 0;
+  while (head < queue.length && rects.length < MAX_RECTS_PER_SHADOW_HOST) {
+    const frame = queue[head];
+    if (frame.next >= frame.children.length) {
+      head += 1;
+      continue;
+    }
+    const element = frame.children[frame.next++];
     if (!countScanned(budget)) break;
     const rect = clippedRect(element, viewport);
-    if (rect) rects.push(rect);
-    else queue.push(...Array.from(element.children));
+    if (rect) {
+      rects.push(rect);
+      continue;
+    }
+    queue.push({ children: element.children, next: 0 });
+    if (element.shadowRoot) queue.push({ children: element.shadowRoot.children, next: 0 });
   }
   if (rects.length) return rects;
   return [clippedRect(host, viewport)].filter(Boolean);
 }
 
-// The part of the element's box inside the viewport, or null when none is.
+// The part of the element's box inside the viewport in whole CSS px, or null
+// when nothing is left. The edges are rounded before the size is taken, so a
+// rectangle never reaches past the viewport.
 function clippedRect(element, viewport) {
   const box = element.getBoundingClientRect();
-  const left = Math.max(0, box.left);
-  const top = Math.max(0, box.top);
-  const right = Math.min(viewport.width, box.right);
-  const bottom = Math.min(viewport.height, box.bottom);
+  const left = Math.round(Math.max(0, box.left));
+  const top = Math.round(Math.max(0, box.top));
+  const right = Math.round(Math.min(viewport.width, box.right));
+  const bottom = Math.round(Math.min(viewport.height, box.bottom));
   if (!(right > left) || !(bottom > top)) return null;
-  return {
-    x: Math.round(left),
-    y: Math.round(top),
-    width: Math.round(right - left),
-    height: Math.round(bottom - top)
-  };
+  return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
 function targetPoints(overlay, viewport) {

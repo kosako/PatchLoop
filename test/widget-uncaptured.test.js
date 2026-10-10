@@ -175,3 +175,36 @@ test("the scan stops after 20,000 elements and says so", () => {
   assert.equal(result.scanTruncated, true);
   assert.deepEqual(result.regions, []);
 });
+
+test("an element with a huge number of children is walked one child at a time and stops at the cap", () => {
+  // One shared zero-size child stands in for 200,000: spreading or copying the
+  // children up front would build a huge argument list before the cap applies.
+  const blank = el("div");
+  const wrapper = el("div", { children: new Array(200000).fill(blank) });
+  const portal = el("nextjs-portal", { shadow: [wrapper] });
+  const result = detectUncaptured(el("body", { children: [portal] }), VIEWPORT, POINT, nothingOnTop);
+  assert.equal(result.status, "detected");
+  assert.equal(result.scannedElements, 20000);
+  assert.equal(result.scanTruncated, true);
+});
+
+test("boxes inside a nested open shadow root are found past zero-size hosts", () => {
+  const inner = el("inner-part", { shadow: [el("div", { box: [10, 10, 30, 30] })] });
+  const outer = el("outer-widget", { shadow: [el("style"), inner] });
+  const result = detectUncaptured(el("body", { children: [outer] }), VIEWPORT, POINT, nothingOnTop);
+  assert.deepEqual(result.regions.map((region) => [region.tag, region.rects]), [
+    ["outer-widget", [{ x: 10, y: 10, width: 30, height: 30 }]]
+  ]);
+});
+
+test("rectangles are rounded at their edges, never reach past the viewport, and slivers are dropped", () => {
+  const body = el("body", {
+    children: [
+      el("canvas", { box: [0.5, 0.4, 799.5, 100] }),
+      el("video", { box: [10.1, 10, 0.3, 50] })
+    ]
+  });
+  const result = detectUncaptured(body, VIEWPORT, POINT, nothingOnTop);
+  assert.deepEqual(result.regions.map((region) => region.rects), [[{ x: 1, y: 0, width: 799, height: 100 }]]);
+  assert.equal(result.counts.video, 0);
+});
