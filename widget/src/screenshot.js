@@ -218,7 +218,7 @@ function renderUncapturedMarks(uncaptured, overlay, width, height) {
 <rect ${box} stroke="#ffffff" stroke-width="4"/>
 <rect ${box} stroke="#14211d" stroke-width="2" stroke-dasharray="6 4"/>`;
   }));
-  const taken = overlay ? [overlayBox(overlay)] : [];
+  const taken = overlay ? overlayBoxes(overlay) : [];
   const numbers = marked.map(({ region, number }) => {
     const [labelX, labelY] = placeMarkNumber(region.rects[0], taken, width, height);
     taken.push({ x: labelX, y: labelY, width: MARK_NUMBER_SIZE, height: MARK_NUMBER_SIZE });
@@ -232,13 +232,23 @@ function renderUncapturedMarks(uncaptured, overlay, width, height) {
 const MARK_NUMBER_SIZE = 20;
 const MARK_NUMBER_GAP = 4;
 
-// The box the selected spot's mark covers: the point's outer ring, or the area's
-// numbered badge (its translucent fill may sit under a number).
-function overlayBox(overlay) {
-  if (overlay.kind === "area") {
-    return { x: Math.max(0, overlay.x), y: Math.max(0, overlay.y), width: 36, height: 36 };
-  }
-  return { x: overlay.x - 32, y: overlay.y - 32, width: 64, height: 64 };
+// The boxes the selected spot's mark covers, as renderScreenshotOverlay draws
+// it: the point's outer ring, or the area's badge and its four border lines
+// (3 px wide, with a pixel to spare). The area's translucent fill may sit over
+// a number; it stays readable.
+function overlayBoxes(overlay) {
+  if (overlay.kind !== "area") return [{ x: overlay.x - 32, y: overlay.y - 32, width: 64, height: 64 }];
+  const x = Math.max(0, overlay.x);
+  const y = Math.max(0, overlay.y);
+  const w = Math.max(1, overlay.width);
+  const h = Math.max(1, overlay.height);
+  return [
+    { x, y, width: 36, height: 36 },
+    { x: x - 3, y: y - 3, width: w + 6, height: 6 },
+    { x: x - 3, y: y + h - 3, width: w + 6, height: 6 },
+    { x: x - 3, y: y - 3, width: 6, height: h + 6 },
+    { x: x + w - 3, y: y - 3, width: 6, height: h + 6 }
+  ];
 }
 
 // Where a frame's number goes: just above its top-left corner, else just below

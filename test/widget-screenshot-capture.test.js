@@ -205,6 +205,22 @@ test("numbers stay inside the image and clear of the spot's mark and of each oth
   }
 });
 
+test("a number keeps clear of an area's border lines too (#148)", () => {
+  // A narrow area whose side lines would run through the frame's first choice.
+  const frame = iframeAt(50, 100, 200, 100);
+  installPage({ bodyStyle: { position: "static" }, bodyChildren: [frame], elementsFromPoint: () => [frame] });
+  const shot = captureScreenshot({
+    kind: "area",
+    pageX: 58,
+    pageY: 0,
+    area: { pageX: 58, pageY: 0, clientWidth: 3, clientHeight: 200 }
+  });
+  const [number] = numberBoxes(svgOf(shot));
+  for (const line of [{ x: 55, y: -3, width: 6, height: 206 }, { x: 58, y: -3, width: 6, height: 206 }]) {
+    assert.equal(meets(number, line), false);
+  }
+});
+
 test("a number keeps clear of an area's badge too (#148)", () => {
   const frame = iframeAt(0, 0, 300, 40);
   installPage({ bodyStyle: { position: "static" }, bodyChildren: [frame], elementsFromPoint: () => [frame] });
