@@ -135,6 +135,26 @@ test("a marker restored from storage also opens its comment", async () => {
   assert.equal(widget.document.activeElement.dataset.feedbackId, id);
 });
 
+test("a comment focused from its marker stays focused when the list is rendered again", async () => {
+  let release;
+  const widget = widgetHarness({ replies: [() => new Promise((resolve) => { release = () => resolve({ ok: true, status: 201 }); })] });
+  widget.init();
+  const sending = widget.submit("Pending comment");
+  widget.api.setFeedbackMode(false);
+  const [id] = widget.api.getFeedback().map((item) => item.id);
+  widget.document.querySelector("[data-patchloop-pin]").click();
+  const focusedBefore = widget.document.activeElement;
+  assert.equal(focusedBefore.dataset.feedbackId, id);
+
+  release();
+  await sending;
+  assert.equal(widget.api.getFeedback()[0].delivery.ok, true);
+  const focusedAfter = widget.document.activeElement;
+  assert.equal(focusedAfter.dataset.feedbackId, id);
+  assert.equal(focusedAfter.isConnected, true);
+  assert.equal(focusedAfter === focusedBefore, false, "the reply re-rendered the list item");
+});
+
 test("while a spot is being chosen, activating a marker leaves the panel and focus alone", async () => {
   const widget = widgetHarness();
   widget.init();

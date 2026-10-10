@@ -1270,6 +1270,10 @@ function renderFeedbackList() {
   const clear = root.querySelector("[data-pl-clear]");
   if (clear) clear.hidden = state.feedback.length === 0;
   if (clear) clear.disabled = state.feedback.some((item) => item.delivery?.pending);
+  // A comment focused from its marker stays focused across the re-render
+  // below, which replaces every list item (a delivery reply, re-anchoring).
+  const focused = document.activeElement;
+  const focusedId = list.contains(focused) && focused.matches("[data-feedback-id]") ? focused.dataset.feedbackId : null;
   if (state.feedback.length === 0) {
     list.innerHTML = '<p class="pl-feedback-list-empty">まだコメントはありません。<br />「コメントを追加」から最初の気づきを残しましょう。</p>';
     return;
@@ -1311,6 +1315,13 @@ function renderFeedbackList() {
       `;
     })
     .join("");
+  if (focusedId) feedbackListItem(focusedId)?.focus({ preventScroll: true });
+}
+
+// Matched by comparing dataset values, as a stored id is not safe to put in a
+// selector unescaped.
+function feedbackListItem(id) {
+  return Array.from(getRoot().querySelectorAll("[data-feedback-id]")).find((node) => node.dataset.feedbackId === id);
 }
 
 // The display mode is applied to every committed marker here, so markers added
@@ -1469,8 +1480,7 @@ function bindMarkerActivation(marker, feedbackId) {
   marker.label.addEventListener("click", () => {
     if (state.active) return;
     expandPanel();
-    const item = Array.from(getRoot().querySelectorAll("[data-feedback-id]")).find((node) => node.dataset.feedbackId === feedbackId);
-    item.focus();
+    feedbackListItem(feedbackId).focus();
   });
 }
 
@@ -1586,6 +1596,9 @@ function injectStyles() {
   // after init, other pseudo-elements (::placeholder, ::marker, ::selection),
   // and direction / unicode-bidi, which all does not reset. Full isolation
   // would need a shadow root.
+  // A dot-only marker (#147) draws its dot as a bordered ::before box rather
+  // than a background gradient: forced colors mode drops gradients but keeps
+  // borders, in the user's colors, so the dot stays visible there.
   style.textContent = `
     .pl-root, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-selection] { all: initial; -webkit-locale: inherit; }
     .pl-root *, [data-patchloop-area] * { all: revert; }
@@ -1646,7 +1659,8 @@ function injectStyles() {
     .pl-selection { position: fixed; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; }
     .pl-area { position: absolute; z-index: 2147482998; border: 2px solid #d1495b; background: rgba(209, 73, 91, 0.12); border-radius: 6px; pointer-events: none; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.16); }
     .pl-area button { position: absolute; top: 6px; left: 6px; width: 30px; height: 30px; min-width: 30px; min-height: 30px; padding: 0; box-sizing: border-box; display: grid; place-items: center; border-radius: 50%; border: 3px solid #fff; background: #b83d4d; color: #fff; font: 900 13px/1 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); pointer-events: auto; cursor: pointer; }
-    .pl-pin.pl-marker-dot, .pl-area.pl-marker-dot button { width: 24px; height: 24px; min-width: 24px; min-height: 24px; max-width: 24px; max-height: 24px; border: 0; background: radial-gradient(circle, #b83d4d 0 5px, #fff 5px 6.5px, transparent 6.5px); box-shadow: none; font-size: 0; }
+    .pl-pin.pl-marker-dot, .pl-area.pl-marker-dot button { width: 24px; height: 24px; min-width: 24px; min-height: 24px; max-width: 24px; max-height: 24px; border: 0; background: transparent; box-shadow: none; font-size: 0; }
+    .pl-pin.pl-marker-dot::before, .pl-area.pl-marker-dot button::before { content: ""; width: 13px; height: 13px; box-sizing: border-box; border: 1.5px solid #fff; border-radius: 50%; background: #b83d4d; }
     .pl-area.pl-marker-dot button { top: 9px; left: 9px; }
     .pl-area.pl-marker-dot:not(:hover):not(:focus-within) { border-color: transparent; background: transparent; box-shadow: none; outline: none !important; }
     .pl-feedback-active [data-patchloop-pin], .pl-feedback-active .pl-area button { pointer-events: none; }
