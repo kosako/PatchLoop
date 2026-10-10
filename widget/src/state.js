@@ -44,5 +44,6 @@ export const state = {
   // after a successful lookup, null otherwise. Kept in memory only.
   inboxStatus: null,
   statusLookup: initialLookupState(),
-  statusLookupInFlight: false
+  // The lookup request in flight, if any; see refreshInboxStatuses.
+  statusLookupRequest: null
 };

@@ -17,6 +17,9 @@ test("the lookup URL sits next to an endpoint ending in /feedback, and nowhere e
   assert.equal(statusLookupUrl("http://127.0.0.1:4010/feedback/", PAGE), null);
   assert.equal(statusLookupUrl("https://hooks.example/inbox", PAGE), null);
   assert.equal(statusLookupUrl("", PAGE), null);
+  // No endpoint means no receiver, even on a page whose own path ends in /feedback.
+  assert.equal(statusLookupUrl("", "https://demo.example/feedback"), null);
+  assert.equal(statusLookupUrl("  ", "https://demo.example/feedback"), null);
   assert.equal(statusLookupUrl("http://", PAGE), null);
 });
 

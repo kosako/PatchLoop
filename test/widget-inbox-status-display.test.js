@@ -176,3 +176,92 @@ test("no lookup without a receiver: other delivery modes and endpoints not endin
     assert.equal(widget.statusRequests.length, 0);
   }
 });
+
+test("the 15 second timeout also covers a body that stalls after the headers (#147)", async () => {
+  const pending = new Map();
+  let nextId = 0;
+  const timers = {
+    setTimeout: (callback, ms) => {
+      nextId += 1;
+      pending.set(nextId, { callback, ms });
+      return nextId;
+    },
+    clearTimeout: (id) => pending.delete(id)
+  };
+  const widget = widgetHarness({
+    timers,
+    statusReply: (query, options) => ({
+      ok: true,
+      status: 200,
+      json: () => new Promise((resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("body aborted"))))
+    })
+  });
+  widget.init();
+  await sendTwo(widget);
+  await reopenPanel(widget);
+  assert.equal(widget.statusRequests.length, 1);
+  const timeouts = [...pending.values()].filter((timer) => timer.ms === 15000);
+  assert.equal(timeouts.length, 1, "the lookup's timeout is still armed while the body is read");
+  timeouts[0].callback();
+  await settle();
+  assert.ok(widget.infos.some(([message]) => message === "[PatchLoop] inbox status lookup failed"));
+});
+
+test("an answer that comes back after a re-init is dropped and does not unlock another lookup (#147)", async () => {
+  const answers = [];
+  const widget = widgetHarness({ statusReply: () => new Promise((resolve) => answers.push(resolve)) });
+  widget.init({ persistFeedback: true });
+  const ids = await sendTwo(widget);
+  await reopenPanel(widget);
+  assert.equal(widget.statusRequests.length, 1);
+  // Re-init asks again for the restored comments while the first is still out.
+  widget.init({ persistFeedback: true });
+  await settle();
+  assert.equal(widget.statusRequests.length, 2);
+
+  answers[0](answer([{ id: ids.first, status: "fixed" }])());
+  await settle();
+  assert.equal(markerState(widget, ids.first).hidden, false, "the answer to the first lookup is dropped");
+  await reopenPanel(widget);
+  assert.equal(widget.statusRequests.length, 2, "the second lookup is still out, so no third starts");
+
+  answers[1](answer([{ id: ids.first, status: "fixed" }])());
+  await settle();
+  assert.equal(markerState(widget, ids.first).hidden, true);
+});
+
+test("changing the delivery settings away from the receiver shows every marker again (#147)", async () => {
+  let ids;
+  const widget = widgetHarness({ statusReply: (query) => answer([{ id: ids.first, status: "fixed" }])(query) });
+  widget.init({ showDeliverySettings: true });
+  ids = await sendTwo(widget);
+  await reopenPanel(widget);
+  assert.equal(markerState(widget, ids.first).hidden, true);
+  const select = widget.document.querySelector("[data-pl-delivery-mode]");
+  select.value = "download";
+  widget.document.querySelector("[data-pl-delivery-settings]").emit("change", { target: select });
+  assert.equal(markerState(widget, ids.first).hidden, false);
+  assert.equal(chipText(widget, ids.first), null);
+});
+
+test("opening the panel from a marker asks too (#147)", async () => {
+  let ids;
+  const widget = widgetHarness({ statusReply: (query) => answer([{ id: ids.first, status: "new" }])(query) });
+  widget.init();
+  ids = await sendTwo(widget);
+  assert.equal(widget.statusRequests.length, 0, "sending a comment does not ask");
+  widget.document.querySelector("[data-pl-collapse]").click();
+  widget.document.querySelector(`[data-patchloop-feedback-id="${ids.first}"]`).click();
+  await settle();
+  assert.equal(widget.statusRequests.length, 1);
+  assert.equal(chipText(widget, ids.first), "受信箱: 未確認");
+});
+
+test("a relative endpoint is resolved like fetch does, against the document base URL (#147)", async () => {
+  const widget = widgetHarness({ statusReply: answer([]) });
+  widget.document.baseURI = "https://demo.example/receiver/";
+  widget.init({ endpoint: "feedback" });
+  await sendTwo(widget);
+  await reopenPanel(widget);
+  assert.equal(widget.statusRequests[0].url, "https://demo.example/receiver/feedback-status");
+});

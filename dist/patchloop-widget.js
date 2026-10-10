@@ -349,9 +349,11 @@ const MAX_LOOKUP_IDS = 200;
 const LOOKUP_MIN_GAP_MS = 30_000;
 const LOOKUP_MAX_GAP_MS = 10 * 60_000;
 
-// The lookup sits next to POST /feedback on the receiver. An endpoint whose
-// path does not end in /feedback has no known lookup URL.
+// The lookup sits next to POST /feedback on the receiver. No endpoint, or one
+// whose path does not end in /feedback, has no known lookup URL. baseUrl is the
+// one fetch resolves a relative endpoint against (document.baseURI).
 function statusLookupUrl(endpoint, baseUrl) {
+  if (!String(endpoint || "").trim()) return null;
   let url;
   try {
     url = new URL(endpoint, baseUrl);
@@ -460,7 +462,8 @@ const state = {
   // after a successful lookup, null otherwise. Kept in memory only.
   inboxStatus: null,
   statusLookup: initialLookupState(),
-  statusLookupInFlight: false
+  // The lookup request in flight, if any; see refreshInboxStatuses.
+  statusLookupRequest: null
 };
 
 return { DEFAULTS, state };
@@ -1282,9 +1285,7 @@ function init(options = {}) {
   // built later carries the same provenance without re-reading the DOM.
   state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
   state.displayMode = loadDisplayMode();
-  state.inboxStatus = null;
-  state.statusLookup = initialLookupState();
-  state.statusLookupInFlight = false;
+  resetInboxStatus();
   injectStyles();
   renderShell();
   bindGlobalCapture();
@@ -1310,7 +1311,7 @@ function destroy() {
   window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   window.clearTimeout(state.resizeTimer);
-  state.inboxStatus = null;
+  resetInboxStatus();
   state.approximateIds.clear();
   document.querySelector("[data-patchloop-root]")?.remove();
   document.querySelectorAll("[data-patchloop-pin]").forEach((node) => node.remove());
@@ -1768,9 +1769,16 @@ function handleDeliverySettingsInput() {
   const endpoint = root.querySelector("[data-pl-endpoint]")?.value;
   const slackWebhookUrl = root.querySelector("[data-pl-slack-webhook]")?.value;
 
+  const previous = [state.options.deliveryMode, state.options.endpoint];
   if (mode) state.options.deliveryMode = mode;
   if (endpoint != null) state.options.endpoint = endpoint.trim();
   if (slackWebhookUrl != null) state.options.slackWebhookUrl = slackWebhookUrl.trim();
+  // Statuses belong to the receiver they were asked of (#147): another
+  // destination shows everything again until it is asked.
+  if (state.options.deliveryMode !== previous[0] || state.options.endpoint !== previous[1]) {
+    resetInboxStatus();
+    renderFeedbackList();
+  }
   syncDeliverySettingsVisibility();
 }
 
@@ -1908,11 +1916,13 @@ async function postFeedback(payload) {
   console.info("[PatchLoop] delivery", payload.id, payload.delivery);
 }
 
-async function fetchWithTimeout(url, options) {
+// read runs within the timeout too, so a body that stalls after the headers
+// is aborted as well.
+async function fetchWithTimeout(url, options, read = (response) => response) {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), 15000);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    return await read(await fetch(url, { ...options, signal: controller.signal }));
   } finally {
     window.clearTimeout(timer);
   }
@@ -2602,40 +2612,47 @@ function inboxStatusChip(item) {
 }
 
 // Asks the receiver for the inbox status of the delivered comments (#147). It
-// runs on load, when the panel opens and when the tab comes back, no more often
-// than the lookup state allows (longer after failures), and stops for the page
-// once the receiver has no lookup for it. Only the receiver delivery mode asks.
+// runs on load, when the user opens the panel (its button or a marker) and when
+// the tab comes back, no more often than the lookup state allows (longer after
+// failures), and stops for the page once the receiver has no lookup for it.
+// Only the receiver delivery mode asks.
 async function refreshInboxStatuses() {
-  if (state.statusLookupInFlight || state.statusLookup.stopped || Date.now() < state.statusLookup.nextAt) return;
+  if (state.statusLookupRequest || state.statusLookup.stopped || Date.now() < state.statusLookup.nextAt) return;
   if (state.options.deliveryMode !== "receiver") return;
-  const url = statusLookupUrl(state.options.endpoint, window.location.href);
+  const url = statusLookupUrl(state.options.endpoint, document.baseURI);
   const ids = statusLookupIds(state.feedback);
   if (!url || ids.length === 0) return;
-  const root = getRoot();
-  state.statusLookupInFlight = true;
-  let httpStatus = 0;
-  let statuses = null;
+  // Re-init, destroy and a change of the delivery settings drop the request in
+  // flight; its answer is then left unused.
+  const request = {};
+  state.statusLookupRequest = request;
+  let answer = { httpStatus: 0, statuses: null };
   try {
     const headers = { "Content-Type": "application/json" };
     if (state.options.ingestKey) headers["X-PatchLoop-Ingest-Key"] = state.options.ingestKey;
-    const response = await fetchWithTimeout(url, {
+    answer = await fetchWithTimeout(url, {
       method: "POST",
       headers,
       body: JSON.stringify({ projectId: state.options.projectId, ids })
-    });
-    httpStatus = response.status;
-    if (response.ok) statuses = statusesFromAnswer(await response.json());
+    }, async (response) => ({
+      httpStatus: response.status,
+      statuses: response.ok ? statusesFromAnswer(await response.json()) : null
+    }));
   } catch (error) {
     console.info("[PatchLoop] inbox status lookup failed", error);
-  } finally {
-    state.statusLookupInFlight = false;
   }
-  // A re-init or destroy while the request was out leaves this answer behind.
-  if (getRoot() !== root) return;
-  const outcome = lookupOutcome(httpStatus, statuses);
+  if (state.statusLookupRequest !== request) return;
+  state.statusLookupRequest = null;
+  const outcome = lookupOutcome(answer.httpStatus, answer.statuses);
   state.statusLookup = lookupAfter(state.statusLookup, outcome, Date.now());
-  state.inboxStatus = outcome === "ok" ? { statuses, asked: new Set(ids) } : null;
+  state.inboxStatus = outcome === "ok" ? { statuses: answer.statuses, asked: new Set(ids) } : null;
   renderFeedbackList();
+}
+
+function resetInboxStatus() {
+  state.inboxStatus = null;
+  state.statusLookup = initialLookupState();
+  state.statusLookupRequest = null;
 }
 
 function handleVisibilityChange() {
@@ -2791,6 +2808,7 @@ function bindMarkerActivation(marker, feedbackId) {
     if (state.active) return;
     expandPanel();
     feedbackListItem(feedbackId).focus();
+    refreshInboxStatuses();
   });
 }
 

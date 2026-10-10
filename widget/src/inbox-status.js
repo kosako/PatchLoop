@@ -14,9 +14,11 @@ const MAX_LOOKUP_IDS = 200;
 export const LOOKUP_MIN_GAP_MS = 30_000;
 export const LOOKUP_MAX_GAP_MS = 10 * 60_000;
 
-// The lookup sits next to POST /feedback on the receiver. An endpoint whose
-// path does not end in /feedback has no known lookup URL.
+// The lookup sits next to POST /feedback on the receiver. No endpoint, or one
+// whose path does not end in /feedback, has no known lookup URL. baseUrl is the
+// one fetch resolves a relative endpoint against (document.baseURI).
 export function statusLookupUrl(endpoint, baseUrl) {
+  if (!String(endpoint || "").trim()) return null;
   let url;
   try {
     url = new URL(endpoint, baseUrl);

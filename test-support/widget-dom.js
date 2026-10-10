@@ -56,10 +56,12 @@ function matchesSelector(node, selector) {
 // public API and registered input/submit listeners; layout and screenshot
 // fidelity belong to browser tests rather than this deterministic harness.
 // The inbox status lookup (#147) answers 404 unless a test supplies statusReply
-// ((query) => response), like a receiver without the lookup.
+// ((query, fetchOptions) => response), like a receiver without the lookup.
 const NO_STATUS_LOOKUP = () => ({ ok: false, status: 404, json: async () => ({ ok: false, error: "Not Found" }) });
 
-function widgetHarness({ ready = true, pointerEvents = false, replies = [], statusReply = NO_STATUS_LOOKUP } = {}) {
+// timers replaces the page's setTimeout / clearTimeout, for tests that fire a
+// timeout themselves.
+function widgetHarness({ ready = true, pointerEvents = false, replies = [], statusReply = NO_STATUS_LOOKUP, timers = { setTimeout, clearTimeout } } = {}) {
   const mountedRoots = [];
   const downloads = [];
   const blobs = new Map();
@@ -231,6 +233,7 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [], stat
   body.append(target);
   const document = {
     ...eventTarget(), body: ready ? body : null, head, title: "Review page", activeElement: ready ? body : null,
+    baseURI: "https://demo.example/page",
     documentElement: Object.assign(element("html"), { clientWidth: 800, clientHeight: 600, scrollWidth: 800, scrollHeight: 600 }),
     createElement: element,
     elementFromPoint: () => target,
@@ -241,10 +244,11 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [], stat
   const requests = [];
   const statusRequests = [];
   const warnings = [];
+  const infos = [];
   const storage = new Map();
   const window = {
     ...eventTarget(), innerWidth: 800, innerHeight: 600, scrollX: 0, scrollY: 0,
-    location: { href: "https://demo.example/page" }, clearTimeout, setTimeout,
+    location: { href: "https://demo.example/page" }, clearTimeout: timers.clearTimeout, setTimeout: timers.setTimeout,
     confirm: () => true,
     ...(pointerEvents ? { PointerEvent: function () {} } : {}),
     localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) }
@@ -257,13 +261,13 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [], stat
     },
     navigator: { userAgent: "test", language: "ja" },
     CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
-    console: { info() {}, warn: (...args) => warnings.push(args) },
+    console: { info: (...args) => infos.push(args), warn: (...args) => warnings.push(args) },
     fetch: async (url, options) => {
       // Status lookups get their own reply and record, so tests that count
       // deliveries in requests are not affected by them.
       if (String(url).endsWith("/feedback-status")) {
         statusRequests.push({ url, ...options });
-        return statusReply(JSON.parse(options.body));
+        return statusReply(JSON.parse(options.body), options);
       }
       requests.push({ url, ...options });
       const reply = replies.shift();
@@ -281,7 +285,7 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [], stat
     document.emit(pointerEvents ? "pointerup" : "mouseup", area ? { ...mouse, clientX: 100, clientY: 80 } : mouse);
   }
   return {
-    api, requests, statusRequests, warnings, document, window, capture, downloads, target,
+    api, requests, statusRequests, warnings, infos, document, window, capture, downloads, target,
     init(options = {}) { api.init({ persistFeedback: false, captureScreenshot: false, reviewer: "Reviewer", endpoint: "https://receiver.example/feedback", ...options }); },
     ready() { document.body = body; document.activeElement = body; document.emit("DOMContentLoaded"); },
     roots: () => document.querySelectorAll("[data-patchloop-root]"),
