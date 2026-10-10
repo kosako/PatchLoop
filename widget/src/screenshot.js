@@ -84,7 +84,7 @@ function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scro
   const bodyStylePrefix = bodyInlineStyle ? bodyInlineStyle.replace(/;?$/, ";") : "";
   const styles = `${freezeViewportUnits(collectReadableStyles(), width, height)}\n* { box-sizing: border-box; }\n`;
   const overlayMarkup = renderScreenshotOverlay(overlay);
-  const uncapturedMarkup = renderUncapturedMarks(uncaptured, width, height);
+  const uncapturedMarkup = renderUncapturedMarks(uncaptured, overlay, width, height);
   const bodyMarkup = serializeAsXhtml(bodyClone);
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -203,12 +203,12 @@ function screenshotOverlayFor(target) {
 // Elements the image cannot show that touch the selected spot (#148) get a
 // dashed frame and a number: their place in uncaptured.regions, counted from 1,
 // so text next to the image can point at them. The frame is dark over white to
-// stay visible on any page; the selected spot's own mark is drawn above it. The
-// number sits just outside the frame (above it, or below when there is no room)
-// so the spot's mark, which is often inside the frame, does not cover it.
+// stay visible on any page; the selected spot's own mark is drawn above it, so
+// numbers are placed clear of that mark and of each other (placeMarkNumber).
 // Elements that do not touch the spot stay in the metadata only.
-function renderUncapturedMarks(uncaptured, width, height) {
+function renderUncapturedMarks(uncaptured, overlay, width, height) {
   if (!uncaptured || uncaptured.status !== "detected") return "";
+  const taken = overlay ? [overlayBox(overlay)] : [];
   return uncaptured.regions
     .map((region, index) => ({ region, number: index + 1 }))
     .filter(({ region }) => region.relation !== "none")
@@ -219,15 +219,55 @@ function renderUncapturedMarks(uncaptured, width, height) {
 <rect ${box} stroke="#ffffff" stroke-width="4"/>
 <rect ${box} stroke="#14211d" stroke-width="2" stroke-dasharray="6 4"/>`;
       }).join("");
-      const [first] = region.rects;
-      const labelX = Math.max(0, Math.min(first.x, width - 20));
-      const above = first.y - 24;
-      const labelY = above >= 0 ? above : Math.max(0, Math.min(first.y + first.height + 4, height - 20));
+      const [labelX, labelY] = placeMarkNumber(region.rects[0], taken, width, height);
+      taken.push({ x: labelX, y: labelY, width: MARK_NUMBER_SIZE, height: MARK_NUMBER_SIZE });
       return `${frames}
 <rect x="${labelX}" y="${labelY}" width="20" height="20" rx="4" fill="#14211d" stroke="#ffffff" stroke-width="2"/>
 <text x="${labelX + 10}" y="${labelY + 14}" text-anchor="middle" fill="#ffffff" font-family="system-ui, sans-serif" font-size="12" font-weight="700">${number}</text>`;
     })
     .join("");
+}
+
+const MARK_NUMBER_SIZE = 20;
+const MARK_NUMBER_GAP = 4;
+
+// The box the selected spot's mark covers: the point's outer ring, or the area's
+// numbered badge (its translucent fill may sit under a number).
+function overlayBox(overlay) {
+  if (overlay.kind === "area") {
+    return { x: Math.max(0, overlay.x), y: Math.max(0, overlay.y), width: 36, height: 36 };
+  }
+  return { x: overlay.x - 32, y: overlay.y - 32, width: 64, height: 64 };
+}
+
+// Where a frame's number goes: just above its top-left corner, else just below
+// the frame, else inside the corner; when all of these are taken (by the spot's
+// mark or another number) or off the image, the free spot of a 24 px grid that
+// is closest to the first choice.
+function placeMarkNumber(rect, taken, width, height) {
+  const size = MARK_NUMBER_SIZE;
+  const step = size + MARK_NUMBER_GAP;
+  const free = ([x, y]) => x >= 0 && y >= 0 && x + size <= width && y + size <= height
+    && !taken.some((box) => x < box.x + box.width && box.x < x + size && y < box.y + box.height && box.y < y + size);
+  const clampX = (x) => Math.max(0, Math.min(x, width - size));
+  const preferred = [
+    [clampX(rect.x), rect.y - step],
+    [clampX(rect.x), rect.y + rect.height + MARK_NUMBER_GAP],
+    [clampX(rect.x + MARK_NUMBER_GAP), rect.y + MARK_NUMBER_GAP]
+  ];
+  const chosen = preferred.find(free);
+  if (chosen) return chosen;
+  const [targetX, targetY] = preferred[0];
+  let best = null;
+  for (let y = 0; y + size <= height; y += step) {
+    for (let x = 0; x + size <= width; x += step) {
+      if (!free([x, y])) continue;
+      const distance = (x - targetX) ** 2 + (y - targetY) ** 2;
+      if (!best || distance < best.distance) best = { spot: [x, y], distance };
+    }
+  }
+  // An image too small to have a free spot keeps the first choice, inside it.
+  return best ? best.spot : [clampX(targetX), Math.max(0, Math.min(targetY, height - size))];
 }
 
 function renderScreenshotOverlay(overlay) {

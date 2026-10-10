@@ -157,14 +157,51 @@ test("no marks are drawn when nothing touches the spot or the detection failed (
   assert.doesNotMatch(svgOf(failed), /stroke-dasharray/);
 });
 
-test("a number stays inside the image: below a frame at the top, and clear of the right edge (#148)", () => {
-  const corner = iframeAt(790, 590, 10, 10);
-  installPage({ bodyStyle: { position: "static" }, bodyChildren: [corner], elementsFromPoint: () => [corner] });
-  const bottomRight = captureScreenshot({ kind: "point", pageX: 795, pageY: 595 });
-  assert.match(svgOf(bottomRight), /<rect x="780" y="566" width="20" height="20"/);
+// The numbers' boxes as drawn: 20 x 20 rounded rects.
+function numberBoxes(svg) {
+  return [...svg.matchAll(/<rect x="(-?[\d.]+)" y="(-?[\d.]+)" width="20" height="20" rx="4"/g)]
+    .map(([, x, y]) => ({ x: Number(x), y: Number(y), width: 20, height: 20 }));
+}
 
-  const top = iframeAt(100, 5, 200, 40);
-  installPage({ bodyStyle: { position: "static" }, bodyChildren: [top], elementsFromPoint: () => [top] });
-  const atTop = captureScreenshot({ kind: "point", pageX: 150, pageY: 20 });
-  assert.match(svgOf(atTop), /<rect x="100" y="49" width="20" height="20"/);
+function meets(a, b) {
+  return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+}
+
+function assertNumbersPlaced(shot, expectedCount, spotBox, label) {
+  const boxes = numberBoxes(svgOf(shot));
+  assert.equal(boxes.length, expectedCount, label);
+  boxes.forEach((box, i) => {
+    assert.ok(box.x >= 0 && box.y >= 0 && box.x + 20 <= 800 && box.y + 20 <= 600, `${label}: number ${i + 1} inside the image`);
+    assert.equal(meets(box, spotBox), false, `${label}: number ${i + 1} clear of the spot's mark`);
+    boxes.slice(i + 1).forEach((other, j) => assert.equal(meets(box, other), false, `${label}: numbers ${i + 1} and ${i + j + 2} apart`));
+  });
+}
+
+test("numbers stay inside the image and clear of the spot's mark and of each other (#148)", () => {
+  for (const [rects, [px, py]] of [
+    // A frame filling the image, with the spot at its bottom-left corner.
+    [[[0, 0, 800, 600]], [10, 590]],
+    // Two frames on the same place.
+    [[[50, 50, 200, 100], [50, 50, 200, 100]], [100, 100]],
+    // A frame at the top edge, and one in the bottom-right corner.
+    [[[100, 5, 200, 40]], [150, 20]],
+    [[[790, 590, 10, 10]], [795, 595]]
+  ]) {
+    const frames = rects.map(([x, y, w, h]) => iframeAt(x, y, w, h));
+    installPage({ bodyStyle: { position: "static" }, bodyChildren: frames, elementsFromPoint: () => [frames[0]] });
+    const shot = captureScreenshot({ kind: "point", pageX: px, pageY: py });
+    assertNumbersPlaced(shot, rects.length, { x: px - 32, y: py - 32, width: 64, height: 64 }, JSON.stringify({ rects, spot: [px, py] }));
+  }
+});
+
+test("a number keeps clear of an area's badge too (#148)", () => {
+  const frame = iframeAt(0, 0, 300, 40);
+  installPage({ bodyStyle: { position: "static" }, bodyChildren: [frame], elementsFromPoint: () => [frame] });
+  const shot = captureScreenshot({
+    kind: "area",
+    pageX: 0,
+    pageY: 44,
+    area: { pageX: 0, pageY: 44, clientWidth: 100, clientHeight: 50 }
+  });
+  assertNumbersPlaced(shot, 1, { x: 0, y: 44, width: 36, height: 36 }, "area badge below a frame at the top");
 });
