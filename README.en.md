@@ -139,6 +139,28 @@ The reviewer name is saved to `localStorage` after submit and restored the next 
 
 Tab to a comment marker to read its tooltip, and press Escape to dismiss it. Press Enter to move to its comment in the list. In the comment form, Escape cancels the entry or edit and restores focus to the previous control.
 
+### What Screenshots Do Not Capture
+
+The screenshot copies the page body into an SVG `foreignObject` and draws it as an image; it is not a capture of the browser's screen. As a result, the following are missing from the image or look different from the actual screen. The inbox list thumbnails and images embedded in GitHub Issues are drawn as images, so they look as described here (checked in Chrome; other browsers may differ).
+
+Not captured:
+
+- Shadow DOM contents (open and closed), such as the dev indicator of the Next.js dev server or Web Components
+- What is drawn on a `canvas`
+- `iframe` / `frame` contents (same-origin and `srcdoc` ones included) and `object` / `embed` contents
+- `video` frames
+- Images loaded from a URL (an `img` shows as a broken image) and CSS background images. Data URL images and `svg` written in the page are captured
+
+Captured differently from the screen:
+
+- Web fonts loaded from a URL (drawn in another font)
+- Rules from stylesheets loaded from another origin (they cannot be read, so they do not apply)
+- Form state changed after load (typed text, checkbox and `select` choices), which shows in its initial state from the HTML
+- The scroll position inside scrollable elements (back at the top)
+- When any of the above changes an element's size, the layout after it shifts too. The point / area marks are drawn at the coordinates on the actual screen, so they can look slightly off from the elements in the image
+
+The widget's own UI, its markers and `script` elements are left out; the selected spot is drawn as a mark over the image. Opening the image in a new tab from the inbox shows it without CSS, so the layout breaks ([#180](https://github.com/kosako/PatchLoop/issues/180)).
+
 ## Payload
 
 Main payload fields:
@@ -368,7 +390,7 @@ Not included yet:
 
 - Slack App / OAuth integration
 - Team user and permission management, scheduled backups, and retention management
-- Pixel-perfect browser screenshot capture
+- Pixel-perfect browser screenshot capture (see "What Screenshots Do Not Capture" for what is missing)
 - Full isolation from page CSS (page rules on bare element names, `*`, `::before` and `::after` no longer reach the widget, but rules of specificity (0,1,1) or higher such as `button:hover`, `!important`, attribute rules loaded after the widget starts, rules on other pseudo-elements (`::placeholder`, `::marker`, `::selection` and so on), and `direction` / `unicode-bidi`, which `all` does not reset, still can. To hide the widget with page CSS, use `!important` or a selector such as `body [data-patchloop-root]`)
 - Per-reviewer authentication (the ingest key is a per-project public key and does not identify individuals; signed tokens issued behind a demo-side login are future scope)
 - AI PR integration
