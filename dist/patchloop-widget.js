@@ -714,8 +714,7 @@ function captureScreenshot(target) {
   if (!state.options.captureScreenshot) return null;
 
   try {
-    const width = Math.max(document.documentElement.clientWidth, window.innerWidth, 1);
-    const height = Math.max(document.documentElement.clientHeight, window.innerHeight, 1);
+    const { width, height } = viewportSize();
     const documentWidth = Math.max(document.documentElement.scrollWidth, width);
     const documentHeight = Math.max(document.documentElement.scrollHeight, height);
     const overlay = screenshotOverlayFor(target);
@@ -811,6 +810,21 @@ function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scro
 ${uncapturedMarkup}
 ${overlayMarkup}
 </svg>`;
+}
+
+// The elements the image will not show that touch the selected spot (#148), for
+// the comment form to point the reviewer at before anything is sent. Nothing
+// when the detection fails.
+function uncapturedTouching(target) {
+  const record = uncapturedFor(viewportSize(), screenshotOverlayFor(target));
+  return record.status === "detected" ? record.regions.filter((region) => region.relation !== "none") : [];
+}
+
+function viewportSize() {
+  return {
+    width: Math.max(document.documentElement.clientWidth, window.innerWidth, 1),
+    height: Math.max(document.documentElement.clientHeight, window.innerHeight, 1)
+  };
 }
 
 // What the image cannot show is recorded next to it (#148). Detecting it must
@@ -1065,7 +1079,7 @@ function base64Encode(value) {
   return btoa(binary);
 }
 
-return { captureScreenshot, snapshotBodyOffsetStyle, byteLength, base64Encode };
+return { captureScreenshot, uncapturedTouching, snapshotBodyOffsetStyle, byteLength, base64Encode };
 })();
 // --- widget/src/payload.js ---
 const __pl_widget_src_payload = (() => {
@@ -1330,6 +1344,7 @@ const { selectorFor, textFor } = __pl_widget_src_selector;
 const { resolveSourceContext } = __pl_widget_src_source_context;
 const { DEFAULTS, state } = __pl_widget_src_state;
 const { buildPayload } = __pl_widget_src_payload;
+const { uncapturedTouching } = __pl_widget_src_screenshot;
 const { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } = __pl_widget_src_inbox_status;
 const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback } = __pl_widget_src_persistence;
 const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } = __pl_shared_format;
@@ -1462,7 +1477,7 @@ function renderShell() {
       <div class="pl-form-heading"><strong data-pl-form-title>コメントを追加</strong><span>気づいたことを、ひとつずつ。</span></div>
       <label>
         コメント
-        <textarea data-pl-comment-text rows="4" placeholder="どこを、どう変えるとよくなりますか？" required aria-describedby="pl-form-error"></textarea>
+        <textarea data-pl-comment-text rows="4" placeholder="どこを、どう変えるとよくなりますか？" required aria-describedby="pl-form-error pl-uncaptured-hint"></textarea>
       </label>
       <label>
         投稿者
@@ -1470,6 +1485,7 @@ function renderShell() {
       </label>
       <label class="pl-screenshot-option" data-pl-screenshot-field><input type="checkbox" data-pl-include-screenshot${state.options.captureScreenshot ? " checked" : ""} />画面画像を含める</label>
       <p class="pl-capture-note" data-pl-capture-note>画像には画面外の内容が含まれる場合があります。機密情報のあるページでは外してください。</p>
+      <p class="pl-uncaptured-hint" id="pl-uncaptured-hint" data-pl-uncaptured-hint hidden></p>
       <p class="pl-form-error" id="pl-form-error" data-pl-form-error role="alert" hidden></p>
       <p class="pl-edit-note" data-pl-edit-note hidden>編集はこの端末に保存されます。受信済みの内容や作成済みの Issue は更新されません。</p>
       <div class="pl-form-actions">
@@ -1780,6 +1796,12 @@ function openCommentForm(point, options = {}) {
   if (captureNote) captureNote.hidden = editing || !state.options.captureScreenshot;
   const screenshotInput = form.querySelector("[data-pl-include-screenshot]");
   if (screenshotInput) screenshotInput.checked = state.options.captureScreenshot;
+  // Before anything is sent, point the reviewer at elements the screenshot will
+  // not show where they are pointing (#148), so they can describe what they see.
+  const uncapturedHint = form.querySelector("[data-pl-uncaptured-hint]");
+  const touching = !editing && state.options.captureScreenshot && state.pendingTarget ? uncapturedTouching(state.pendingTarget) : [];
+  uncapturedHint.hidden = touching.length === 0;
+  uncapturedHint.textContent = touching.length > 0 ? uncapturedHintText(touching) : "";
   clearFormError(form);
   const commentEl = form.querySelector("[data-pl-comment-text]");
   const reviewerEl = form.querySelector("[data-pl-reviewer]");
@@ -1789,6 +1811,12 @@ function openCommentForm(point, options = {}) {
   }
   positionCommentForm(form, point);
   commentEl.focus({ preventScroll: true });
+}
+
+function uncapturedHintText(touching) {
+  const names = [...new Set(touching.map((region) => truncateText(region.tag, 40)))];
+  const shown = names.slice(0, 3).join("、");
+  return `選んだ場所に、画面画像に写らない要素（${shown}${names.length > 3 ? " など" : ""}）が重なっているかもしれません。見えている内容をコメントに書き添えてください。`;
 }
 
 function positionVisibleCommentForm() {
@@ -3114,6 +3142,7 @@ function injectStyles() {
     .pl-comment input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: #0f7b63; }
     .pl-comment .pl-capture-note, .pl-comment .pl-edit-note { margin: -5px 0 0; font-size: 10px; line-height: 1.6; color: #65716d; }
     .pl-comment .pl-edit-note { padding: 10px; background: #fff8e7; color: #785011; border-radius: 6px; }
+    .pl-comment .pl-uncaptured-hint { margin: -5px 0 0; padding: 10px; background: #fff8e7; color: #785011; border-radius: 6px; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
     .pl-keyboard-hint { color: #65716d; font-size: 10px; text-align: right; }
     .pl-feedback-status { display: inline-block; margin-left: 5px; font-weight: 600; }
     .pl-inbox-status { display: inline-block; margin-left: 5px; padding: 0 6px; border: 1px solid #d9e1dd; border-radius: 999px; color: #42584c; font-weight: 600; }

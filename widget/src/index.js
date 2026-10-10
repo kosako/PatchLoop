@@ -4,6 +4,7 @@ import { selectorFor, textFor } from "./selector.js";
 import { resolveSourceContext } from "./source-context.js";
 import { DEFAULTS, state } from "./state.js";
 import { buildPayload } from "./payload.js";
+import { uncapturedTouching } from "./screenshot.js";
 import { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } from "./inbox-status.js";
 import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback } from "./persistence.js";
 import { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } from "../../shared/format.js";
@@ -136,7 +137,7 @@ function renderShell() {
       <div class="pl-form-heading"><strong data-pl-form-title>コメントを追加</strong><span>気づいたことを、ひとつずつ。</span></div>
       <label>
         コメント
-        <textarea data-pl-comment-text rows="4" placeholder="どこを、どう変えるとよくなりますか？" required aria-describedby="pl-form-error"></textarea>
+        <textarea data-pl-comment-text rows="4" placeholder="どこを、どう変えるとよくなりますか？" required aria-describedby="pl-form-error pl-uncaptured-hint"></textarea>
       </label>
       <label>
         投稿者
@@ -144,6 +145,7 @@ function renderShell() {
       </label>
       <label class="pl-screenshot-option" data-pl-screenshot-field><input type="checkbox" data-pl-include-screenshot${state.options.captureScreenshot ? " checked" : ""} />画面画像を含める</label>
       <p class="pl-capture-note" data-pl-capture-note>画像には画面外の内容が含まれる場合があります。機密情報のあるページでは外してください。</p>
+      <p class="pl-uncaptured-hint" id="pl-uncaptured-hint" data-pl-uncaptured-hint hidden></p>
       <p class="pl-form-error" id="pl-form-error" data-pl-form-error role="alert" hidden></p>
       <p class="pl-edit-note" data-pl-edit-note hidden>編集はこの端末に保存されます。受信済みの内容や作成済みの Issue は更新されません。</p>
       <div class="pl-form-actions">
@@ -454,6 +456,12 @@ function openCommentForm(point, options = {}) {
   if (captureNote) captureNote.hidden = editing || !state.options.captureScreenshot;
   const screenshotInput = form.querySelector("[data-pl-include-screenshot]");
   if (screenshotInput) screenshotInput.checked = state.options.captureScreenshot;
+  // Before anything is sent, point the reviewer at elements the screenshot will
+  // not show where they are pointing (#148), so they can describe what they see.
+  const uncapturedHint = form.querySelector("[data-pl-uncaptured-hint]");
+  const touching = !editing && state.options.captureScreenshot && state.pendingTarget ? uncapturedTouching(state.pendingTarget) : [];
+  uncapturedHint.hidden = touching.length === 0;
+  uncapturedHint.textContent = touching.length > 0 ? uncapturedHintText(touching) : "";
   clearFormError(form);
   const commentEl = form.querySelector("[data-pl-comment-text]");
   const reviewerEl = form.querySelector("[data-pl-reviewer]");
@@ -463,6 +471,12 @@ function openCommentForm(point, options = {}) {
   }
   positionCommentForm(form, point);
   commentEl.focus({ preventScroll: true });
+}
+
+function uncapturedHintText(touching) {
+  const names = [...new Set(touching.map((region) => truncateText(region.tag, 40)))];
+  const shown = names.slice(0, 3).join("、");
+  return `選んだ場所に、画面画像に写らない要素（${shown}${names.length > 3 ? " など" : ""}）が重なっているかもしれません。見えている内容をコメントに書き添えてください。`;
 }
 
 function positionVisibleCommentForm() {
@@ -1788,6 +1802,7 @@ function injectStyles() {
     .pl-comment input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: #0f7b63; }
     .pl-comment .pl-capture-note, .pl-comment .pl-edit-note { margin: -5px 0 0; font-size: 10px; line-height: 1.6; color: #65716d; }
     .pl-comment .pl-edit-note { padding: 10px; background: #fff8e7; color: #785011; border-radius: 6px; }
+    .pl-comment .pl-uncaptured-hint { margin: -5px 0 0; padding: 10px; background: #fff8e7; color: #785011; border-radius: 6px; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
     .pl-keyboard-hint { color: #65716d; font-size: 10px; text-align: right; }
     .pl-feedback-status { display: inline-block; margin-left: 5px; font-weight: 600; }
     .pl-inbox-status { display: inline-block; margin-left: 5px; padding: 0 6px; border: 1px solid #d9e1dd; border-radius: 999px; color: #42584c; font-weight: 600; }
