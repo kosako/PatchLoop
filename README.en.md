@@ -134,7 +134,7 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 5. Check delivery in the list. Failed requests can be retried after checking connection/settings. Requests time out after 15 seconds without removing the comment. If the same ID has already been received, verify its contents in the inbox
 6. End selection with the guide’s exit button or Escape
 
-Edits and deletions affect this browser only, not received feedback or GitHub Issues. Editing a delivered or exported comment marks it as a local change that has not reached the destination. Screenshot capture does not guarantee masking or removal of hidden content and may include offscreen content; omit the image on sensitive pages.
+Edits and deletions affect this browser only, not received feedback or GitHub Issues. Editing a delivered (including one whose ID the inbox already had) or exported comment marks it as a local change that has not reached the destination. Screenshot capture does not guarantee masking or removal of hidden content and may include offscreen content; omit the image on sensitive pages.
 
 The reviewer name is saved to `localStorage` after submit and restored the next time the widget starts. The feedback list is also saved to `localStorage` by default and restored after reloads on the same project / demo / page URL, including pins and area overlays. The panel’s “この端末のコメントを消す” action removes both visible markers and saved feedback from this browser. Set `persistFeedback: false` for memory-only behavior.
 

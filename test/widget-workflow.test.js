@@ -45,6 +45,18 @@ test("duplicate-ID response stays unresolved and does not offer blind repeated r
   assert.match(w.document.querySelector("[data-pl-notice]").textContent, /受信箱の内容を確認/);
 });
 
+test("editing a comment the receiver already held (409) marks it as a local change (#187)", async () => {
+  const w = widgetHarness({ replies: [{ ok: false, status: 409 }] });
+  w.init();
+  await w.submit("Original");
+  w.document.querySelector("[data-pl-edit]").click();
+  await w.submit("Changed", { captureTarget: false });
+  assert.equal(w.requests.length, 1);
+  assert.equal(w.api.getFeedback()[0].localEdited, true);
+  assert.match(w.document.querySelector("[data-pl-list]").innerHTML, /ローカル変更・送信先には未反映/);
+  assert.equal(w.document.querySelector("[data-pl-retry]"), null);
+});
+
 test("a reviewer can omit the screenshot for one comment", async () => {
   const w = widgetHarness();
   w.init({ captureScreenshot: true });
