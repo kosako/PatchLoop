@@ -1296,6 +1296,42 @@ test("upload-only Slack config reports skipped, not failed, without a screenshot
   assert.equal(stored[0].integrations.slack.status, "skipped");
 });
 
+test("GitHub Issues and Slack say which elements the screenshot cannot show near the selected spot (#148)", async (t) => {
+  const github = await startMockGitHub(t, (res) => {
+    res.writeHead(201, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ number: 7, html_url: "https://github.com/acme/demo/issues/7" }));
+  });
+  const slack = await startMockGitHub(t, (res) => res.end("ok"));
+  const receiver = await startReceiver(t, {
+    GITHUB_TOKEN: "test-token", GITHUB_REPO: "acme/demo", GITHUB_API_BASE: github.baseUrl, SLACK_WEBHOOK_URL: slack.baseUrl
+  });
+  const payload = feedbackPayload("pl_uncaptured_notes");
+  payload.screenshot.uncaptured = {
+    version: 1, status: "detected", scannedElements: 50, scanTruncated: false,
+    counts: { "shadow-host": 1, canvas: 2, frame: 0, embed: 0, video: 0 },
+    regions: [
+      { kind: "shadow-host", tag: "nextjs-portal", relation: "covers-target", rects: [{ x: 20, y: 869, width: 40, height: 40 }] },
+      { kind: "canvas", tag: "canvas", relation: "none", rects: [{ x: 400, y: 80, width: 100, height: 50 }] }
+    ]
+  };
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, payload)).status, 201);
+  const slackText = slack.requests[0].body.blocks.map((block) => block.text?.text || "").join("\n");
+  assert.match(slackText, /\*Not in the screenshot\*, may overlap the selected spot:\n1\. `nextjs-portal` \(shadow DOM, on top at the selected spot\)/);
+
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {})).status, 201);
+  const body = github.requests[0].body.body;
+  assert.match(body, /### Not in the screenshot\n\nThese elements do not show in the screenshot and may overlap the selected spot/);
+  assert.match(body, /- \[1\] `nextjs-portal`: shadow DOM, on top at the selected spot/);
+  assert.match(body, /2 more elsewhere on the page\./);
+
+  // Without the record (an older widget) the Issue says it was not checked, and Slack says nothing.
+  const older = feedbackPayload("pl_uncaptured_older");
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, older)).status, 201);
+  assert.doesNotMatch(JSON.stringify(slack.requests[1].body.blocks), /Not in the screenshot/);
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback/${older.id}/github-issue`, {})).status, 201);
+  assert.match(github.requests[1].body.body, /### Not in the screenshot\n\nNot checked: the widget predates this check\./);
+});
+
 test("Slack fallback text escapes the comment like the blocks do (#150)", async (t) => {
   const slack = await startMockGitHub(t, (res) => res.end("ok"));
   const receiver = await startReceiver(t, { SLACK_WEBHOOK_URL: slack.baseUrl });

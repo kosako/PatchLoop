@@ -9,6 +9,8 @@
 const UNCAPTURED_VERSION = 1;
 const UNCAPTURED_KINDS = ["shadow-host", "canvas", "frame", "embed", "video"];
 const UNCAPTURED_RELATIONS = ["covers-target", "overlaps-target", "none"];
+// How a kind reads next to an element's name, in the inbox, Issues and Slack.
+const KIND_NAMES = { "shadow-host": "shadow DOM", canvas: "canvas", frame: "iframe", embed: "embed / object", video: "video" };
 // The widget sends at most 20 regions of at most 4 rects each. A tag is the
 // element's name as the page has it; its length is left to the receiver's
 // field length limit.
@@ -63,6 +65,27 @@ function cleanRect(rect) {
   return { x, y, width, height };
 }
 
+// What a reader of a stored feedback should learn from screenshot.uncaptured,
+// for the inbox, GitHub Issues and Slack to word in their own language. state is
+// "not-checked" (no record: the widget predates the check), "detected",
+// "failed", "invalid" or "unknown-version". A detected record lists the
+// elements that touch the selected spot with their numbers on the image (their
+// place in regions) and counts the rest. The record is read through
+// normalizeUncaptured, so records stored before the receiver checked them read
+// the same way.
+function summarizeUncaptured(screenshot) {
+  if (!screenshot || !Object.hasOwn(screenshot, "uncaptured")) return { state: "not-checked" };
+  const record = normalizeUncaptured(screenshot.uncaptured);
+  if (record.version === null) return { state: "invalid" };
+  if (record.version !== UNCAPTURED_VERSION) return { state: "unknown-version", version: record.version };
+  if (record.status !== "detected") return { state: record.status };
+  const touching = record.regions
+    .map((region, index) => ({ number: index + 1, kindName: KIND_NAMES[region.kind], tag: region.tag, relation: region.relation }))
+    .filter((region) => region.relation !== "none");
+  const total = UNCAPTURED_KINDS.reduce((sum, kind) => sum + record.counts[kind], 0);
+  return { state: "detected", touching, elsewhere: Math.max(0, total - touching.length), scanTruncated: record.scanTruncated };
+}
+
 function isCount(value) {
   return Number.isInteger(value) && value >= 0;
 }
@@ -71,4 +94,4 @@ function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-module.exports = { normalizeUncaptured };
+module.exports = { normalizeUncaptured, summarizeUncaptured };
