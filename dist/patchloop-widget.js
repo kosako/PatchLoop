@@ -719,6 +719,7 @@ function captureScreenshot(target) {
     const documentWidth = Math.max(document.documentElement.scrollWidth, width);
     const documentHeight = Math.max(document.documentElement.scrollHeight, height);
     const overlay = screenshotOverlayFor(target);
+    const uncaptured = uncapturedFor({ width, height }, overlay);
     const svg = buildScreenshotSvg({
       width,
       height,
@@ -726,7 +727,8 @@ function captureScreenshot(target) {
       documentHeight,
       scrollX: window.scrollX,
       scrollY: window.scrollY,
-      overlay
+      overlay,
+      uncaptured
     });
     const bytes = byteLength(svg);
     const maxBytes = Number(state.options.screenshotMaxBytes || 0);
@@ -756,7 +758,7 @@ function captureScreenshot(target) {
       devicePixelRatio: window.devicePixelRatio || 1,
       bytes,
       targetOverlay: overlay,
-      uncaptured: uncapturedFor({ width, height }, overlay),
+      uncaptured,
       dataUrl: `data:image/svg+xml;base64,${base64Encode(svg)}`
     };
   } catch (error) {
@@ -767,7 +769,7 @@ function captureScreenshot(target) {
   }
 }
 
-function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scrollX, scrollY, overlay }) {
+function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scrollX, scrollY, overlay, uncaptured }) {
   const bodyClone = document.body.cloneNode(true);
   bodyClone.querySelectorAll(`${WIDGET_NODES}, script`).forEach((node) => node.remove());
   bodyClone.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
@@ -789,6 +791,7 @@ function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scro
   const bodyStylePrefix = bodyInlineStyle ? bodyInlineStyle.replace(/;?$/, ";") : "";
   const styles = `${freezeViewportUnits(collectReadableStyles(), width, height)}\n* { box-sizing: border-box; }\n`;
   const overlayMarkup = renderScreenshotOverlay(overlay);
+  const uncapturedMarkup = renderUncapturedMarks(uncaptured, overlay, width, height);
   const bodyMarkup = serializeAsXhtml(bodyClone);
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -805,6 +808,7 @@ function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scro
   </html>
 </foreignObject>
 <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" fill="none" stroke="#d9e1dd"/>
+${uncapturedMarkup}
 ${overlayMarkup}
 </svg>`;
 }
@@ -901,6 +905,87 @@ function screenshotOverlayFor(target) {
     x: Math.round(target.pageX - window.scrollX),
     y: Math.round(target.pageY - window.scrollY)
   };
+}
+
+// Elements the image cannot show that touch the selected spot (#148) get a
+// dashed frame and a number: their place in uncaptured.regions, counted from 1,
+// so text next to the image can point at them. The frame is dark over white to
+// stay visible on any page; the selected spot's own mark is drawn above it, so
+// numbers are placed clear of that mark and of each other (placeMarkNumber).
+// Elements that do not touch the spot stay in the metadata only.
+function renderUncapturedMarks(uncaptured, overlay, width, height) {
+  if (!uncaptured || uncaptured.status !== "detected") return "";
+  const marked = uncaptured.regions
+    .map((region, index) => ({ region, number: index + 1 }))
+    .filter(({ region }) => region.relation !== "none");
+  // Every frame first, then every number, so no frame line crosses a number.
+  const frames = marked.flatMap(({ region }) => region.rects.map(({ x, y, width: w, height: h }) => {
+    const box = `x="${x + 1}" y="${y + 1}" width="${Math.max(1, w - 2)}" height="${Math.max(1, h - 2)}" fill="none"`;
+    return `
+<rect ${box} stroke="#ffffff" stroke-width="4"/>
+<rect ${box} stroke="#14211d" stroke-width="2" stroke-dasharray="6 4"/>`;
+  }));
+  const taken = overlay ? overlayBoxes(overlay) : [];
+  const numbers = marked.map(({ region, number }) => {
+    const [labelX, labelY] = placeMarkNumber(region.rects[0], taken, width, height);
+    taken.push({ x: labelX, y: labelY, width: MARK_NUMBER_SIZE, height: MARK_NUMBER_SIZE });
+    return `
+<rect x="${labelX}" y="${labelY}" width="20" height="20" rx="4" fill="#14211d" stroke="#ffffff" stroke-width="2"/>
+<text x="${labelX + 10}" y="${labelY + 14}" text-anchor="middle" fill="#ffffff" font-family="system-ui, sans-serif" font-size="12" font-weight="700">${number}</text>`;
+  });
+  return frames.join("") + numbers.join("");
+}
+
+const MARK_NUMBER_SIZE = 20;
+const MARK_NUMBER_GAP = 4;
+
+// The boxes the selected spot's mark covers, as renderScreenshotOverlay draws
+// it: the point's outer ring, or the area's badge and its four border lines
+// (3 px wide, with a pixel to spare). The area's translucent fill may sit over
+// a number; it stays readable.
+function overlayBoxes(overlay) {
+  if (overlay.kind !== "area") return [{ x: overlay.x - 32, y: overlay.y - 32, width: 64, height: 64 }];
+  const x = Math.max(0, overlay.x);
+  const y = Math.max(0, overlay.y);
+  const w = Math.max(1, overlay.width);
+  const h = Math.max(1, overlay.height);
+  return [
+    { x, y, width: 36, height: 36 },
+    { x: x - 3, y: y - 3, width: w + 6, height: 6 },
+    { x: x - 3, y: y + h - 3, width: w + 6, height: 6 },
+    { x: x - 3, y: y - 3, width: 6, height: h + 6 },
+    { x: x + w - 3, y: y - 3, width: 6, height: h + 6 }
+  ];
+}
+
+// Where a frame's number goes: just above its top-left corner, else just below
+// the frame, else inside the corner; when all of these are taken (by the spot's
+// mark or another number) or off the image, the free spot of a 24 px grid that
+// is closest to the first choice.
+function placeMarkNumber(rect, taken, width, height) {
+  const size = MARK_NUMBER_SIZE;
+  const step = size + MARK_NUMBER_GAP;
+  const free = ([x, y]) => x >= 0 && y >= 0 && x + size <= width && y + size <= height
+    && !taken.some((box) => x < box.x + box.width && box.x < x + size && y < box.y + box.height && box.y < y + size);
+  const clampX = (x) => Math.max(0, Math.min(x, width - size));
+  const preferred = [
+    [clampX(rect.x), rect.y - step],
+    [clampX(rect.x), rect.y + rect.height + MARK_NUMBER_GAP],
+    [clampX(rect.x + MARK_NUMBER_GAP), rect.y + MARK_NUMBER_GAP]
+  ];
+  const chosen = preferred.find(free);
+  if (chosen) return chosen;
+  const [targetX, targetY] = preferred[0];
+  let best = null;
+  for (let y = 0; y + size <= height; y += step) {
+    for (let x = 0; x + size <= width; x += step) {
+      if (!free([x, y])) continue;
+      const distance = (x - targetX) ** 2 + (y - targetY) ** 2;
+      if (!best || distance < best.distance) best = { spot: [x, y], distance };
+    }
+  }
+  // An image too small to have a free spot keeps the first choice, inside it.
+  return best ? best.spot : [clampX(targetX), Math.max(0, Math.min(targetY, height - size))];
 }
 
 function renderScreenshotOverlay(overlay) {
