@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { normalizeUncaptured } = require("../server/uncaptured.js");
+const { normalizeUncaptured, summarizeUncaptured } = require("../server/uncaptured.js");
 
 function detected(overrides = {}) {
   return {
@@ -79,4 +79,61 @@ test("a record without an integer version becomes invalid with a null version", 
 test("a later version is kept as sent, for readers that know it", () => {
   const later = { version: 2, status: "detected", somethingNew: [1, 2, 3] };
   assert.equal(normalizeUncaptured(later), later);
+});
+
+test("the summary lists the elements touching the spot with their numbers and counts the rest", () => {
+  const record = detected({
+    counts: { "shadow-host": 1, canvas: 2, frame: 0, embed: 0, video: 0 },
+    regions: [
+      { kind: "shadow-host", tag: "nextjs-portal", relation: "covers-target", rects: [{ x: 0, y: 0, width: 10, height: 10 }] },
+      { kind: "canvas", tag: "canvas", relation: "overlaps-target", rects: [{ x: 0, y: 0, width: 10, height: 10 }] },
+      { kind: "canvas", tag: "canvas", relation: "none", rects: [{ x: 0, y: 0, width: 10, height: 10 }] }
+    ],
+    scanTruncated: true
+  });
+  assert.deepEqual(summarizeUncaptured({ status: "saved", uncaptured: record }), {
+    state: "detected",
+    touching: [
+      { number: 1, kindName: "shadow DOM", tag: "nextjs-portal", relation: "covers-target" },
+      { number: 2, kindName: "canvas", tag: "canvas", relation: "overlaps-target" }
+    ],
+    elsewhere: 1,
+    unlisted: 0,
+    scanTruncated: true
+  });
+  assert.deepEqual(summarizeUncaptured({ uncaptured: detected({ counts: { "shadow-host": 0, canvas: 0, frame: 0, embed: 0, video: 0 }, regions: [] }) }), {
+    state: "detected", touching: [], elsewhere: 0, unlisted: 0, scanTruncated: false
+  });
+});
+
+test("the summary counts elements the widget left off its list apart, as their place is not known", () => {
+  const touching = { kind: "canvas", tag: "canvas", relation: "overlaps-target", rects: [{ x: 0, y: 0, width: 10, height: 10 }] };
+  const summary = summarizeUncaptured({ uncaptured: detected({
+    counts: { "shadow-host": 0, canvas: 21, frame: 0, embed: 0, video: 0 },
+    regions: Array.from({ length: 20 }, () => touching)
+  }) });
+  assert.equal(summary.touching.length, 20);
+  assert.equal(summary.elsewhere, 0);
+  assert.equal(summary.unlisted, 1);
+});
+
+test("a tag is made one plain line of at most 80 characters for every reader", () => {
+  const tagged = (tag) => summarizeUncaptured({ uncaptured: detected({
+    regions: [{ kind: "canvas", tag, relation: "covers-target", rects: [{ x: 0, y: 0, width: 10, height: 10 }] }]
+  }) }).touching[0].tag;
+  assert.equal(tagged("canvas\n\n## forged\r\n[open](https://example.invalid)"), "canvas ## forged [open](https://example.invalid)");
+  assert.equal(tagged("a\u2028b\u0000c\u0085d"), "a b c d");
+  assert.equal(tagged("\n\t"), "?");
+  assert.equal(tagged(`x-${"a".repeat(200)}`), `x-${"a".repeat(77)}…`);
+});
+
+test("the summary tells not checked, failed, invalid and unknown versions apart", () => {
+  assert.deepEqual(summarizeUncaptured({ status: "saved" }), { state: "not-checked" });
+  assert.deepEqual(summarizeUncaptured(null), { state: "not-checked" });
+  assert.deepEqual(summarizeUncaptured({ uncaptured: { version: 1, status: "failed", error: "x" } }), { state: "failed" });
+  assert.deepEqual(summarizeUncaptured({ uncaptured: { version: 1, status: "invalid" } }), { state: "invalid" });
+  assert.deepEqual(summarizeUncaptured({ uncaptured: { version: null, status: "invalid" } }), { state: "invalid" });
+  // A record stored before the receiver checked it is read the same way.
+  assert.deepEqual(summarizeUncaptured({ uncaptured: detected({ scanTruncated: "no" }) }), { state: "invalid" });
+  assert.deepEqual(summarizeUncaptured({ uncaptured: { version: 3, anything: true } }), { state: "unknown-version", version: 3 });
 });

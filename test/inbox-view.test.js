@@ -57,3 +57,43 @@ test("screenshots without a server-owned filename do not load a stored external 
     assert.match(html, /Screenshot: saved/);
   }
 });
+
+function savedScreenshot(extra = {}) {
+  return { status: "saved", fileName: "shot.svg", width: 800, height: 600, bytes: 100, ...extra };
+}
+
+function uncapturedRecord(regions, counts = { "shadow-host": 1, canvas: 1, frame: 0, embed: 0, video: 0 }) {
+  return { version: 1, status: "detected", scannedElements: 10, scanTruncated: false, counts, regions };
+}
+
+test("a card notes elements the screenshot cannot show that touch the selected spot (#148)", () => {
+  const html = renderInbox([feedback({
+    screenshot: savedScreenshot({
+      uncaptured: uncapturedRecord([
+        { kind: "shadow-host", tag: "x-<b>portal</b>", relation: "covers-target", rects: [{ x: 0, y: 0, width: 10, height: 10 }] },
+        { kind: "canvas", tag: "canvas", relation: "none", rects: [{ x: 0, y: 0, width: 10, height: 10 }] }
+      ])
+    })
+  })]);
+  const note = html.match(/<p class="uncaptured-note">([^<]*(?:<(?!\/p>)[^<]*)*)<\/p>/);
+  assert.ok(note, "the note is shown");
+  assert.match(note[1], /指摘箇所に重なっている可能性があります/);
+  assert.match(note[1], /1\. x-&lt;b&gt;portal&lt;\/b&gt;（shadow DOM・指摘箇所の最前面）/);
+  assert.doesNotMatch(note[1], /2\. canvas/);
+  assert.match(html, /<dt>写らない要素<\/dt><dd>指摘箇所に 1 件、ほかに 1 件<\/dd>/);
+});
+
+test("a card's details tell none, not checked and failed apart, and say nothing without a saved screenshot (#148)", () => {
+  const none = renderInbox([feedback({ screenshot: savedScreenshot({ uncaptured: uncapturedRecord([], { "shadow-host": 0, canvas: 0, frame: 0, embed: 0, video: 0 }) }) })]);
+  assert.match(none, /<dt>写らない要素<\/dt><dd>なし<\/dd>/);
+  assert.doesNotMatch(none, /class="uncaptured-note"/);
+  const notChecked = renderInbox([feedback({ screenshot: savedScreenshot() })]);
+  assert.match(notChecked, /<dt>写らない要素<\/dt><dd>未確認（この確認より前の widget）<\/dd>/);
+  const failed = renderInbox([feedback({ screenshot: savedScreenshot({ uncaptured: { version: 1, status: "failed" } }) })]);
+  assert.match(failed, /<dt>写らない要素<\/dt><dd>検知に失敗<\/dd>/);
+  const elsewhere = renderInbox([feedback({ screenshot: savedScreenshot({ uncaptured: uncapturedRecord([{ kind: "canvas", tag: "canvas", relation: "none", rects: [{ x: 0, y: 0, width: 10, height: 10 }] }], { "shadow-host": 0, canvas: 3, frame: 0, embed: 0, video: 0 }) }) })]);
+  assert.match(elsewhere, /<dt>写らない要素<\/dt><dd>指摘箇所の外に 1 件、一覧にない 2 件（位置は不明）<\/dd>/);
+  for (const screenshot of [undefined, { status: "omitted", reason: "too-large", bytes: 1, maxBytes: 1 }]) {
+    assert.doesNotMatch(renderInbox([feedback({ screenshot })]), /写らない要素/);
+  }
+});

@@ -3,8 +3,10 @@
 const { escapeHtml, FEEDBACK_STATUS_LABELS: STATUS_LABELS } = require("../shared/format.js");
 const { FEEDBACK_STATUSES } = require("./store.js");
 const { feedbackForExport } = require("./feedback-export.js");
+const { summarizeUncaptured } = require("./uncaptured.js");
 
 const KIND_LABELS = { point: "ポイント", area: "範囲" };
+const UNCAPTURED_RELATION_LABELS = { "covers-target": "指摘箇所の最前面", "overlaps-target": "指摘箇所に重なる" };
 
 function displayDate(value) {
   const date = new Date(value);
@@ -65,6 +67,8 @@ function createInboxView(deps) {
       const viewport = env.viewport
         ? `${env.viewport.width}×${env.viewport.height}`
         : "";
+      // Only a saved screenshot comes with a check of what it cannot show (#148).
+      const uncaptured = screenshot && screenshot.status === "saved" ? summarizeUncaptured(screenshot) : null;
       return `
       <article class="card" data-card data-status="${status}" data-kind="${kind}" data-project="${project}" data-demo="${demo}" data-reviewer="${reviewer}" data-source="${source}" data-slack="${slackStatus}" data-github="${githubStatus}" data-search="${searchText}">
         <header class="card-header">
@@ -77,6 +81,7 @@ function createInboxView(deps) {
             <p class="card-context">${project || "プロジェクト未指定"}${demo ? ` <span>/</span> ${demo}` : ""}</p>
             <p class="comment">${comment}</p>
             <p class="page-link">${safeLinkUrl(page.url) ? `<a href="${escapeHtml(safeLinkUrl(page.url))}" target="_blank" rel="noopener">${pageTitle || pageUrl}<span class="sr-only">（新しいタブで開く）</span></a>` : pageTitle || pageUrl}</p>
+            ${renderUncapturedNote(uncaptured)}
           </div>
           ${renderScreenshotPreview(screenshot)}
         </div>
@@ -95,6 +100,7 @@ function createInboxView(deps) {
           <div><dt>Title</dt><dd>${pageTitle}</dd></div>
           <div><dt>Selector</dt><dd><code>${selector}</code></dd></div>
           <div><dt>Viewport</dt><dd>${escapeHtml(viewport)}</dd></div>
+          ${uncaptured ? `<div><dt>写らない要素</dt><dd>${escapeHtml(uncapturedSummaryText(uncaptured))}</dd></div>` : ""}
           <div><dt>Source</dt><dd>${source}</dd></div>
           <div><dt>Slack</dt><dd>${escapeHtml(formatSlackStatus(slack))}</dd></div>
           <div><dt>GitHub</dt><dd>${githubStatus}</dd></div>
@@ -283,6 +289,32 @@ function createInboxView(deps) {
   }
 
   return { renderInbox, renderLoginPage };
+}
+
+// Elements the screenshot cannot show that touch the selected spot (#148), as a
+// note under the comment. The numbers match the dashed frames on the image.
+function renderUncapturedNote(summary) {
+  if (!summary || summary.state !== "detected" || summary.touching.length === 0) return "";
+  const list = summary.touching
+    .map((region) => `${region.number}. ${escapeHtml(region.tag)}（${escapeHtml(region.kindName)}・${UNCAPTURED_RELATION_LABELS[region.relation]}）`)
+    .join("、");
+  return `<p class="uncaptured-note">画像に写っていない要素が指摘箇所に重なっている可能性があります（番号は画像の点線の枠）: ${list}</p>`;
+}
+
+// One line for the details, telling "none" apart from "not checked".
+function uncapturedSummaryText(summary) {
+  if (summary.state === "detected") {
+    const parts = [];
+    if (summary.touching.length > 0) parts.push(`指摘箇所に ${summary.touching.length} 件`);
+    if (summary.elsewhere > 0) parts.push(`${summary.touching.length > 0 ? "ほかに" : "指摘箇所の外に"} ${summary.elsewhere} 件`);
+    if (summary.unlisted > 0) parts.push(`一覧にない ${summary.unlisted} 件（位置は不明）`);
+    const text = parts.length > 0 ? parts.join("、") : "なし";
+    return summary.scanTruncated ? `${text}（ページの走査は途中で打ち切り）` : text;
+  }
+  if (summary.state === "failed") return "検知に失敗";
+  if (summary.state === "invalid") return "記録の形が不正なため破棄";
+  if (summary.state === "unknown-version") return `この受信箱が知らない形式（version ${summary.version}）`;
+  return "未確認（この確認より前の widget）";
 }
 
 module.exports = { createInboxView };
