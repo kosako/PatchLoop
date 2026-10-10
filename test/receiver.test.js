@@ -43,9 +43,10 @@ test("POST /feedback stores valid feedback and saves screenshot data URLs", asyn
   assert.match(screenshotResponse.headers.get("content-type"), /^image\/svg\+xml/);
   assert.equal(await screenshotResponse.text(), testSvg());
   // An attacker-supplied SVG must not execute if opened directly: the serving
-  // response carries sandboxing headers (stored-XSS hardening, #44).
+  // response carries sandboxing headers (stored-XSS hardening, #44). Inline
+  // styles stay allowed so the snapshot keeps its layout when opened (#180).
   assert.equal(screenshotResponse.headers.get("x-content-type-options"), "nosniff");
-  assert.equal(screenshotResponse.headers.get("content-security-policy"), "default-src 'none'; sandbox");
+  assert.equal(screenshotResponse.headers.get("content-security-policy"), "default-src 'none'; style-src 'unsafe-inline'; sandbox");
 });
 
 test("POST /feedback rejects malformed feedback payloads", async (t) => {
@@ -2491,7 +2492,7 @@ test("authenticated inbox screenshots use the current receiver despite a stale p
   const image = await fetch(receiver.baseUrl + imagePath, { headers });
   assert.equal(image.status, 200);
   assert.equal(await image.text(), testSvg());
-  assert.equal(image.headers.get("content-security-policy"), "default-src 'none'; sandbox");
+  assert.equal(image.headers.get("content-security-policy"), "default-src 'none'; style-src 'unsafe-inline'; sandbox");
   const [stored] = await readStoredFeedback(receiver.dbPath);
   assert.match(stored.screenshot.url, /^https:\/\/previous\.example\//);
 });

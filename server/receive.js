@@ -1535,10 +1535,15 @@ function handleGetScreenshot(req, res) {
       // opened as a top-level document (e.g. the inbox's target=_blank link or
       // a direct URL). nosniff stops MIME confusion; the CSP sandbox blocks
       // script execution and default-src 'none' blocks all resource loads.
+      // Inline styles are allowed: the snapshot carries the page's CSS in a
+      // <style> element and style attributes, and without them a top-level
+      // open drew the page unstyled while the marks stayed put (#180). CSS
+      // runs no script, and with every load still blocked it cannot fetch
+      // (no url(), @import or web font).
       // Inline <img> rendering in the inbox is unaffected — CSP on an image
       // subresource is not applied to its rendering.
       "X-Content-Type-Options": "nosniff",
-      "Content-Security-Policy": "default-src 'none'; sandbox"
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox"
     });
     res.end(buffer);
   });

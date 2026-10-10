@@ -159,7 +159,7 @@ Captured differently from the screen:
 - The scroll position inside scrollable elements (back at the top)
 - When any of the above changes an element's size, the layout after it shifts too. The point / area marks are drawn at the coordinates on the actual screen, so they can look slightly off from the elements in the image
 
-Of these, elements with an open shadow root, `canvas`, `iframe` / `frame`, `object` / `embed` and `video` are detected by the widget and recorded in the payload's `screenshot.uncaptured` (a closed shadow root cannot be detected). The widget's own UI, its markers and `script` elements are left out; the selected spot is drawn as a mark over the image. Opening the image in a new tab from the inbox shows it without CSS, so the layout breaks ([#180](https://github.com/kosako/PatchLoop/issues/180)).
+Of these, elements with an open shadow root, `canvas`, `iframe` / `frame`, `object` / `embed` and `video` are detected by the widget and recorded in the payload's `screenshot.uncaptured` (a closed shadow root cannot be detected). The widget's own UI, its markers and `script` elements are left out; the selected spot is drawn as a mark over the image. Opening the image in a new tab from a link in the inbox or a GitHub Issue (the file shown as a document) keeps the same layout, but data URL images do not show and `srcdoc` iframes are drawn (the receiver serves it with a CSP that blocks loads).
 
 ## Payload
 
