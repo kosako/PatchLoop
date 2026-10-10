@@ -159,7 +159,7 @@ Captured differently from the screen:
 - The scroll position inside scrollable elements (back at the top)
 - When any of the above changes an element's size, the layout after it shifts too. The point / area marks are drawn at the coordinates on the actual screen, so they can look slightly off from the elements in the image
 
-The widget's own UI, its markers and `script` elements are left out; the selected spot is drawn as a mark over the image. Opening the image in a new tab from the inbox shows it without CSS, so the layout breaks ([#180](https://github.com/kosako/PatchLoop/issues/180)).
+Of these, elements with an open shadow root, `canvas`, `iframe` / `frame`, `object` / `embed` and `video` are detected by the widget and recorded in the payload's `screenshot.uncaptured` (a closed shadow root cannot be detected). The widget's own UI, its markers and `script` elements are left out; the selected spot is drawn as a mark over the image. Opening the image in a new tab from the inbox shows it without CSS, so the layout breaks ([#180](https://github.com/kosako/PatchLoop/issues/180)).
 
 ## Payload
 
@@ -190,6 +190,7 @@ Main payload fields:
 - `environment.browser`
 - `environment.language`
 - `screenshot` — viewport snapshot. On success it includes `status: "captured"`, `mimeType: "image/svg+xml"`, `dataUrl`, `targetOverlay`, and related metadata
+- `screenshot.uncaptured` — elements in the viewport that the image cannot show (elements with an open shadow root, `canvas`, `iframe` / `frame`, `embed` / `object`, `video`). It has `version`, `status` (`detected`, or `failed` when detection failed), the number of scanned elements `scannedElements` and whether the scan stopped at 20,000 elements `scanTruncated`, per-kind `counts`, and up to 20 `regions` (`kind`, `tag`, viewport rectangles `rects`, and the `relation` to the selected spot). `relation` is `covers-target` when the element is on top at the selected spot, `overlaps-target` when its rectangle meets the spot, and `none` otherwise; beyond 20 regions they are kept in that order. Shadow tree and frame contents are not included. It is present only when the image was captured; a payload without it (from a widget sending `schemaVersion` 2 or earlier) means the detection did not run
 - `createdAt`
 - `delivery` — external delivery adds `{ pending: true, target: "receiver" | "slack-webhook" }` before the notification event and `onSubmit` callback. It is replaced with `{ ok, status }` or `{ ok: false, error }` after delivery. Direct Slack delivery reports `{ ok: null, status: "unknown", target: "slack-webhook" }`. Restoring interrupted delivery produces `{ ok: null, interrupted: true, target }`, meaning the outcome is unknown. Receiver comments remain retryable after editing, but existing IDs are never overwritten. These are local delivery states, not stored in the receiver’s received record
 

@@ -1,5 +1,6 @@
 import { state } from "./state.js";
 import { freezeViewportUnits, flattenRulesForSnapshot } from "./snapshot-css.js";
+import { detectUncaptured, UNCAPTURED_VERSION, WIDGET_NODES } from "./uncaptured.js";
 import { escapeHtml, escapeXml } from "../../shared/format.js";
 
 export function captureScreenshot(target) {
@@ -48,6 +49,7 @@ export function captureScreenshot(target) {
       devicePixelRatio: window.devicePixelRatio || 1,
       bytes,
       targetOverlay: overlay,
+      uncaptured: uncapturedFor({ width, height }, overlay),
       dataUrl: `data:image/svg+xml;base64,${base64Encode(svg)}`
     };
   } catch (error) {
@@ -60,7 +62,7 @@ export function captureScreenshot(target) {
 
 function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scrollX, scrollY, overlay }) {
   const bodyClone = document.body.cloneNode(true);
-  bodyClone.querySelectorAll("[data-patchloop-root], [data-patchloop-pin], [data-patchloop-area], [data-patchloop-selection], script").forEach((node) => node.remove());
+  bodyClone.querySelectorAll(`${WIDGET_NODES}, script`).forEach((node) => node.remove());
   bodyClone.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
 
   const bodyStyle = window.getComputedStyle(document.body);
@@ -98,6 +100,22 @@ function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scro
 <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" fill="none" stroke="#d9e1dd"/>
 ${overlayMarkup}
 </svg>`;
+}
+
+// What the image cannot show is recorded next to it (#148). Detecting it must
+// not cost the screenshot, so a failure is recorded as such.
+function uncapturedFor(viewport, overlay) {
+  try {
+    return detectUncaptured(document.body, viewport, overlay, topPageElementAt);
+  } catch (error) {
+    return { version: UNCAPTURED_VERSION, status: "failed", error: error.message };
+  }
+}
+
+// The widget's comment form and the marker of the comment being written sit
+// on the selected spot while the screenshot is taken, so they are skipped.
+function topPageElementAt(x, y) {
+  return document.elementsFromPoint(x, y).find((element) => !element.closest(WIDGET_NODES)) || null;
 }
 
 function visibleBackground(value) {
