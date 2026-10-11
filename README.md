@@ -387,6 +387,8 @@ curl -X POST http://127.0.0.1:4000/import \
 
 receiver は bundle version（v1 の単一 feedback / v2 の配列の両方）と payload shape を検証し、各 feedback の screenshot `dataUrl` を `server/screenshots/` に保存してから store に追記します。import した feedback には `source: "import"` / `importedAt` が付きます。`status` は有効な triage status（`new` / `accepted` / `fixed` / `ignored`）ならそのまま保持し、無ければ `new` を付け、それ以外の値が 1 件でもあれば batch 全体を 400 で拒否します。batch import では、すでに存在する id は重複としてスキップし（残りは取り込む）、応答に `imported` 件数・`duplicates`・`failed` を返します。payload のどれか 1 件でも不正なら、何も書き込まずに batch 全体を 400 で拒否します。Slack への再転送はせず、inbox 上では `Slack: skipped` と表示されます。
 
+各件の保存後の応答は、1 件以上取り込めたら `201`（失敗が混ざっていても同じ）、取り込めた件がなく保存の失敗があれば、失敗がすべて保存容量の上限なら `507`、それ以外は `500` です。重複が混ざっていても保存の失敗を優先し、重複だけなら `409` を返します。これらの応答はいずれも `imported`・`ids`・`duplicates`・`failed` などの要約を含み、`failed` の各件は `id`・`error`・原因の `status`（容量の上限は `507`、DB やファイル書き込みのエラーは `500` など）を持ちます。受信箱にも容量の上限または受信側の保存エラーを表示します。容量の上限は receiver の `screenshotDiskMaxBytes` / `SCREENSHOT_DISK_MAX_BYTES` などで変更できます。保存前に batch 全体を拒否する検証エラー（`400` / `413`）や保存件数の上限（`507`）は、従来どおり `error` を返します。
+
 ## 現在の境界
 
 GitHub Issue 作成は receiver inbox からの手動操作のみで、自動作成や issue との双方向同期はありません。Slack は local receiver 経由の Incoming Webhook prototype として扱います。受信したフィードバックはローカル receiver の SQLite DB に永続化されます。widget 内の feedback list はブラウザの `localStorage` に保存できます。チーム向けのユーザー管理・権限管理や、定期バックアップ・保存期間の自動管理は未対応です。feedback を回収したい場合は `endpoint` 経由で receiver に送るか、download mode で bundle を保存してください。

@@ -809,7 +809,7 @@ function handlePostImport(req, res) {
       try {
         screenshot = saveScreenshot(imported.screenshot, imported.id);
       } catch (error) {
-        results[index] = { failed: { id: imported.id, error: error.message } };
+        results[index] = { failed: { id: imported.id, error: error.message, status: error.statusCode || 500 } };
         continue;
       }
 
@@ -841,7 +841,7 @@ function handlePostImport(req, res) {
         if (error.statusCode === 409) {
           results[index] = { duplicate: stored.id };
         } else {
-          results[index] = { failed: { id: stored.id, error: error.message } };
+          results[index] = { failed: { id: stored.id, error: error.message, status: error.statusCode || 500 } };
         }
       }
     }
@@ -850,7 +850,9 @@ function handlePostImport(req, res) {
     const ids = results.filter((result) => result.id !== undefined).map((result) => result.id);
     const duplicates = results.filter((result) => result.duplicate !== undefined).map((result) => result.duplicate);
     const failed = results.filter((result) => result.failed !== undefined).map((result) => result.failed);
-    const status = ids.length > 0 ? 201 : duplicates.length > 0 ? 409 : 400;
+    const status = ids.length > 0 ? 201
+      : failed.length > 0 ? (failed.every((item) => item.status === 507) ? 507 : 500)
+      : 409;
     respondJson(res, status, {
       ok: ids.length > 0,
       id: ids[0],
