@@ -45,6 +45,19 @@ export function pageUrlForSharing(url, keepQueryParams) {
   return parsed.href;
 }
 
+// Applies keepQueryParams to a comment's page.url in place and tells whether
+// it changed (#163). Used when saved comments are loaded and whenever a
+// comment leaves (callback, delivery, retry, export), so one built or saved
+// under a wider rule, including one built before a re-init, never leaves
+// with it.
+export function applyPageUrlRule(item, keepQueryParams) {
+  if (typeof item?.page?.url !== "string") return false;
+  const url = pageUrlForSharing(item.page.url, keepQueryParams);
+  if (url === item.page.url) return false;
+  item.page.url = url;
+  return true;
+}
+
 // The `keepQueryParams` init option: an array of query keys, matched exactly.
 // Anything else is a configuration mistake, so warn and keep less (never more)
 // than asked.

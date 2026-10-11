@@ -81,3 +81,16 @@ test("a comment built before a re-init from onSubmit is sent under the new rule"
   assert.equal(w.requests.length, 1);
   assert.equal(JSON.parse(w.requests[0].body).page.url, "https://demo.example/flow?step=2");
 });
+
+test("a comment built before a re-init from a patchloop:feedback listener reaches onSubmit under the new rule", async () => {
+  const w = widgetHarness();
+  w.window.location.href = PAGE;
+  let received = null;
+  w.document.addEventListener("patchloop:feedback", () => {
+    w.init({ keepQueryParams: ["step"], onSubmit: (payload) => { received = payload.page.url; } });
+  }, { once: true });
+  w.init({ keepQueryParams: ["step", "token"] });
+  await w.submit();
+  assert.equal(received, "https://demo.example/flow?step=2");
+  assert.equal(JSON.parse(w.requests[0].body).page.url, "https://demo.example/flow?step=2");
+});

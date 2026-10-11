@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { normalizePageUrl, normalizeKeepQueryParams, pageUrlForSharing, samePersistedPage } = require("../widget/src/url.js");
+const { applyPageUrlRule, normalizePageUrl, normalizeKeepQueryParams, pageUrlForSharing, samePersistedPage } = require("../widget/src/url.js");
 
 test("normalizePageUrl keeps origin and pathname, drops query and hash", () => {
   assert.equal(normalizePageUrl("https://demo.example/app?utm=x#sec"), "https://demo.example/app");
@@ -83,4 +83,19 @@ test("normalizeKeepQueryParams warns and keeps less on a malformed value", (t) =
   assert.deepEqual(normalizeKeepQueryParams(null), []);
   assert.deepEqual(normalizeKeepQueryParams(["step", "", 3, null]), ["step"]);
   assert.equal(warnings.mock.callCount(), 3);
+});
+
+test("applyPageUrlRule trims a comment's page.url in place and reports a change", () => {
+  const item = { id: "pl_1", page: { url: "https://demo.example/flow?step=2&token=abc#h", title: "Flow" } };
+  assert.equal(applyPageUrlRule(item, ["step"]), true);
+  assert.deepEqual(item.page, { url: "https://demo.example/flow?step=2", title: "Flow" });
+  assert.equal(applyPageUrlRule(item, ["step"]), false);
+});
+
+test("applyPageUrlRule leaves comments without a string page.url alone", () => {
+  assert.equal(applyPageUrlRule(null, []), false);
+  assert.equal(applyPageUrlRule({ id: "pl_2" }, []), false);
+  const item = { id: "pl_3", page: { url: null } };
+  assert.equal(applyPageUrlRule(item, []), false);
+  assert.equal(item.page.url, null);
 });

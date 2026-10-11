@@ -2,9 +2,9 @@ import { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarge
 import { pointAnchorOffsets, areaAnchorOffsets, geometryFromAnchor, viewportDiffersFromCreation } from "./anchoring.js";
 import { selectorFor, textFor } from "./selector.js";
 import { resolveSourceContext } from "./source-context.js";
-import { normalizeKeepQueryParams } from "./url.js";
+import { applyPageUrlRule, normalizeKeepQueryParams } from "./url.js";
 import { DEFAULTS, state } from "./state.js";
-import { applyPageUrlRule, buildPayload } from "./payload.js";
+import { buildPayload } from "./payload.js";
 import { uncapturedTouching } from "./screenshot.js";
 import { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } from "./inbox-status.js";
 import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback } from "./persistence.js";
@@ -654,6 +654,8 @@ async function submitComment(event) {
   document.dispatchEvent(new CustomEvent("patchloop:feedback", { detail: payload }));
 
   if (typeof state.options.onSubmit === "function") {
+    // A patchloop:feedback listener may have re-initialized with a narrower rule.
+    applyPageUrlRule(payload, state.options.keepQueryParams);
     try {
       Promise.resolve(state.options.onSubmit(payload)).catch(reportSubmitCallbackError);
     } catch (error) {
@@ -727,9 +729,6 @@ function restorePersistedFeedback() {
   state.feedback = stored;
   state.feedback.forEach((item) => {
     if (item.delivery?.pending) item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
-    // Comments saved before #163 or under a wider keepQueryParams carry more
-    // of the URL; trim them now and save them back below.
-    applyPageUrlRule(item);
   });
   restoreFeedbackMarkers();
   persistFeedbackList();
@@ -745,7 +744,7 @@ function shouldDeliverFeedback() {
 }
 
 async function deliverFeedback(payload) {
-  applyPageUrlRule(payload);
+  applyPageUrlRule(payload, state.options.keepQueryParams);
   if (state.options.deliveryMode === "slack-webhook") {
     await postSlackWebhook(payload);
     return;
@@ -770,7 +769,7 @@ function downloadUnsentFeedback() {
 function downloadFeedbackItems(items) {
   if (items.length === 0) return;
 
-  items.forEach(applyPageUrlRule);
+  items.forEach((item) => applyPageUrlRule(item, state.options.keepQueryParams));
   const exportedAt = new Date().toISOString();
   try {
     const bundle = buildFeedbackBundle(items.map((item) => {

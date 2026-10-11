@@ -52,14 +52,6 @@ export function buildPayload(comment, reviewer, target, includeScreenshot = stat
   };
 }
 
-// Applies the current keepQueryParams to a comment's page.url in place (#163).
-// Called when saved comments are loaded and again whenever a comment leaves
-// (delivery, retry, export), so a comment built or saved under a wider rule,
-// including one built before a re-init from onSubmit, never leaves with it.
-export function applyPageUrlRule(item) {
-  if (typeof item.page?.url === "string") item.page.url = pageUrlForSharing(item.page.url, state.options.keepQueryParams);
-}
-
 // Date.now() alone collides across tabs/reviewers within the same
 // millisecond, which also collides marker Map keys and orphans nodes.
 function generateFeedbackId() {
