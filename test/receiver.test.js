@@ -2246,7 +2246,12 @@ test("non-numeric settings warn and fall back from env to config to defaults (#1
         assert.match(receiver.logs, /Slack image mode: auto/);
         assert.match(receiver.logs, /GitHub issues: disabled/);
         assert.match(receiver.logs, token ? /status lookup: disabled \(RECEIVER_TOKEN is set\)/ : /status lookup: enabled/);
-        assert.equal((await postJson(`${receiver.baseUrl}/feedback-status`, { ids: ["pl_settings"] })).status, token ? 404 : 200);
+        const response = await fetch(`${receiver.baseUrl}/feedback-status`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: ["pl_settings"] })
+        });
+        assert.equal(response.status, token ? 404 : 200);
       });
     }
   }
@@ -2265,7 +2270,12 @@ test("non-numeric settings warn and fall back from env to config to defaults (#1
         assert.ok(receiver.logs.includes(`trustProxy=${bool}`));
         assert.match(receiver.logs, /Slack image mode: link/);
         assert.match(receiver.logs, /GitHub issues: enabled \(config-owner\/config.repo\)/);
-        assert.equal((await postJson(`${receiver.baseUrl}/feedback-status`, { ids: ["pl_settings"] })).status, bool ? 200 : 404);
+        const response = await fetch(`${receiver.baseUrl}/feedback-status`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: ["pl_settings"] })
+        });
+        assert.equal(response.status, bool ? 200 : 404);
         if (env === "invalid") {
           for (const [index, [envLabel]] of settingLabels.entries()) {
             const fallback = [bool, bool, "link", "config-owner/config.repo"][index];
@@ -2299,7 +2309,12 @@ test("valid boolean aliases, Slack image modes and GitHub repos override config 
       assert.ok(receiver.logs.includes(`trustProxy=${enabled}`));
       assert.ok(receiver.logs.includes(`Slack image mode: ${mode}`));
       assert.match(receiver.logs, /GitHub issues: enabled \(Owner-1\/Repo.name_2\)/);
-      assert.equal((await postJson(`${receiver.baseUrl}/feedback-status`, { ids: ["pl_settings"] })).status, enabled ? 200 : 404);
+      const response = await fetch(`${receiver.baseUrl}/feedback-status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: ["pl_settings"] })
+      });
+      assert.equal(response.status, enabled ? 200 : 404);
       assert.doesNotMatch(receiver.logs, /ignored invalid setting/);
     });
   }
