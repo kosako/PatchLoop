@@ -231,3 +231,67 @@ test("quota fallback compacts only the current scope's screenshot", (t) => {
   globalThis.window.location.href = "https://demo.example/app";
   assert.equal(loadPersistedFeedback()[0].id, "other-page");
 });
+
+test("the saved envelope keeps the page identity without the query or fragment (#163)", (t) => {
+  const entries = persistenceSession(t);
+  globalThis.window.location.href = "https://user:secret@demo.example/app?token=abc#access_token=zzz";
+  saveDraft("private");
+  assert.equal(entries.size, 1);
+  assert.equal(JSON.parse([...entries.values()][0]).pageUrl, "https://demo.example/app");
+  globalThis.window.location.href = "https://demo.example/app";
+  assert.equal(loadPersistedFeedback()[0].id, "private");
+});
+
+test("feedback on a file: page is restored", (t) => {
+  persistenceSession(t);
+  globalThis.window.location.href = "file:///work/demo.html?step=1#h";
+  saveDraft("local-file");
+  globalThis.window.location.href = "file:///work/demo.html";
+  assert.equal(loadPersistedFeedback()[0].id, "local-file");
+  globalThis.window.location.href = "file:///work/other.html";
+  assert.deepEqual(loadPersistedFeedback(), []);
+});
+
+test("a saved envelope with no comments has its old pageUrl trimmed on load (#163)", (t) => {
+  const entries = persistenceSession(t);
+  saveDraft("deleted-later");
+  const [key] = entries.keys();
+  entries.set(key, JSON.stringify(envelope({ pageUrl: "https://demo.example/app?token=abc#access_token=zzz", feedback: [] })));
+  assert.deepEqual(loadPersistedFeedback(), []);
+  assert.equal(JSON.parse(entries.get(key)).pageUrl, "https://demo.example/app");
+});
+
+test("saved comments are trimmed to the current keepQueryParams on load and written back (#163)", (t) => {
+  const entries = persistenceSession(t);
+  state.options.keepQueryParams = ["step"];
+  saveDraft("placeholder");
+  const [key] = entries.keys();
+  const screenshot = { status: "captured", dataUrl: "data:image/svg+xml;base64,abc" };
+  entries.set(key, JSON.stringify(envelope({ feedback: [{ id: "old", target: {}, page: { url: "https://demo.example/app?step=2&token=abc#h" }, screenshot }] })));
+  assert.equal(loadPersistedFeedback()[0].page.url, "https://demo.example/app?step=2");
+  const saved = JSON.parse(entries.get(key));
+  assert.equal(saved.feedback[0].page.url, "https://demo.example/app?step=2");
+  assert.deepEqual(saved.feedback[0].screenshot, screenshot);
+});
+
+test("a legacy copy kept after a failed migration is trimmed in place (#163)", (t) => {
+  const entries = persistenceSession(t);
+  const legacyKey = state.options.feedbackStorageKey;
+  const screenshot = { status: "captured", dataUrl: "data:image/svg+xml;base64,abc" };
+  entries.set(legacyKey, JSON.stringify(envelope({
+    pageUrl: "https://demo.example/app?token=abc",
+    feedback: [{ id: "legacy", target: {}, page: { url: "https://demo.example/app?token=abc#h" }, screenshot }]
+  })));
+  const warnings = t.mock.method(console, "warn", () => {});
+  globalThis.window.localStorage.setItem = (key, value) => {
+    if (key !== legacyKey) throw new Error("QuotaExceededError");
+    entries.set(key, value);
+  };
+  assert.equal(loadPersistedFeedback()[0].page.url, "https://demo.example/app");
+  assert.equal(entries.size, 1);
+  const kept = JSON.parse(entries.get(legacyKey));
+  assert.equal(kept.pageUrl, "https://demo.example/app");
+  assert.equal(kept.feedback[0].page.url, "https://demo.example/app");
+  assert.deepEqual(kept.feedback[0].screenshot, screenshot);
+  assert.equal(warnings.mock.callCount(), 1);
+});

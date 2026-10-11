@@ -101,6 +101,7 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 - `projectId` (string) — identifier carried in the payload
 - `demoId` (string) — identifier carried in the payload
 - `sourceContext` (object, optional) — git provenance of the page under review: `{ repo, branch, commit, root, buildUrl, previewUrl }`, all optional strings. The embedding side injects real values at build/deploy time; this is what lets an AI agent map feedback back to source code. Fields left unset are filled from `<meta name="patchloop:repo">` / `patchloop:branch` / `patchloop:commit` / `patchloop:root` / `patchloop:build-url` / `patchloop:preview-url` meta tags
+- `keepQueryParams` (string[], optional) — query keys to keep in the payload's `page.url`. Defaults to `[]`: `page.url` is origin + path only, and the query, the fragment (after `#`), and any credentials in the URL are dropped. For an app that keeps screen state in the query, list the keys needed to reproduce it (for example `"step"` for `?step=`); only those pairs are kept, in their original order and with their original values (keys match case-sensitively; the fragment is always dropped). Kept values reach the inbox, Slack, GitHub issues, and exported files as-is, so do not list a key that may carry a token or another secret; that is the embedding side's responsibility. A non-array value, or an element that is not a non-empty string, is ignored with a console warning, and no query is kept for it. The current setting is applied again on every send, retry, and export, and comments already saved on the device have their `page.url` trimmed by it when loaded and are saved back, so only what the current setting keeps ever leaves the browser. The receiver does not trim the `page.url` it receives
 - `reviewer` (string, optional) — pre-fills the reviewer field in the comment form. When omitted, the widget restores a saved reviewer from `localStorage`; otherwise the field starts empty
 - `reviewerStorageKey` (string, optional) — `localStorage` key used to persist the reviewer name; defaults to `patchloop:reviewer`
 - `persistFeedback` (boolean, optional) — save the feedback list to `localStorage` and restore it after reloads on the same project / demo / page URL; defaults to `true`
@@ -171,7 +172,7 @@ Main payload fields:
 - `demoId`
 - `comment`
 - `reviewer`
-- `page.url`
+- `page.url` — URL of the page the comment was left on: origin + path plus only the query keys listed in `keepQueryParams` (never the fragment or credentials in the URL)
 - `page.title`
 - `sourceContext` — git provenance of the reviewed page (`repo` / `branch` / `commit` / `root` / `buildUrl` / `previewUrl`); `null` when neither the init option nor meta tags provide any field
 - `target.kind`

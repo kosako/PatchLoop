@@ -2,6 +2,7 @@ import { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarge
 import { pointAnchorOffsets, areaAnchorOffsets, geometryFromAnchor, viewportDiffersFromCreation } from "./anchoring.js";
 import { selectorFor, textFor } from "./selector.js";
 import { resolveSourceContext } from "./source-context.js";
+import { applyPageUrlRule, normalizeKeepQueryParams } from "./url.js";
 import { DEFAULTS, state } from "./state.js";
 import { buildPayload } from "./payload.js";
 import { uncapturedTouching } from "./screenshot.js";
@@ -44,6 +45,7 @@ function init(options = {}) {
   // Resolved once here (option first, meta tags as fallback) so every payload
   // built later carries the same provenance without re-reading the DOM.
   state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
+  state.options.keepQueryParams = normalizeKeepQueryParams(state.options.keepQueryParams);
   state.displayMode = loadDisplayMode();
   resetInboxStatus();
   injectStyles();
@@ -652,6 +654,8 @@ async function submitComment(event) {
   document.dispatchEvent(new CustomEvent("patchloop:feedback", { detail: payload }));
 
   if (typeof state.options.onSubmit === "function") {
+    // A patchloop:feedback listener may have re-initialized with a narrower rule.
+    applyPageUrlRule(payload, state.options.keepQueryParams);
     try {
       Promise.resolve(state.options.onSubmit(payload)).catch(reportSubmitCallbackError);
     } catch (error) {
@@ -740,6 +744,7 @@ function shouldDeliverFeedback() {
 }
 
 async function deliverFeedback(payload) {
+  applyPageUrlRule(payload, state.options.keepQueryParams);
   if (state.options.deliveryMode === "slack-webhook") {
     await postSlackWebhook(payload);
     return;
@@ -764,6 +769,7 @@ function downloadUnsentFeedback() {
 function downloadFeedbackItems(items) {
   if (items.length === 0) return;
 
+  items.forEach((item) => applyPageUrlRule(item, state.options.keepQueryParams));
   const exportedAt = new Date().toISOString();
   try {
     const bundle = buildFeedbackBundle(items.map((item) => {

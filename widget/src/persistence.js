@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { normalizePageUrl, samePersistedPage } from "./url.js";
+import { applyPageUrlRule, normalizePageUrl, pageUrlForSharing, samePersistedPage } from "./url.js";
 
 export const FEEDBACK_STORAGE_VERSION = 1;
 
@@ -54,15 +54,21 @@ export function loadPersistedFeedback() {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!isMatchingFeedbackEnvelope(parsed)) return [];
+    // Data saved before #163 or under a wider keepQueryParams carries more of
+    // the URL: trim it and write the result back where it was read from.
+    const stored = trimEnvelopeUrls(parsed) ? JSON.stringify(parsed) : raw;
     if (scoped === null) {
       try {
         // Keep the only legacy copy until the scoped write succeeds, including
         // when a full localStorage prevents temporarily holding both copies.
-        window.localStorage.setItem(storageKey, raw);
+        window.localStorage.setItem(storageKey, stored);
         window.localStorage.removeItem(state.options.feedbackStorageKey);
       } catch (error) {
         console.warn("[PatchLoop] legacy feedback migration deferred", error);
+        if (stored !== raw) rewriteStoredEnvelope(state.options.feedbackStorageKey, stored);
       }
+    } else if (stored !== raw) {
+      rewriteStoredEnvelope(storageKey, stored);
     }
     return Array.isArray(parsed.feedback)
       ? parsed.feedback.map(normalizePersistedFeedback).filter(Boolean)
@@ -70,6 +76,31 @@ export function loadPersistedFeedback() {
   } catch (error) {
     console.warn("[PatchLoop] persisted feedback ignored", error);
     return [];
+  }
+}
+
+// Trims the envelope's pageUrl to the page identity and each comment's
+// page.url to the current keepQueryParams, in place; true when anything changed.
+function trimEnvelopeUrls(envelope) {
+  let changed = false;
+  const pageUrl = pageUrlForSharing(envelope.pageUrl, []);
+  if (pageUrl !== envelope.pageUrl) {
+    envelope.pageUrl = pageUrl;
+    changed = true;
+  }
+  envelope.feedback.forEach((item) => {
+    if (applyPageUrlRule(item, state.options.keepQueryParams)) changed = true;
+  });
+  return changed;
+}
+
+// Replacing a value with a shorter one, so this normally fits even when the
+// storage is full; if it still fails, the old copy stays as it was.
+function rewriteStoredEnvelope(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch (error) {
+    console.warn("[PatchLoop] unable to trim saved page URLs", error);
   }
 }
 
@@ -118,7 +149,8 @@ function feedbackStorageEnvelope(feedback, options = {}) {
     version: FEEDBACK_STORAGE_VERSION,
     projectId: state.options.projectId,
     demoId: state.options.demoId,
-    pageUrl: window.location.href,
+    // Only the page identity is compared on load, so no query is kept (#163).
+    pageUrl: pageUrlForSharing(window.location.href, []),
     savedAt: new Date().toISOString(),
     feedback: feedback.map((item) => serializeFeedbackForStorage(item, options)).filter(Boolean)
   };

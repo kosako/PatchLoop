@@ -101,6 +101,7 @@ PatchLoop は、普通の HTML に `script` tag で埋め込める standalone wi
 - `projectId` (string) — payload に乗せるプロジェクト識別子
 - `demoId` (string) — payload に乗せるデモ識別子
 - `sourceContext` (object, optional) — レビュー対象ページの git 由来情報 `{ repo, branch, commit, root, buildUrl, previewUrl }`（すべて string・任意）。埋め込み側がビルド/デプロイ時に実値を注入するのが正で、AI agent が feedback をソースコードに対応付けるための情報。未指定のフィールドは `<meta name="patchloop:repo">` / `patchloop:branch` / `patchloop:commit` / `patchloop:root` / `patchloop:build-url` / `patchloop:preview-url` の meta タグから補完されます
+- `keepQueryParams` (string[], optional) — payload の `page.url` に残す query の key。デフォルトは `[]` で、`page.url` は origin + path だけになり、query と fragment（`#` 以降）と URL 中の認証情報は落とします。画面の状態を query で持つアプリでは、再現に要る key（例: `?step=` なら `"step"`）を挙げると、その key の組だけを元の順と値のまま残します（key は大文字小文字を区別して一致させます。fragment は常に落とします）。残した値は受信箱・Slack・GitHub Issue・書き出したファイルにそのまま載るので、token など secret が入りうる key は挙げないでください（埋め込み側の責任です）。配列でない値や、空でない文字列以外の要素は console に警告して無視し、その分の query は残しません。送信・再送・書き出しのたびに今の設定を当て、端末に保存済みのコメントも読み込んだときに今の設定で `page.url` を削って保存し直すので、外に出るのは常に今の設定で残す分だけです。receiver は受け取った `page.url` を削りません
 - `reviewer` (string, optional) — コメントフォームに初期表示する投稿者名。未指定の場合は保存済み reviewer を `localStorage` から復元し、保存値もなければ空欄
 - `reviewerStorageKey` (string, optional) — reviewer 名を保存する `localStorage` key。デフォルトは `patchloop:reviewer`
 - `persistFeedback` (boolean, optional) — feedback list を `localStorage` に保存し、同じ project / demo / page URL の reload 後に復元するか。デフォルトは `true`
@@ -171,7 +172,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 - `demoId`
 - `comment`
 - `reviewer`
-- `page.url`
+- `page.url` — コメントしたページの URL。origin + path と、`keepQueryParams` に挙げた key の query だけ（fragment と URL 中の認証情報は含みません）
 - `page.title`
 - `sourceContext` — レビュー対象ページの git 由来情報（`repo` / `branch` / `commit` / `root` / `buildUrl` / `previewUrl`）。init オプションと meta タグのどちらにも無ければ `null`
 - `target.kind`
