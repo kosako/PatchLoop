@@ -500,6 +500,99 @@ test("POST /import stores every feedback in a v2 batch bundle", async (t) => {
   }
 });
 
+for (const order of ["newest first", "shuffled"]) {
+  test(`POST /import lists batch feedback newest first when the bundle is ${order} (#156)`, async (t) => {
+    const receiver = await startReceiver(t);
+    const newestFirst = [
+      { ...feedbackPayload("pl_order_newest"), createdAt: "2026-06-03T02:00:00.000Z" },
+      { ...feedbackPayload("pl_order_middle"), createdAt: "2026-06-03T01:00:00.000Z" },
+      { ...feedbackPayload("pl_order_oldest"), createdAt: "2026-06-03T00:00:00.000Z" }
+    ];
+    const feedback = order === "newest first" ? newestFirst : [newestFirst[1], newestFirst[2], newestFirst[0]];
+    const response = await postJson(`${receiver.baseUrl}/import`, {
+      kind: "patchloop-feedback-bundle", version: 2, feedback
+    });
+
+    assert.equal(response.status, 201);
+    assert.deepEqual(response.body.ids, feedback.map((item) => item.id));
+    assert.equal(response.body.id, feedback[0].id);
+    const listing = await fetch(`${receiver.baseUrl}/feedback.json`);
+    assert.equal(listing.status, 200);
+    assert.deepEqual((await listing.json()).map((item) => item.id), newestFirst.map((item) => item.id));
+    const stored = await readStoredFeedback(receiver.dbPath);
+    assert.deepEqual(stored.map((item) => item.id), newestFirst.map((item) => item.id));
+    assert.equal(new Set(stored.map((item) => item.receivedAt)).size, 1);
+    for (const item of stored) assert.equal(item.importedAt, item.receivedAt);
+  });
+}
+
+test("POST /import keeps bundle order for equal and unknown dates, placing unknown dates oldest (#156)", async (t) => {
+  const receiver = await startReceiver(t);
+  const missing = feedbackPayload("pl_order_missing");
+  delete missing.createdAt;
+  const feedback = [
+    missing,
+    { ...feedbackPayload("pl_order_equal_first"), createdAt: "2026-06-03T09:00:00+09:00" },
+    { ...feedbackPayload("pl_order_invalid"), createdAt: "not a date" },
+    { ...feedbackPayload("pl_order_old"), createdAt: "1969-12-31T23:59:59.000Z" },
+    { ...feedbackPayload("pl_order_equal_second"), createdAt: "2026-06-03T00:00:00.000Z" },
+    { ...feedbackPayload("pl_order_null"), createdAt: null }
+  ];
+  const response = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle", version: 2, feedback
+  });
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(response.body.ids, feedback.map((item) => item.id));
+  assert.deepEqual((await readStoredFeedback(receiver.dbPath)).map((item) => item.id), [
+    "pl_order_equal_first", "pl_order_equal_second", "pl_order_old",
+    "pl_order_missing", "pl_order_invalid", "pl_order_null"
+  ]);
+});
+
+test("POST /import preserves response order, duplicate winners and screenshot cleanup after sorting (#156)", async (t) => {
+  const receiver = await startReceiver(t);
+  for (const id of ["pl_order_dup_first", "pl_order_dup_second"]) {
+    assert.equal((await postJson(`${receiver.baseUrl}/import`, feedbackPayload(id))).status, 201);
+  }
+  const newest = { ...feedbackPayload("pl_order_success_newest"), createdAt: "2026-06-03T02:00:00.000Z" };
+  const feedback = [
+    { ...feedbackPayload("pl_order_fail_newest"), createdAt: "2026-06-03T03:00:00.000Z" },
+    feedbackPayload("pl_order_dup_first"),
+    newest,
+    { ...feedbackPayload("pl_order_fail_oldest"), createdAt: "2026-06-02T00:00:00.000Z" },
+    { ...feedbackPayload("pl_order_success_oldest"), createdAt: "2026-06-03T01:00:00.000Z" },
+    feedbackPayload("pl_order_dup_second"),
+    { ...newest, createdAt: "2026-06-01T00:00:00.000Z", comment: "duplicate must not win" }
+  ];
+  const db = new DatabaseSync(receiver.dbPath);
+  try {
+    db.exec(`CREATE TRIGGER reject_ordered_import BEFORE INSERT ON feedback
+      WHEN NEW.id IN ('pl_order_fail_newest', 'pl_order_fail_oldest')
+      BEGIN SELECT RAISE(ABORT, 'injected ordered import failure'); END`);
+    const response = await postJson(`${receiver.baseUrl}/import`, {
+      kind: "patchloop-feedback-bundle", version: 2, feedback
+    });
+    assert.equal(response.status, 201);
+    assert.equal(response.body.imported, 2);
+    assert.equal(response.body.count, 4);
+    assert.deepEqual(response.body.ids, ["pl_order_success_newest", "pl_order_success_oldest"]);
+    assert.deepEqual(response.body.duplicates, ["pl_order_dup_first", "pl_order_dup_second", newest.id]);
+    assert.deepEqual(response.body.failed, [
+      { id: "pl_order_fail_newest", error: "injected ordered import failure" },
+      { id: "pl_order_fail_oldest", error: "injected ordered import failure" }
+    ]);
+    const stored = await readStoredFeedback(receiver.dbPath);
+    assert.deepEqual(stored.slice(0, 2).map((item) => item.id), response.body.ids);
+    assert.equal(stored[0].comment, newest.comment);
+    assert.equal(stored[0].createdAt, newest.createdAt);
+    assert.equal((await fs.readdir(receiver.screenshotDir)).length, 4);
+    for (const item of stored) assert.equal(await fs.readFile(item.screenshot.path, "utf8"), testSvg());
+  } finally {
+    db.close();
+  }
+});
+
 test("POST /import skips duplicate ids in a batch but lands the rest", async (t) => {
   const receiver = await startReceiver(t);
   await postJson(`${receiver.baseUrl}/import`, {

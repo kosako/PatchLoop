@@ -761,15 +761,15 @@ function handlePostImport(req, res) {
     }
 
     let importedList;
-    const duplicates = [];
+    const results = new Array(normalized.length);
     try {
       const seen = new Set();
       importedList = [];
-      for (const imported of normalized) {
+      for (const [index, imported] of normalized.entries()) {
         if (seen.has(imported.id) || await store.get(imported.id)) {
-          duplicates.push(imported.id);
+          results[index] = { duplicate: imported.id };
         } else {
-          importedList.push(imported);
+          importedList.push({ imported, index, createdAt: Date.parse(imported.createdAt) });
         }
         seen.add(imported.id);
       }
@@ -780,18 +780,25 @@ function handlePostImport(req, res) {
     }
 
     const now = new Date().toISOString();
-    const ids = [];
-    const failed = [];
+
+    // Store reads seq DESC, so insert oldest first. Reverse the bundle before
+    // the stable sort to keep equal/unknown dates in widget export order on read.
+    importedList.reverse().sort((a, b) => {
+      const aUnknown = Number.isNaN(a.createdAt);
+      const bUnknown = Number.isNaN(b.createdAt);
+      if (aUnknown !== bUnknown) return aUnknown ? -1 : 1;
+      return aUnknown ? 0 : a.createdAt - b.createdAt;
+    });
 
     // Best-effort per item: a duplicate id (re-imported batch) is skipped, not
     // fatal, so the rest of the bundle still lands. Validation already ran for
     // the whole list, so failures here are write-time only.
-    for (const imported of importedList) {
+    for (const { imported, index } of importedList) {
       let screenshot;
       try {
         screenshot = saveScreenshot(imported.screenshot, imported.id);
       } catch (error) {
-        failed.push({ id: imported.id, error: error.message });
+        results[index] = { failed: { id: imported.id, error: error.message } };
         continue;
       }
 
@@ -809,7 +816,7 @@ function handlePostImport(req, res) {
 
       try {
         await store.insert(stored);
-        ids.push(stored.id);
+        results[index] = { id: stored.id };
         console.log(`[PatchLoop receiver] imported feedback id=${logValue(stored.id || "?")} comment="${logValue(truncateText(stored.comment || "", 60))}"`);
       } catch (error) {
         // The insert failed, so drop the screenshot we just wrote for it
@@ -821,13 +828,17 @@ function handlePostImport(req, res) {
           console.warn("%s", `[PatchLoop receiver] failed to clean up screenshot for feedback id=${logValue(stored.id)}:`, cleanupError);
         }
         if (error.statusCode === 409) {
-          duplicates.push(stored.id);
+          results[index] = { duplicate: stored.id };
         } else {
-          failed.push({ id: stored.id, error: error.message });
+          results[index] = { failed: { id: stored.id, error: error.message } };
         }
       }
     }
 
+    // Response arrays follow the original bundle, independently of insert order.
+    const ids = results.filter((result) => result.id !== undefined).map((result) => result.id);
+    const duplicates = results.filter((result) => result.duplicate !== undefined).map((result) => result.duplicate);
+    const failed = results.filter((result) => result.failed !== undefined).map((result) => result.failed);
     const status = ids.length > 0 ? 201 : duplicates.length > 0 ? 409 : 400;
     respondJson(res, status, {
       ok: ids.length > 0,
