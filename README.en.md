@@ -281,7 +281,9 @@ Relative path values such as `feedbackDbPath` and `screenshotDir` are resolved f
 
 To use a config file from another path, run `PATCHLOOP_RECEIVER_CONFIG=/path/to/receiver.config.json node server/receive.js`.
 
-Invalid numeric settings (non-numeric values, or 0 / negative / fractional values for the limit-style settings) are ignored in favor of the default (an invalid env value falls back to the config value) with an `ignored invalid setting ...` warning in the startup log. The effective values are printed in the startup `limits:` / `rate limit:` summary lines.
+Invalid numeric settings (non-numeric values, or 0 / negative / fractional values for the limit-style settings, `SLACK_TIMEOUT_MS` / `slackTimeoutMs`, and `GITHUB_TIMEOUT_MS` / `githubTimeoutMs`) are ignored in favor of the default (an invalid env value falls back to the config value) with an `ignored invalid setting ...` warning in the startup log. Timeouts accept only positive integers and default to `5000` ms for Slack and `8000` ms for GitHub. The effective values are printed in the startup `limits:` / `rate limit:` / `timeouts:` summary lines.
+
+`RECEIVER_TRUST_PROXY` / `trustProxy`, `STATUS_LOOKUP` / `statusLookup`, `SLACK_IMAGE_MODE` / `slackImageMode`, and `GITHUB_REPO` / `githubRepo` also warn on invalid values and use a valid value in env → config → default order. Empty or whitespace-only values count as unset, so an empty env value does not override the config. Booleans accept `1` / `true` / `yes` / `on` and `0` / `false` / `no` / `off` (ignoring case and surrounding whitespace), as well as JSON `true` / `false` in config. Image modes are `auto` / `link` / `block` / `upload` / `off`; repositories use the `owner/name` form. The respective defaults are `false`, enabled only without `RECEIVER_TOKEN`, `auto`, and empty (GitHub Issue creation disabled).
 
 Environment variables override the config file. For example, to try Slack forwarding temporarily:
 

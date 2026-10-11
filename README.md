@@ -280,7 +280,9 @@ cp server/receiver.config.example.json server/receiver.config.json
 
 別の場所の設定ファイルを使う場合は `PATCHLOOP_RECEIVER_CONFIG=/path/to/receiver.config.json node server/receive.js` で指定できます。
 
-数値系の設定に不正な値（非数値や、上限系での 0・負・小数）を与えた場合は、その値を無視してデフォルト（env が不正なら config の値）に戻し、起動ログに `ignored invalid setting ...` の警告を出します。実効値は起動時の `limits:` / `rate limit:` サマリ行で確認できます。
+数値系の設定に不正な値（非数値や、上限系・`SLACK_TIMEOUT_MS` / `slackTimeoutMs`・`GITHUB_TIMEOUT_MS` / `githubTimeoutMs` での 0・負・小数）を与えた場合は、その値を無視してデフォルト（env が不正なら config の値）に戻し、起動ログに `ignored invalid setting ...` の警告を出します。timeout は正の整数だけを受け付け、デフォルトは Slack が `5000` ms、GitHub が `8000` ms です。実効値は起動時の `limits:` / `rate limit:` / `timeouts:` サマリ行で確認できます。
+
+`RECEIVER_TRUST_PROXY` / `trustProxy`、`STATUS_LOOKUP` / `statusLookup`、`SLACK_IMAGE_MODE` / `slackImageMode`、`GITHUB_REPO` / `githubRepo` も、不正な値を同じ警告で知らせ、env → config → デフォルトの順に有効な値を使います。空文字・空白だけの値は未設定として扱い、空の env は config を上書きしません。真偽値は `1` / `true` / `yes` / `on` と `0` / `false` / `no` / `off`（大文字小文字・前後の空白は無視）、config では JSON の `true` / `false` も受け付けます。画像モードは `auto` / `link` / `block` / `upload` / `off`、repository は `owner/name` の形です。デフォルトは順に `false`、`RECEIVER_TOKEN` が無いときだけ有効、`auto`、空（GitHub Issue 作成は無効）です。
 
 環境変数を指定した場合は設定ファイルより優先されます。たとえば一時的に Slack 転送を試す場合:
 

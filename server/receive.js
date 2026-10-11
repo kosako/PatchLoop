@@ -53,21 +53,21 @@ const SCREENSHOT_DISK_MAX_BYTES = positiveIntSetting(process.env.SCREENSHOT_DISK
 // Behind a reverse proxy the socket address is the proxy's; trust X-Forwarded-For
 // only when explicitly enabled, so a direct client can't spoof its rate-limit
 // identity by sending the header.
-const TRUST_PROXY = boolSetting(process.env.RECEIVER_TRUST_PROXY ?? config.trustProxy);
+const TRUST_PROXY = boolSetting(process.env.RECEIVER_TRUST_PROXY, boolSetting(config.trustProxy, false, "trustProxy (config)"), "RECEIVER_TRUST_PROXY (env)");
 const WIDGET_DIST_PATH = path.join(__dirname, "..", "dist", "patchloop-widget.js");
 const STATIC_DIR = path.join(__dirname, "static");
 const PUBLIC_BASE_URL = trimTrailingSlash(process.env.PUBLIC_BASE_URL || config.publicBaseUrl || `http://${HOST}:${PORT}`);
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || config.slackWebhookUrl || "";
-const SLACK_TIMEOUT_MS = numberSetting(process.env.SLACK_TIMEOUT_MS, numberSetting(config.slackTimeoutMs, 5000, "slackTimeoutMs (config)"), "SLACK_TIMEOUT_MS (env)");
-const SLACK_IMAGE_MODE = normalizeSlackImageMode(process.env.SLACK_IMAGE_MODE || config.slackImageMode || "auto");
+const SLACK_TIMEOUT_MS = positiveIntSetting(process.env.SLACK_TIMEOUT_MS, positiveIntSetting(config.slackTimeoutMs, 5000, "slackTimeoutMs (config)"), "SLACK_TIMEOUT_MS (env)");
+const SLACK_IMAGE_MODE = normalizeSlackImageMode(process.env.SLACK_IMAGE_MODE, normalizeSlackImageMode(config.slackImageMode, "auto", "slackImageMode (config)"), "SLACK_IMAGE_MODE (env)");
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || config.slackBotToken || "";
 const SLACK_UPLOAD_CHANNEL_ID = process.env.SLACK_UPLOAD_CHANNEL_ID || config.slackUploadChannelId || "";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || config.githubToken || "";
-const GITHUB_REPO = normalizeGitHubRepo(process.env.GITHUB_REPO || config.githubRepo || "");
+const GITHUB_REPO = normalizeGitHubRepo(process.env.GITHUB_REPO, normalizeGitHubRepo(config.githubRepo, "", "githubRepo (config)"), "GITHUB_REPO (env)");
 const GITHUB_LABELS = normalizeStringList(process.env.GITHUB_LABELS || config.githubLabels);
 const GITHUB_ASSIGNEES = normalizeStringList(process.env.GITHUB_ASSIGNEES || config.githubAssignees);
 const GITHUB_API_BASE = trimTrailingSlash(process.env.GITHUB_API_BASE || config.githubApiBase || "https://api.github.com");
-const GITHUB_TIMEOUT_MS = numberSetting(process.env.GITHUB_TIMEOUT_MS, numberSetting(config.githubTimeoutMs, 8000, "githubTimeoutMs (config)"), "GITHUB_TIMEOUT_MS (env)");
+const GITHUB_TIMEOUT_MS = positiveIntSetting(process.env.GITHUB_TIMEOUT_MS, positiveIntSetting(config.githubTimeoutMs, 8000, "githubTimeoutMs (config)"), "GITHUB_TIMEOUT_MS (env)");
 const GITHUB_CONFIGURED = Boolean(GITHUB_TOKEN && GITHUB_REPO);
 // Optional shared token guarding the management (import, status, delete,
 // github-issue) and read (inbox, feedback.json, screenshots) endpoints. Unset =
@@ -81,10 +81,11 @@ const RECEIVER_TOKEN = process.env.RECEIVER_TOKEN || config.receiverToken || "";
 // RECEIVER_TOKEN. STATUS_LOOKUP / statusLookup overrides that: true opens it
 // on a receiver that keeps a token for its inbox but is only reached locally
 // (stage 1), false closes it everywhere.
-const STATUS_LOOKUP_SETTING = process.env.STATUS_LOOKUP || config.statusLookup;
-const STATUS_LOOKUP_ENABLED = STATUS_LOOKUP_SETTING === undefined || STATUS_LOOKUP_SETTING === null
-  ? !RECEIVER_TOKEN
-  : boolSetting(STATUS_LOOKUP_SETTING);
+// Keep null for the automatic default so the startup log can explain why the
+// route is closed; warnings still show the boolean actually used.
+const STATUS_LOOKUP_CONFIG = boolSetting(config.statusLookup, null, "statusLookup (config)", !RECEIVER_TOKEN);
+const STATUS_LOOKUP_SETTING = boolSetting(process.env.STATUS_LOOKUP, STATUS_LOOKUP_CONFIG, "STATUS_LOOKUP (env)", STATUS_LOOKUP_CONFIG ?? !RECEIVER_TOKEN);
+const STATUS_LOOKUP_ENABLED = STATUS_LOOKUP_SETTING ?? !RECEIVER_TOKEN;
 // CORS allowlist for the widget ingest route (POST /feedback). Cross-origin
 // JSON POSTs preflight in browsers; the ingest handler also rejects a supplied
 // origin outside the list. Unset keeps the historical open default
@@ -476,6 +477,7 @@ async function start() {
   }
   console.log(`[PatchLoop receiver] limits: body=${MAX_BODY_BYTES}B screenshot=${SCREENSHOT_MAX_BYTES}B disk=${SCREENSHOT_DISK_MAX_BYTES}B count=${MAX_FEEDBACK_COUNT} importItems=${MAX_IMPORT_ITEMS} fieldLength=${MAX_FIELD_LENGTH} arrayLength=${MAX_ARRAY_LENGTH} objectDepth=${MAX_OBJECT_DEPTH}`);
   console.log(`[PatchLoop receiver] rate limit: ${RATE_LIMIT_MAX} req / ${RATE_LIMIT_WINDOW_MS}ms per client (max ${RATE_LIMIT_MAX_CLIENTS} clients, trustProxy=${TRUST_PROXY})`);
+  console.log(`[PatchLoop receiver] timeouts: Slack=${SLACK_TIMEOUT_MS}ms GitHub=${GITHUB_TIMEOUT_MS}ms`);
   console.log(`[PatchLoop receiver] Slack webhook: ${SLACK_WEBHOOK_URL ? "enabled" : "disabled"}`);
   console.log(`[PatchLoop receiver] Slack image mode: ${SLACK_IMAGE_MODE}`);
   console.log(`[PatchLoop receiver] Slack file upload: ${SLACK_BOT_TOKEN && SLACK_UPLOAD_CHANNEL_ID ? "enabled" : "disabled"}`);
@@ -557,10 +559,14 @@ function positiveIntSetting(value, fallback, label) {
   return number;
 }
 
-function boolSetting(value) {
-  if (value === true) return true;
-  if (value === undefined || value === null) return false;
-  return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
+function boolSetting(value, fallback, label, warningFallback = fallback) {
+  if (value === undefined || value === null || String(value).trim() === "") return fallback;
+  if (typeof value === "boolean") return value;
+  const setting = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(setting)) return true;
+  if (["0", "false", "no", "off"].includes(setting)) return false;
+  warnIgnoredSetting(label, value, warningFallback);
+  return fallback;
 }
 
 function loadConfig(configPath) {
@@ -587,15 +593,20 @@ function trimTrailingSlash(value) {
   return String(value || "").replace(/\/+$/, "");
 }
 
-function normalizeSlackImageMode(value) {
-  const mode = String(value || "").trim().toLowerCase();
+function normalizeSlackImageMode(value, fallback, label) {
+  if (value === undefined || value === null || String(value).trim() === "") return fallback;
+  const mode = String(value).trim().toLowerCase();
   if (["auto", "link", "block", "upload", "off"].includes(mode)) return mode;
-  return "auto";
+  warnIgnoredSetting(label, value, fallback);
+  return fallback;
 }
 
-function normalizeGitHubRepo(value) {
-  const repo = String(value || "").trim();
-  return /^[\w.-]+\/[\w.-]+$/.test(repo) ? repo : "";
+function normalizeGitHubRepo(value, fallback, label) {
+  if (value === undefined || value === null || String(value).trim() === "") return fallback;
+  const repo = String(value).trim();
+  if (/^[\w.-]+\/[\w.-]+$/.test(repo)) return repo;
+  warnIgnoredSetting(label, value, fallback);
+  return fallback;
 }
 
 function normalizeStringList(value) {
