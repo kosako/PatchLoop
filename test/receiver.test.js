@@ -2173,6 +2173,190 @@ test("invalid settings warn at startup and the effective values are logged", asy
   assert.match(receiver.logs, /rate limit: 120 req \/ 60000ms per client/);
 });
 
+test("timeouts reject invalid env and config values with startup warnings (#160)", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-timeout-config-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  for (const invalid of ["0", "-1", "1.5", "abc"]) {
+    for (const source of ["env", "config", "env with config"]) {
+      await t.test(`${source}: ${invalid}`, async (t) => {
+        const configPath = path.join(configDir, "receiver.config.json");
+        const config = source === "config"
+          ? { slackTimeoutMs: invalid, githubTimeoutMs: invalid }
+          : source === "env with config" ? { slackTimeoutMs: 1234, githubTimeoutMs: 2345 } : {};
+        await fs.writeFile(configPath, JSON.stringify(config));
+        const receiver = await startReceiver(t, {
+          PATCHLOOP_RECEIVER_CONFIG: configPath,
+          SLACK_TIMEOUT_MS: source === "config" ? "" : invalid,
+          GITHUB_TIMEOUT_MS: source === "config" ? "" : invalid
+        });
+        const slack = source === "env with config" ? 1234 : 5000;
+        const github = source === "env with config" ? 2345 : 8000;
+        const slackLabel = source === "config" ? "slackTimeoutMs (config)" : "SLACK_TIMEOUT_MS (env)";
+        const githubLabel = source === "config" ? "githubTimeoutMs (config)" : "GITHUB_TIMEOUT_MS (env)";
+        assert.ok(receiver.logs.includes(`ignored invalid setting ${slackLabel}: "${invalid}" — using ${slack}`));
+        assert.ok(receiver.logs.includes(`ignored invalid setting ${githubLabel}: "${invalid}" — using ${github}`));
+        assert.ok(receiver.logs.includes(`timeouts: Slack=${slack}ms GitHub=${github}ms`));
+      });
+    }
+  }
+  for (const env of ["", " \t ", "3456"]) {
+    await t.test(`valid config and env ${JSON.stringify(env)}`, async (t) => {
+      const configPath = path.join(configDir, "receiver.config.json");
+      await fs.writeFile(configPath, JSON.stringify({ slackTimeoutMs: 1234, githubTimeoutMs: 2345 }));
+      const receiver = await startReceiver(t, {
+        PATCHLOOP_RECEIVER_CONFIG: configPath, SLACK_TIMEOUT_MS: env, GITHUB_TIMEOUT_MS: env
+      });
+      assert.ok(receiver.logs.includes(env.trim() ? "timeouts: Slack=3456ms GitHub=3456ms" : "timeouts: Slack=1234ms GitHub=2345ms"));
+      assert.doesNotMatch(receiver.logs, /ignored invalid setting/);
+    });
+  }
+});
+
+test("non-numeric settings warn and fall back from env to config to defaults (#160)", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-setting-config-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  const invalidConfig = { trustProxy: "maybe", statusLookup: "maybe", slackImageMode: "inline", githubRepo: "owner" };
+  const invalidEnv = { RECEIVER_TRUST_PROXY: "maybe", STATUS_LOOKUP: "maybe", SLACK_IMAGE_MODE: "inline", GITHUB_REPO: "owner" };
+  const settingLabels = [
+    ["RECEIVER_TRUST_PROXY", "trustProxy", "maybe"],
+    ["STATUS_LOOKUP", "statusLookup", "maybe"],
+    ["SLACK_IMAGE_MODE", "slackImageMode", "inline"],
+    ["GITHUB_REPO", "githubRepo", "owner"]
+  ];
+  for (const token of ["", "test-token"]) {
+    for (const source of ["env", "config", "both"]) {
+      await t.test(`invalid ${source}, token ${token ? "set" : "unset"}`, async (t) => {
+        const configPath = path.join(configDir, "receiver.config.json");
+        await fs.writeFile(configPath, JSON.stringify(source === "env" ? {} : invalidConfig));
+        const receiver = await startReceiver(t, {
+          PATCHLOOP_RECEIVER_CONFIG: configPath,
+          RECEIVER_TOKEN: token, GITHUB_TOKEN: "test-token", RECEIVER_TRUST_PROXY: "", SLACK_IMAGE_MODE: "",
+          ...(source === "config" ? {} : invalidEnv)
+        });
+        const fallbacks = [false, !token, "auto", ""];
+        for (const [index, [envLabel, configLabel, invalid]] of settingLabels.entries()) {
+          if (source !== "env") {
+            assert.ok(receiver.logs.includes(`ignored invalid setting ${configLabel} (config): "${invalid}" — using ${fallbacks[index]}`));
+          }
+          if (source !== "config") {
+            assert.ok(receiver.logs.includes(`ignored invalid setting ${envLabel} (env): "${invalid}" — using ${fallbacks[index]}`));
+          }
+        }
+        assert.match(receiver.logs, /trustProxy=false/);
+        assert.match(receiver.logs, /Slack image mode: auto/);
+        assert.match(receiver.logs, /GitHub issues: disabled/);
+        assert.match(receiver.logs, token ? /status lookup: disabled \(RECEIVER_TOKEN is set\)/ : /status lookup: enabled/);
+        const response = await fetch(`${receiver.baseUrl}/feedback-status`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: ["pl_settings"] })
+        });
+        assert.equal(response.status, token ? 404 : 200);
+      });
+    }
+  }
+  for (const bool of [true, false]) {
+    for (const env of ["invalid", "", " \t "]) {
+      await t.test(`config boolean ${bool}, env ${JSON.stringify(env)}`, async (t) => {
+        const configPath = path.join(configDir, "receiver.config.json");
+        await fs.writeFile(configPath, JSON.stringify({
+          trustProxy: bool, statusLookup: bool, slackImageMode: "link", githubRepo: "config-owner/config.repo"
+        }));
+        const receiver = await startReceiver(t, {
+          PATCHLOOP_RECEIVER_CONFIG: configPath,
+          RECEIVER_TOKEN: bool ? "test-token" : "", GITHUB_TOKEN: "test-token",
+          RECEIVER_TRUST_PROXY: env, STATUS_LOOKUP: env, SLACK_IMAGE_MODE: env, GITHUB_REPO: env
+        });
+        assert.ok(receiver.logs.includes(`trustProxy=${bool}`));
+        assert.match(receiver.logs, /Slack image mode: link/);
+        assert.match(receiver.logs, /GitHub issues: enabled \(config-owner\/config.repo\)/);
+        const response = await fetch(`${receiver.baseUrl}/feedback-status`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: ["pl_settings"] })
+        });
+        assert.equal(response.status, bool ? 200 : 404);
+        if (env === "invalid") {
+          for (const [index, [envLabel]] of settingLabels.entries()) {
+            const fallback = [bool, bool, "link", "config-owner/config.repo"][index];
+            assert.ok(receiver.logs.includes(`ignored invalid setting ${envLabel} (env): "invalid" — using ${fallback}`));
+          }
+        } else {
+          assert.doesNotMatch(receiver.logs, /ignored invalid setting/);
+        }
+      });
+    }
+  }
+});
+
+test("valid boolean aliases, Slack image modes and GitHub repos override config (#160)", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-valid-setting-config-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  const modes = ["auto", "link", "block", "upload", "off"];
+  for (const [index, alias] of ["1", "true", "yes", "on", "0", "false", "no", "off"].entries()) {
+    await t.test(alias, async (t) => {
+      const enabled = index < 4;
+      const mode = modes[index % modes.length];
+      const configPath = path.join(configDir, "receiver.config.json");
+      await fs.writeFile(configPath, JSON.stringify({
+        trustProxy: !enabled, statusLookup: !enabled, slackImageMode: mode === "off" ? "auto" : "off", githubRepo: "config/repo"
+      }));
+      const receiver = await startReceiver(t, {
+        PATCHLOOP_RECEIVER_CONFIG: configPath, RECEIVER_TOKEN: "test-token", GITHUB_TOKEN: "test-token",
+        RECEIVER_TRUST_PROXY: ` ${alias.toUpperCase()} `, STATUS_LOOKUP: ` ${alias.toUpperCase()} `,
+        SLACK_IMAGE_MODE: ` ${mode.toUpperCase()} `, GITHUB_REPO: " Owner-1/Repo.name_2 "
+      });
+      assert.ok(receiver.logs.includes(`trustProxy=${enabled}`));
+      assert.ok(receiver.logs.includes(`Slack image mode: ${mode}`));
+      assert.match(receiver.logs, /GitHub issues: enabled \(Owner-1\/Repo.name_2\)/);
+      const response = await fetch(`${receiver.baseUrl}/feedback-status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: ["pl_settings"] })
+      });
+      assert.equal(response.status, enabled ? 200 : 404);
+      assert.doesNotMatch(receiver.logs, /ignored invalid setting/);
+    });
+  }
+});
+
+test("blank settings use defaults and blank trustProxy env preserves proxy client identities (#160)", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-blank-setting-config-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  for (const blank of ["", " \t "]) {
+    await t.test(`blank config and env ${JSON.stringify(blank)}`, async (t) => {
+      const configPath = path.join(configDir, "receiver.config.json");
+      await fs.writeFile(configPath, JSON.stringify({
+        trustProxy: blank, statusLookup: blank, slackImageMode: blank, githubRepo: blank,
+        slackTimeoutMs: blank, githubTimeoutMs: blank
+      }));
+      const receiver = await startReceiver(t, {
+        PATCHLOOP_RECEIVER_CONFIG: configPath, RECEIVER_TOKEN: "", GITHUB_TOKEN: "test-token",
+        RECEIVER_TRUST_PROXY: blank, STATUS_LOOKUP: blank, SLACK_IMAGE_MODE: blank, GITHUB_REPO: blank,
+        SLACK_TIMEOUT_MS: blank, GITHUB_TIMEOUT_MS: blank
+      });
+      assert.match(receiver.logs, /trustProxy=false/);
+      assert.match(receiver.logs, /status lookup: enabled/);
+      assert.match(receiver.logs, /Slack image mode: auto/);
+      assert.match(receiver.logs, /GitHub issues: disabled/);
+      assert.match(receiver.logs, /timeouts: Slack=5000ms GitHub=8000ms/);
+      assert.doesNotMatch(receiver.logs, /ignored invalid setting/);
+    });
+    await t.test(`trustProxy config true, env ${JSON.stringify(blank)}`, async (t) => {
+      const configPath = path.join(configDir, "receiver.config.json");
+      await fs.writeFile(configPath, JSON.stringify({ trustProxy: true }));
+      const receiver = await startReceiver(t, {
+        PATCHLOOP_RECEIVER_CONFIG: configPath, RECEIVER_TOKEN: "", RECEIVER_TRUST_PROXY: blank, RATE_LIMIT_MAX: "1"
+      });
+      const get = (ip) => fetch(`${receiver.baseUrl}/feedback.json`, { headers: { "X-Forwarded-For": ip } });
+      assert.equal((await get("10.0.0.1")).status, 200);
+      assert.equal((await get("10.0.0.1")).status, 429);
+      assert.equal((await get("10.0.0.2")).status, 200);
+      assert.doesNotMatch(receiver.logs, /ignored invalid setting/);
+    });
+  }
+});
+
 async function startReceiver(t, extraEnv = {}) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
   const port = await getFreePort();
