@@ -7,8 +7,7 @@ export function captureScreenshot(target) {
   if (!state.options.captureScreenshot) return null;
 
   try {
-    const width = Math.max(document.documentElement.clientWidth, window.innerWidth, 1);
-    const height = Math.max(document.documentElement.clientHeight, window.innerHeight, 1);
+    const { width, height } = viewportSize();
     const documentWidth = Math.max(document.documentElement.scrollWidth, width);
     const documentHeight = Math.max(document.documentElement.scrollHeight, height);
     const overlay = screenshotOverlayFor(target);
@@ -104,6 +103,21 @@ function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scro
 ${uncapturedMarkup}
 ${overlayMarkup}
 </svg>`;
+}
+
+// The elements the image will not show that touch the selected spot (#148), for
+// the comment form to point the reviewer at before anything is sent. Nothing
+// when the detection fails.
+export function uncapturedTouching(target) {
+  const record = uncapturedFor(viewportSize(), screenshotOverlayFor(target));
+  return record.status === "detected" ? record.regions.filter((region) => region.relation !== "none") : [];
+}
+
+function viewportSize() {
+  return {
+    width: Math.max(document.documentElement.clientWidth, window.innerWidth, 1),
+    height: Math.max(document.documentElement.clientHeight, window.innerHeight, 1)
+  };
 }
 
 // What the image cannot show is recorded next to it (#148). Detecting it must
