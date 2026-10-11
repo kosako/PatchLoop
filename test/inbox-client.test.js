@@ -155,6 +155,43 @@ test("import reports missing files, duplicate results, and failed requests", asy
   assert.equal(failed.get("[data-import-status]").dataset.state, "error");
 });
 
+for (const imported of [0, 1]) {
+  test(`import explains screenshot capacity failures with ${imported} successful saves (#157)`, async () => {
+    const ui = inboxHarness([], { replies: [{ ok: imported > 0, status: imported ? 201 : 507, body: {
+      imported, duplicates: ["existing"], failed: [{ id: "rejected", status: 507, error: "Screenshot storage limit reached" }]
+    } }] });
+    ui.get("[data-import-file]").files = [{ text: async () => "{}" }];
+    await ui.submit(ui.get("[data-import-form]"));
+    const message = ui.get("[data-import-status]");
+    assert.match(message.textContent, new RegExp(`${imported} 件を追加.*重複 1 件.*失敗 1 件`));
+    assert.match(message.textContent, /受信側の保存容量の上限に達しました/);
+    assert.match(message.textContent, /receiver の設定で上限を変更できます/);
+    assert.doesNotMatch(message.textContent, /ファイルを確認して/);
+    assert.equal(message.dataset.state, "error");
+    assert.equal(ui.get("[data-import-reload]").hidden, imported === 0);
+  });
+}
+
+for (const mixed of [false, true]) {
+  test(`import explains server save errors${mixed ? " mixed with capacity failures" : ""} as text (#157)`, async () => {
+    const first = mixed
+      ? { id: "capacity", status: 507, error: "Screenshot storage limit reached" }
+      : { id: "rejected", status: 500, error: "<img src=x onerror=alert(1)> database error" };
+    const failed = [first, { id: "second", status: 500, error: "second database error" }];
+    const ui = inboxHarness([], { replies: [{ ok: false, status: 500, body: {
+      imported: 0, duplicates: ["existing"], failed
+    } }] });
+    ui.get("[data-import-file]").files = [{ text: async () => "{}" }];
+    await ui.submit(ui.get("[data-import-form]"));
+    const message = ui.get("[data-import-status]");
+    assert.equal(message.textContent, `0 件を追加しました。重複 1 件はスキップしました。失敗 2 件。受信側で保存に失敗しました。${first.error}`);
+    assert.doesNotMatch(message.textContent, /ファイルを確認して/);
+    assertNoNode(message.querySelector("img"), "import error HTML");
+    assert.equal(message.dataset.state, "error");
+    assert.equal(ui.get("[data-import-reload]").hidden, true);
+  });
+}
+
 test("sidebar counts follow triage changes and reset restores search and status", async () => {
   const ui = inboxHarness([feedback("alpha"), feedback("beta", { status: "fixed" })]);
   const badge = (status) => ui.get("[data-status-count]", ui.get(`[data-status-nav="${status}"]`));

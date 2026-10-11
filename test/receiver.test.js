@@ -579,8 +579,8 @@ test("POST /import preserves response order, duplicate winners and screenshot cl
     assert.deepEqual(response.body.ids, ["pl_order_success_newest", "pl_order_success_oldest"]);
     assert.deepEqual(response.body.duplicates, ["pl_order_dup_first", "pl_order_dup_second", newest.id]);
     assert.deepEqual(response.body.failed, [
-      { id: "pl_order_fail_newest", error: "injected ordered import failure" },
-      { id: "pl_order_fail_oldest", error: "injected ordered import failure" }
+      { id: "pl_order_fail_newest", error: "injected ordered import failure", status: 500 },
+      { id: "pl_order_fail_oldest", error: "injected ordered import failure", status: 500 }
     ]);
     const stored = await readStoredFeedback(receiver.dbPath);
     assert.deepEqual(stored.slice(0, 2).map((item) => item.id), response.body.ids);
@@ -1354,6 +1354,84 @@ test("POST /import returns 507 when the batch would exceed the stored limit", as
   assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
 });
 
+for (const withDuplicate of [false, true]) {
+  test(`POST /import returns 507 when all saves hit the screenshot cap${withDuplicate ? " alongside duplicates" : ""} (#157)`, async (t) => {
+    const limit = Buffer.byteLength(testSvg()) - 1;
+    const receiver = await startReceiver(t, { SCREENSHOT_DISK_MAX_BYTES: String(limit) });
+    const duplicate = feedbackPayload("pl_import_cap_duplicate");
+    delete duplicate.screenshot;
+    if (withDuplicate) assert.equal((await postJson(`${receiver.baseUrl}/import`, duplicate)).status, 201);
+    const feedback = [feedbackPayload("pl_import_cap_first"), feedbackPayload("pl_import_cap_second")];
+    const response = await postJson(`${receiver.baseUrl}/import`, {
+      kind: "patchloop-feedback-bundle", version: 2,
+      feedback: withDuplicate ? [feedback[0], duplicate, feedback[1]] : feedback
+    });
+
+    assert.equal(response.status, 507);
+    assert.deepEqual(response.body, {
+      ok: false, ids: [], imported: 0,
+      duplicates: withDuplicate ? [duplicate.id] : [],
+      failed: feedback.map((item) => ({ id: item.id, error: `Screenshot storage limit reached (${limit} bytes)`, status: 507 })),
+      count: withDuplicate ? 1 : 0, source: "import"
+    });
+    assert.deepEqual((await readStoredFeedback(receiver.dbPath)).map((item) => item.id), withDuplicate ? [duplicate.id] : []);
+    assert.equal((await fs.readdir(receiver.screenshotDir).catch(() => [])).length, 0);
+  });
+}
+
+for (const withCapacityFailure of [false, true]) {
+  test(`POST /import returns 500 for database save failures alongside duplicates${withCapacityFailure ? " and capacity failures" : ""} (#157)`, async (t) => {
+    const limit = Buffer.byteLength(testSvg()) - 1;
+    const receiver = await startReceiver(t, { SCREENSHOT_DISK_MAX_BYTES: String(limit) });
+    const duplicate = feedbackPayload("pl_import_db_duplicate");
+    delete duplicate.screenshot;
+    assert.equal((await postJson(`${receiver.baseUrl}/import`, duplicate)).status, 201);
+    const rejected = feedbackPayload("pl_import_db_rejected");
+    delete rejected.screenshot;
+    const capacity = feedbackPayload("pl_import_db_capacity");
+    const db = new DatabaseSync(receiver.dbPath);
+    try {
+      db.exec("CREATE TRIGGER reject_import BEFORE INSERT ON feedback BEGIN SELECT RAISE(ABORT, 'injected import failure'); END");
+      const response = await postJson(`${receiver.baseUrl}/import`, {
+        kind: "patchloop-feedback-bundle", version: 2,
+        feedback: withCapacityFailure ? [capacity, duplicate, rejected] : [duplicate, rejected]
+      });
+
+      assert.equal(response.status, 500);
+      assert.deepEqual(response.body, {
+        ok: false, ids: [], imported: 0, duplicates: [duplicate.id],
+        failed: [
+          ...(withCapacityFailure ? [{ id: capacity.id, error: `Screenshot storage limit reached (${limit} bytes)`, status: 507 }] : []),
+          { id: rejected.id, error: "injected import failure", status: 500 }
+        ],
+        count: 1, source: "import"
+      });
+      assert.deepEqual((await readStoredFeedback(receiver.dbPath)).map((item) => item.id), [duplicate.id]);
+    } finally {
+      db.close();
+    }
+  });
+}
+
+test("POST /import keeps 201 when successful saves and capacity failures are mixed (#157)", async (t) => {
+  const limit = Buffer.byteLength(testSvg());
+  const receiver = await startReceiver(t, { SCREENSHOT_DISK_MAX_BYTES: String(limit) });
+  const rejected = { ...feedbackPayload("pl_import_partial_rejected"), createdAt: "2026-06-03T02:00:00.000Z" };
+  const saved = { ...feedbackPayload("pl_import_partial_saved"), createdAt: "2026-06-03T01:00:00.000Z" };
+  const response = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle", version: 2, feedback: [rejected, saved]
+  });
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(response.body, {
+    ok: true, id: saved.id, ids: [saved.id], imported: 1, duplicates: [],
+    failed: [{ id: rejected.id, error: `Screenshot storage limit reached (${limit} bytes)`, status: 507 }],
+    count: 1, source: "import"
+  });
+  assert.deepEqual((await readStoredFeedback(receiver.dbPath)).map((item) => item.id), [saved.id]);
+  assert.equal((await fs.readdir(receiver.screenshotDir)).length, 1);
+});
+
 test("screenshot disk cap returns 507 and frees bytes on delete", async (t) => {
   const svgBytes = Buffer.byteLength(testSvg());
   // Room for exactly one screenshot, so a second one trips the cap.
@@ -1745,13 +1823,13 @@ for (const failure of ["duplicate", "database"]) {
         db.exec("CREATE TRIGGER reject_import BEFORE INSERT ON feedback BEGIN SELECT RAISE(ABORT, 'injected import failure'); END");
       }
       const response = await postJson(`${receiver.baseUrl}/import`, rejected);
-      assert.equal(response.status, failure === "duplicate" ? 409 : 400);
+      assert.equal(response.status, failure === "duplicate" ? 409 : 500);
       assert.deepEqual(response.body, {
         ok: false,
         ids: [],
         imported: 0,
         duplicates: failure === "duplicate" ? [rejected.id] : [],
-        failed: failure === "duplicate" ? [] : [{ id: rejected.id, error: "injected import failure" }],
+        failed: failure === "duplicate" ? [] : [{ id: rejected.id, error: "injected import failure", status: 500 }],
         count: failure === "duplicate" ? 1 : 0,
         source: "import"
       });

@@ -54,10 +54,13 @@ async function inboxRequest(url, options) {
       const imported = result.imported || 0;
       const skipped = result.duplicates?.length || 0;
       const failed = result.failed?.length || 0;
+      const failureMessage = failed ? (result.failed.every((item) => item.status === 507)
+        ? "受信側の保存容量の上限に達しました。receiver の設定で上限を変更できます。"
+        : "受信側で保存に失敗しました。" + result.failed[0].error) : "";
       status.dataset.state = failed ? "error" : "success";
       status.textContent = imported + " 件を追加しました。"
         + (skipped ? "重複 " + skipped + " 件はスキップしました。" : "")
-        + (failed ? "失敗 " + failed + " 件。ファイルを確認して再試行してください。" : "")
+        + (failed ? "失敗 " + failed + " 件。" + failureMessage : "")
         + (imported ? "「受信箱を更新」で一覧に反映します。" : "");
       if (reload && imported) reload.hidden = false;
     } catch (error) {
