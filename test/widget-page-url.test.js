@@ -72,3 +72,12 @@ test("retrying a saved comment sends it under the current rule", async () => {
   assert.equal(w.requests.length, 2);
   assert.equal(JSON.parse(w.requests[1].body).page.url, "https://demo.example/flow");
 });
+
+test("a comment built before a re-init from onSubmit is sent under the new rule", async () => {
+  const w = widgetHarness();
+  w.window.location.href = PAGE;
+  w.init({ keepQueryParams: ["step", "token"], onSubmit: () => w.init({ keepQueryParams: ["step"] }) });
+  await w.submit();
+  assert.equal(w.requests.length, 1);
+  assert.equal(JSON.parse(w.requests[0].body).page.url, "https://demo.example/flow?step=2");
+});

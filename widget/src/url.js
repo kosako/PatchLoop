@@ -31,13 +31,17 @@ export function pageUrlForSharing(url, keepQueryParams) {
   }
   const keep = new Set(keepQueryParams);
   // Filter the raw `key=value` pairs instead of re-serializing them, so a kept
-  // value reaches the inbox exactly as the page had it.
+  // value reaches the inbox exactly as the page had it. The constructor drops
+  // one leading "?", so prefix one: a pair like `?step=x` decodes to the key
+  // `?step` the page itself sees, not to `step`.
   const kept = parsed.search.slice(1).split("&")
-    .filter((pair) => pair !== "" && keep.has(new URLSearchParams(pair).keys().next().value));
+    .filter((pair) => pair !== "" && keep.has(new URLSearchParams(`?${pair}`).keys().next().value));
   parsed.username = "";
   parsed.password = "";
   parsed.hash = "";
-  parsed.search = kept.join("&");
+  // The setter drops one leading "?" too; give it one so a kept `?step=x`
+  // keeps its key.
+  parsed.search = kept.length > 0 ? `?${kept.join("&")}` : "";
   return parsed.href;
 }
 
@@ -45,7 +49,7 @@ export function pageUrlForSharing(url, keepQueryParams) {
 // Anything else is a configuration mistake, so warn and keep less (never more)
 // than asked.
 export function normalizeKeepQueryParams(value) {
-  if (value === undefined || value === null) return [];
+  if (value === undefined) return [];
   if (!Array.isArray(value)) {
     console.warn("[PatchLoop] keepQueryParams must be an array of query keys; keeping no query", value);
     return [];

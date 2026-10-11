@@ -294,13 +294,17 @@ function pageUrlForSharing(url, keepQueryParams) {
   }
   const keep = new Set(keepQueryParams);
   // Filter the raw `key=value` pairs instead of re-serializing them, so a kept
-  // value reaches the inbox exactly as the page had it.
+  // value reaches the inbox exactly as the page had it. The constructor drops
+  // one leading "?", so prefix one: a pair like `?step=x` decodes to the key
+  // `?step` the page itself sees, not to `step`.
   const kept = parsed.search.slice(1).split("&")
-    .filter((pair) => pair !== "" && keep.has(new URLSearchParams(pair).keys().next().value));
+    .filter((pair) => pair !== "" && keep.has(new URLSearchParams(`?${pair}`).keys().next().value));
   parsed.username = "";
   parsed.password = "";
   parsed.hash = "";
-  parsed.search = kept.join("&");
+  // The setter drops one leading "?" too; give it one so a kept `?step=x`
+  // keeps its key.
+  parsed.search = kept.length > 0 ? `?${kept.join("&")}` : "";
   return parsed.href;
 }
 
@@ -308,7 +312,7 @@ function pageUrlForSharing(url, keepQueryParams) {
 // Anything else is a configuration mistake, so warn and keep less (never more)
 // than asked.
 function normalizeKeepQueryParams(value) {
-  if (value === undefined || value === null) return [];
+  if (value === undefined) return [];
   if (!Array.isArray(value)) {
     console.warn("[PatchLoop] keepQueryParams must be an array of query keys; keeping no query", value);
     return [];
@@ -1218,6 +1222,14 @@ function buildPayload(comment, reviewer, target, includeScreenshot = state.optio
   };
 }
 
+// Applies the current keepQueryParams to a comment's page.url in place (#163).
+// Called when saved comments are loaded and again whenever a comment leaves
+// (delivery, retry, export), so a comment built or saved under a wider rule,
+// including one built before a re-init from onSubmit, never leaves with it.
+function applyPageUrlRule(item) {
+  if (typeof item.page?.url === "string") item.page.url = pageUrlForSharing(item.page.url, state.options.keepQueryParams);
+}
+
 // Date.now() alone collides across tabs/reviewers within the same
 // millisecond, which also collides marker Map keys and orphans nodes.
 function generateFeedbackId() {
@@ -1227,7 +1239,7 @@ function generateFeedbackId() {
   return `pl_${Date.now()}_${random}`;
 }
 
-return { buildPayload };
+return { buildPayload, applyPageUrlRule };
 })();
 // --- widget/src/persistence.js ---
 const __pl_widget_src_persistence = (() => {
@@ -1392,9 +1404,9 @@ const { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarget
 const { pointAnchorOffsets, areaAnchorOffsets, geometryFromAnchor, viewportDiffersFromCreation } = __pl_widget_src_anchoring;
 const { selectorFor, textFor } = __pl_widget_src_selector;
 const { resolveSourceContext } = __pl_widget_src_source_context;
-const { normalizeKeepQueryParams, pageUrlForSharing } = __pl_widget_src_url;
+const { normalizeKeepQueryParams } = __pl_widget_src_url;
 const { DEFAULTS, state } = __pl_widget_src_state;
-const { buildPayload } = __pl_widget_src_payload;
+const { applyPageUrlRule, buildPayload } = __pl_widget_src_payload;
 const { uncapturedTouching } = __pl_widget_src_screenshot;
 const { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } = __pl_widget_src_inbox_status;
 const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback } = __pl_widget_src_persistence;
@@ -2118,10 +2130,8 @@ function restorePersistedFeedback() {
   state.feedback.forEach((item) => {
     if (item.delivery?.pending) item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
     // Comments saved before #163 or under a wider keepQueryParams carry more
-    // of the URL. Every send, retry, and export takes its comment from here or
-    // from buildPayload, so applying the current rule now (and saving it back
-    // below) keeps the dropped parts from ever leaving this browser.
-    if (typeof item.page?.url === "string") item.page.url = pageUrlForSharing(item.page.url, state.options.keepQueryParams);
+    // of the URL; trim them now and save them back below.
+    applyPageUrlRule(item);
   });
   restoreFeedbackMarkers();
   persistFeedbackList();
@@ -2137,6 +2147,7 @@ function shouldDeliverFeedback() {
 }
 
 async function deliverFeedback(payload) {
+  applyPageUrlRule(payload);
   if (state.options.deliveryMode === "slack-webhook") {
     await postSlackWebhook(payload);
     return;
@@ -2161,6 +2172,7 @@ function downloadUnsentFeedback() {
 function downloadFeedbackItems(items) {
   if (items.length === 0) return;
 
+  items.forEach(applyPageUrlRule);
   const exportedAt = new Date().toISOString();
   try {
     const bundle = buildFeedbackBundle(items.map((item) => {

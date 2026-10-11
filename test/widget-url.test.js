@@ -54,6 +54,9 @@ test("pageUrlForSharing keeps the listed query keys in order with their raw valu
   assert.equal(pageUrlForSharing(url, ["step", "evidence"]), "https://demo.example:8080/flow?step=2&evidence=a%20b+c&step=3&evidence");
   // Keys match after decoding, exactly and case-sensitively.
   assert.equal(pageUrlForSharing("https://demo.example/a?st%65p=1&Step=2&s+t=3", ["step", "s t"]), "https://demo.example/a?st%65p=1&s+t=3");
+  // A leading "?" is part of the key the page sees, so `?step` is not `step`.
+  assert.equal(pageUrlForSharing("https://demo.example/a?step=2&?step=SECRET", ["step"]), "https://demo.example/a?step=2");
+  assert.equal(pageUrlForSharing("https://demo.example/a?step=2&?step=x", ["?step"]), "https://demo.example/a??step=x");
 });
 
 test("pageUrlForSharing drops credentials and the fragment on any scheme", () => {
@@ -67,17 +70,17 @@ test("pageUrlForSharing returns empty string for unparseable or relative input",
   assert.equal(pageUrlForSharing(undefined, []), "");
 });
 
-test("normalizeKeepQueryParams accepts an array of keys and treats a missing value as none", (t) => {
+test("normalizeKeepQueryParams accepts an array of keys and treats an omitted value as none", (t) => {
   const warnings = t.mock.method(console, "warn", () => {});
   assert.deepEqual(normalizeKeepQueryParams(["step", "evidence"]), ["step", "evidence"]);
   assert.deepEqual(normalizeKeepQueryParams(undefined), []);
-  assert.deepEqual(normalizeKeepQueryParams(null), []);
   assert.equal(warnings.mock.callCount(), 0);
 });
 
 test("normalizeKeepQueryParams warns and keeps less on a malformed value", (t) => {
   const warnings = t.mock.method(console, "warn", () => {});
   assert.deepEqual(normalizeKeepQueryParams("step"), []);
+  assert.deepEqual(normalizeKeepQueryParams(null), []);
   assert.deepEqual(normalizeKeepQueryParams(["step", "", 3, null]), ["step"]);
-  assert.equal(warnings.mock.callCount(), 2);
+  assert.equal(warnings.mock.callCount(), 3);
 });

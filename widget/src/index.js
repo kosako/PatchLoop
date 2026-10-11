@@ -2,9 +2,9 @@ import { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarge
 import { pointAnchorOffsets, areaAnchorOffsets, geometryFromAnchor, viewportDiffersFromCreation } from "./anchoring.js";
 import { selectorFor, textFor } from "./selector.js";
 import { resolveSourceContext } from "./source-context.js";
-import { normalizeKeepQueryParams, pageUrlForSharing } from "./url.js";
+import { normalizeKeepQueryParams } from "./url.js";
 import { DEFAULTS, state } from "./state.js";
-import { buildPayload } from "./payload.js";
+import { applyPageUrlRule, buildPayload } from "./payload.js";
 import { uncapturedTouching } from "./screenshot.js";
 import { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } from "./inbox-status.js";
 import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback } from "./persistence.js";
@@ -728,10 +728,8 @@ function restorePersistedFeedback() {
   state.feedback.forEach((item) => {
     if (item.delivery?.pending) item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
     // Comments saved before #163 or under a wider keepQueryParams carry more
-    // of the URL. Every send, retry, and export takes its comment from here or
-    // from buildPayload, so applying the current rule now (and saving it back
-    // below) keeps the dropped parts from ever leaving this browser.
-    if (typeof item.page?.url === "string") item.page.url = pageUrlForSharing(item.page.url, state.options.keepQueryParams);
+    // of the URL; trim them now and save them back below.
+    applyPageUrlRule(item);
   });
   restoreFeedbackMarkers();
   persistFeedbackList();
@@ -747,6 +745,7 @@ function shouldDeliverFeedback() {
 }
 
 async function deliverFeedback(payload) {
+  applyPageUrlRule(payload);
   if (state.options.deliveryMode === "slack-webhook") {
     await postSlackWebhook(payload);
     return;
@@ -771,6 +770,7 @@ function downloadUnsentFeedback() {
 function downloadFeedbackItems(items) {
   if (items.length === 0) return;
 
+  items.forEach(applyPageUrlRule);
   const exportedAt = new Date().toISOString();
   try {
     const bundle = buildFeedbackBundle(items.map((item) => {
