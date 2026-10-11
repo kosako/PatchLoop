@@ -231,3 +231,23 @@ test("quota fallback compacts only the current scope's screenshot", (t) => {
   globalThis.window.location.href = "https://demo.example/app";
   assert.equal(loadPersistedFeedback()[0].id, "other-page");
 });
+
+test("the saved envelope keeps the page identity without the query or fragment (#163)", (t) => {
+  const entries = persistenceSession(t);
+  globalThis.window.location.href = "https://user:secret@demo.example/app?token=abc#access_token=zzz";
+  saveDraft("private");
+  assert.equal(entries.size, 1);
+  assert.equal(JSON.parse([...entries.values()][0]).pageUrl, "https://demo.example/app");
+  globalThis.window.location.href = "https://demo.example/app";
+  assert.equal(loadPersistedFeedback()[0].id, "private");
+});
+
+test("feedback on a file: page is restored", (t) => {
+  persistenceSession(t);
+  globalThis.window.location.href = "file:///work/demo.html?step=1#h";
+  saveDraft("local-file");
+  globalThis.window.location.href = "file:///work/demo.html";
+  assert.equal(loadPersistedFeedback()[0].id, "local-file");
+  globalThis.window.location.href = "file:///work/other.html";
+  assert.deepEqual(loadPersistedFeedback(), []);
+});

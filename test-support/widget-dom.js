@@ -256,7 +256,7 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [], stat
     localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) }
   };
   vm.runInNewContext(bundle, {
-    window, document, Blob, AbortController,
+    window, document, Blob, AbortController, URLSearchParams,
     URL: class extends URL {
       static createObjectURL(blob) { const url = `blob:test-${blobs.size}`; blobs.set(url, blob); return url; }
       static revokeObjectURL() {}

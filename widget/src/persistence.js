@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { normalizePageUrl, samePersistedPage } from "./url.js";
+import { normalizePageUrl, pageUrlForSharing, samePersistedPage } from "./url.js";
 
 export const FEEDBACK_STORAGE_VERSION = 1;
 
@@ -118,7 +118,8 @@ function feedbackStorageEnvelope(feedback, options = {}) {
     version: FEEDBACK_STORAGE_VERSION,
     projectId: state.options.projectId,
     demoId: state.options.demoId,
-    pageUrl: window.location.href,
+    // Only the page identity is compared on load, so no query is kept (#163).
+    pageUrl: pageUrlForSharing(window.location.href, []),
     savedAt: new Date().toISOString(),
     feedback: feedback.map((item) => serializeFeedbackForStorage(item, options)).filter(Boolean)
   };

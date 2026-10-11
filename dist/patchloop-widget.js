@@ -259,6 +259,80 @@ function cleanValue(value) {
 
 return { resolveSourceContext };
 })();
+// --- widget/src/url.js ---
+const __pl_widget_src_url = (() => {
+// Page-identity helpers for persisted feedback.
+//
+// Saved feedback is keyed by the page it was left on. Using the full
+// `location.href` (which includes the query string and hash) is too strict:
+// after anchor navigation (`#section`), tracking params (`?utm=...`), or a
+// normalizing redirect, the URL no longer matches byte-for-byte and the saved
+// feedback is silently dropped — and then overwritten. The envelope is already
+// scoped by projectId/demoId, so comparing only origin + pathname is enough.
+
+function normalizePageUrl(url, base) {
+  try {
+    const parsed = new URL(url, base);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch (_) {
+    return "";
+  }
+}
+
+// The page URL that leaves the browser (#163). `location.href` can carry a
+// share token, a magic link, or an OAuth fragment, and the payload is
+// forwarded to the inbox, Slack, GitHub, and exported files. Keep the page
+// itself (origin + path) plus only the query keys the embedding side listed;
+// the fragment and any credentials are always dropped. An unparseable or
+// relative url returns "", as nothing in it can be told safe to keep.
+function pageUrlForSharing(url, keepQueryParams) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (_) {
+    return "";
+  }
+  const keep = new Set(keepQueryParams);
+  // Filter the raw `key=value` pairs instead of re-serializing them, so a kept
+  // value reaches the inbox exactly as the page had it.
+  const kept = parsed.search.slice(1).split("&")
+    .filter((pair) => pair !== "" && keep.has(new URLSearchParams(pair).keys().next().value));
+  parsed.username = "";
+  parsed.password = "";
+  parsed.hash = "";
+  parsed.search = kept.join("&");
+  return parsed.href;
+}
+
+// The `keepQueryParams` init option: an array of query keys, matched exactly.
+// Anything else is a configuration mistake, so warn and keep less (never more)
+// than asked.
+function normalizeKeepQueryParams(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    console.warn("[PatchLoop] keepQueryParams must be an array of query keys; keeping no query", value);
+    return [];
+  }
+  const keys = value.filter((key) => typeof key === "string" && key !== "");
+  if (keys.length !== value.length) {
+    console.warn("[PatchLoop] keepQueryParams ignored entries that are not non-empty strings", value);
+  }
+  return keys;
+}
+
+function samePersistedPage(storedUrl, currentUrl) {
+  if (typeof storedUrl !== "string" || storedUrl === "") return false;
+  // The stored pageUrl is always an absolute URL (the save side writes the
+  // current page's URL). Parse both WITHOUT a base so a missing, empty,
+  // relative, or otherwise malformed stored value cannot be resolved against
+  // the current page and falsely match it.
+  const stored = normalizePageUrl(storedUrl, undefined);
+  const current = normalizePageUrl(currentUrl, undefined);
+  return stored !== "" && stored === current;
+}
+
+return { normalizePageUrl, pageUrlForSharing, normalizeKeepQueryParams, samePersistedPage };
+})();
 // --- shared/format.js ---
 const __pl_shared_format = (() => {
 // Formatting helpers shared by the widget (bundled into dist) and the
@@ -431,6 +505,10 @@ const DEFAULTS = {
   // injects real values at build/deploy time; <meta name="patchloop:..."> tags
   // fill any missing field.
   sourceContext: null,
+  // Query keys kept in page.url (#163), e.g. ["step"] for an app that keeps
+  // the screen state in `?step=`. Every other query and the fragment are
+  // dropped. Kept values are shared as-is, so list no key that carries a secret.
+  keepQueryParams: [],
   deliveryMode: "receiver",
   slackWebhookUrl: "",
   showDeliverySettings: false,
@@ -1090,6 +1168,7 @@ const { round } = __pl_widget_src_geometry;
 const { roundedAnchor } = __pl_widget_src_anchoring;
 const { state } = __pl_widget_src_state;
 const { captureScreenshot } = __pl_widget_src_screenshot;
+const { pageUrlForSharing } = __pl_widget_src_url;
 
 // Version of the feedback payload schema itself (distinct from the storage
 // envelope and export bundle versions). Bump when the payload shape changes
@@ -1107,7 +1186,7 @@ function buildPayload(comment, reviewer, target, includeScreenshot = state.optio
     comment,
     reviewer,
     page: {
-      url: window.location.href,
+      url: pageUrlForSharing(window.location.href, state.options.keepQueryParams),
       title: document.title
     },
     sourceContext: state.options.sourceContext,
@@ -1150,43 +1229,10 @@ function generateFeedbackId() {
 
 return { buildPayload };
 })();
-// --- widget/src/url.js ---
-const __pl_widget_src_url = (() => {
-// Page-identity helpers for persisted feedback.
-//
-// Saved feedback is keyed by the page it was left on. Using the full
-// `location.href` (which includes the query string and hash) is too strict:
-// after anchor navigation (`#section`), tracking params (`?utm=...`), or a
-// normalizing redirect, the URL no longer matches byte-for-byte and the saved
-// feedback is silently dropped — and then overwritten. The envelope is already
-// scoped by projectId/demoId, so comparing only origin + pathname is enough.
-
-function normalizePageUrl(url, base) {
-  try {
-    const parsed = new URL(url, base);
-    return `${parsed.origin}${parsed.pathname}`;
-  } catch (_) {
-    return "";
-  }
-}
-
-function samePersistedPage(storedUrl, currentUrl) {
-  if (typeof storedUrl !== "string" || storedUrl === "") return false;
-  // The stored pageUrl is always a full href (the save side writes
-  // window.location.href). Parse both WITHOUT a base so a missing, empty,
-  // relative, or otherwise malformed stored value cannot be resolved against
-  // the current page and falsely match it.
-  const stored = normalizePageUrl(storedUrl, undefined);
-  const current = normalizePageUrl(currentUrl, undefined);
-  return stored !== "" && stored === current;
-}
-
-return { normalizePageUrl, samePersistedPage };
-})();
 // --- widget/src/persistence.js ---
 const __pl_widget_src_persistence = (() => {
 const { state } = __pl_widget_src_state;
-const { normalizePageUrl, samePersistedPage } = __pl_widget_src_url;
+const { normalizePageUrl, pageUrlForSharing, samePersistedPage } = __pl_widget_src_url;
 
 const FEEDBACK_STORAGE_VERSION = 1;
 
@@ -1305,7 +1351,8 @@ function feedbackStorageEnvelope(feedback, options = {}) {
     version: FEEDBACK_STORAGE_VERSION,
     projectId: state.options.projectId,
     demoId: state.options.demoId,
-    pageUrl: window.location.href,
+    // Only the page identity is compared on load, so no query is kept (#163).
+    pageUrl: pageUrlForSharing(window.location.href, []),
     savedAt: new Date().toISOString(),
     feedback: feedback.map((item) => serializeFeedbackForStorage(item, options)).filter(Boolean)
   };
@@ -1345,6 +1392,7 @@ const { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarget
 const { pointAnchorOffsets, areaAnchorOffsets, geometryFromAnchor, viewportDiffersFromCreation } = __pl_widget_src_anchoring;
 const { selectorFor, textFor } = __pl_widget_src_selector;
 const { resolveSourceContext } = __pl_widget_src_source_context;
+const { normalizeKeepQueryParams, pageUrlForSharing } = __pl_widget_src_url;
 const { DEFAULTS, state } = __pl_widget_src_state;
 const { buildPayload } = __pl_widget_src_payload;
 const { uncapturedTouching } = __pl_widget_src_screenshot;
@@ -1387,6 +1435,7 @@ function init(options = {}) {
   // Resolved once here (option first, meta tags as fallback) so every payload
   // built later carries the same provenance without re-reading the DOM.
   state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
+  state.options.keepQueryParams = normalizeKeepQueryParams(state.options.keepQueryParams);
   state.displayMode = loadDisplayMode();
   resetInboxStatus();
   injectStyles();
@@ -2068,6 +2117,11 @@ function restorePersistedFeedback() {
   state.feedback = stored;
   state.feedback.forEach((item) => {
     if (item.delivery?.pending) item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
+    // Comments saved before #163 or under a wider keepQueryParams carry more
+    // of the URL. Every send, retry, and export takes its comment from here or
+    // from buildPayload, so applying the current rule now (and saving it back
+    // below) keeps the dropped parts from ever leaving this browser.
+    if (typeof item.page?.url === "string") item.page.url = pageUrlForSharing(item.page.url, state.options.keepQueryParams);
   });
   restoreFeedbackMarkers();
   persistFeedbackList();

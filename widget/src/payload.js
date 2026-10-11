@@ -2,6 +2,7 @@ import { round } from "./geometry.js";
 import { roundedAnchor } from "./anchoring.js";
 import { state } from "./state.js";
 import { captureScreenshot } from "./screenshot.js";
+import { pageUrlForSharing } from "./url.js";
 
 // Version of the feedback payload schema itself (distinct from the storage
 // envelope and export bundle versions). Bump when the payload shape changes
@@ -19,7 +20,7 @@ export function buildPayload(comment, reviewer, target, includeScreenshot = stat
     comment,
     reviewer,
     page: {
-      url: window.location.href,
+      url: pageUrlForSharing(window.location.href, state.options.keepQueryParams),
       title: document.title
     },
     sourceContext: state.options.sourceContext,

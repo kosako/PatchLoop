@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { normalizePageUrl, samePersistedPage } = require("../widget/src/url.js");
+const { normalizePageUrl, normalizeKeepQueryParams, pageUrlForSharing, samePersistedPage } = require("../widget/src/url.js");
 
 test("normalizePageUrl keeps origin and pathname, drops query and hash", () => {
   assert.equal(normalizePageUrl("https://demo.example/app?utm=x#sec"), "https://demo.example/app");
@@ -41,4 +41,43 @@ test("samePersistedPage rejects a missing, empty, or relative stored url", () =>
   assert.equal(samePersistedPage("", "https://demo.example/app"), false);
   assert.equal(samePersistedPage(undefined, "https://demo.example/app"), false);
   assert.equal(samePersistedPage("/app", "https://demo.example/app"), false);
+});
+
+test("pageUrlForSharing keeps only origin and path by default", () => {
+  assert.equal(pageUrlForSharing("https://demo.example/app?token=abc&utm=x#access_token=zzz", []), "https://demo.example/app");
+  assert.equal(pageUrlForSharing("https://demo.example", []), "https://demo.example/");
+  assert.equal(pageUrlForSharing("https://demo.example/app?#", []), "https://demo.example/app");
+});
+
+test("pageUrlForSharing keeps the listed query keys in order with their raw values", () => {
+  const url = "https://demo.example:8080/flow?step=2&token=abc&evidence=a%20b+c&step=3&evidence#state=x";
+  assert.equal(pageUrlForSharing(url, ["step", "evidence"]), "https://demo.example:8080/flow?step=2&evidence=a%20b+c&step=3&evidence");
+  // Keys match after decoding, exactly and case-sensitively.
+  assert.equal(pageUrlForSharing("https://demo.example/a?st%65p=1&Step=2&s+t=3", ["step", "s t"]), "https://demo.example/a?st%65p=1&s+t=3");
+});
+
+test("pageUrlForSharing drops credentials and the fragment on any scheme", () => {
+  assert.equal(pageUrlForSharing("https://user:secret@demo.example/app?step=1#h", ["step"]), "https://demo.example/app?step=1");
+  assert.equal(pageUrlForSharing("file:///work/demo.html?step=1&t=2#h", ["step"]), "file:///work/demo.html?step=1");
+});
+
+test("pageUrlForSharing returns empty string for unparseable or relative input", () => {
+  assert.equal(pageUrlForSharing("not a url", ["step"]), "");
+  assert.equal(pageUrlForSharing("/app?step=1", ["step"]), "");
+  assert.equal(pageUrlForSharing(undefined, []), "");
+});
+
+test("normalizeKeepQueryParams accepts an array of keys and treats a missing value as none", (t) => {
+  const warnings = t.mock.method(console, "warn", () => {});
+  assert.deepEqual(normalizeKeepQueryParams(["step", "evidence"]), ["step", "evidence"]);
+  assert.deepEqual(normalizeKeepQueryParams(undefined), []);
+  assert.deepEqual(normalizeKeepQueryParams(null), []);
+  assert.equal(warnings.mock.callCount(), 0);
+});
+
+test("normalizeKeepQueryParams warns and keeps less on a malformed value", (t) => {
+  const warnings = t.mock.method(console, "warn", () => {});
+  assert.deepEqual(normalizeKeepQueryParams("step"), []);
+  assert.deepEqual(normalizeKeepQueryParams(["step", "", 3, null]), ["step"]);
+  assert.equal(warnings.mock.callCount(), 2);
 });

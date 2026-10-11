@@ -2,6 +2,7 @@ import { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarge
 import { pointAnchorOffsets, areaAnchorOffsets, geometryFromAnchor, viewportDiffersFromCreation } from "./anchoring.js";
 import { selectorFor, textFor } from "./selector.js";
 import { resolveSourceContext } from "./source-context.js";
+import { normalizeKeepQueryParams, pageUrlForSharing } from "./url.js";
 import { DEFAULTS, state } from "./state.js";
 import { buildPayload } from "./payload.js";
 import { uncapturedTouching } from "./screenshot.js";
@@ -44,6 +45,7 @@ function init(options = {}) {
   // Resolved once here (option first, meta tags as fallback) so every payload
   // built later carries the same provenance without re-reading the DOM.
   state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
+  state.options.keepQueryParams = normalizeKeepQueryParams(state.options.keepQueryParams);
   state.displayMode = loadDisplayMode();
   resetInboxStatus();
   injectStyles();
@@ -725,6 +727,11 @@ function restorePersistedFeedback() {
   state.feedback = stored;
   state.feedback.forEach((item) => {
     if (item.delivery?.pending) item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
+    // Comments saved before #163 or under a wider keepQueryParams carry more
+    // of the URL. Every send, retry, and export takes its comment from here or
+    // from buildPayload, so applying the current rule now (and saving it back
+    // below) keeps the dropped parts from ever leaving this browser.
+    if (typeof item.page?.url === "string") item.page.url = pageUrlForSharing(item.page.url, state.options.keepQueryParams);
   });
   restoreFeedbackMarkers();
   persistFeedbackList();

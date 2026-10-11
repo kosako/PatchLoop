@@ -13,6 +13,10 @@ export const DEFAULTS = {
   // injects real values at build/deploy time; <meta name="patchloop:..."> tags
   // fill any missing field.
   sourceContext: null,
+  // Query keys kept in page.url (#163), e.g. ["step"] for an app that keeps
+  // the screen state in `?step=`. Every other query and the fragment are
+  // dropped. Kept values are shared as-is, so list no key that carries a secret.
+  keepQueryParams: [],
   deliveryMode: "receiver",
   slackWebhookUrl: "",
   showDeliverySettings: false,
