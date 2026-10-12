@@ -7,7 +7,7 @@ import { DEFAULTS, state } from "./state.js";
 import { buildPayload } from "./payload.js";
 import { uncapturedTouching } from "./screenshot.js";
 import { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } from "./inbox-status.js";
-import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback } from "./persistence.js";
+import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey } from "./persistence.js";
 import { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } from "../../shared/format.js";
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
@@ -47,6 +47,8 @@ function init(options = {}) {
   state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
   state.options.keepQueryParams = normalizeKeepQueryParams(state.options.keepQueryParams);
   state.displayMode = loadDisplayMode();
+  // Before anything renders: the panel counts the other pages against it.
+  bindFeedbackScope();
   state.otherPages = null;
   resetInboxStatus();
   injectStyles();
@@ -74,6 +76,7 @@ function destroy() {
   window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   window.removeEventListener("storage", handleStorageChange);
+  window.clearTimeout(state.otherPagesTimer);
   window.clearTimeout(state.resizeTimer);
   resetInboxStatus();
   state.approximateIds.clear();
@@ -883,9 +886,11 @@ function otherPagesSummary() {
 }
 
 function handleStorageChange(event) {
-  if (event.key !== null && !String(event.key).startsWith(`${state.options.feedbackStorageKey}:`)) return;
+  if (!isDemoFeedbackKey(event.key)) return;
   state.otherPages = null;
-  updateDownloadAllButton();
+  // An export in another tab writes one key per page: count once after them.
+  window.clearTimeout(state.otherPagesTimer);
+  state.otherPagesTimer = window.setTimeout(updateDownloadAllButton, 100);
 }
 
 async function postSlackWebhook(payload) {

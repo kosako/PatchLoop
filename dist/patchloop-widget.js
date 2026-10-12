@@ -564,7 +564,11 @@ const state = {
   uncapturedHint: "",
   // { total, unexported } of the comments saved by the other pages of the demo
   // (#197); null until counted again.
-  otherPages: null
+  otherPages: null,
+  otherPagesTimer: null,
+  // { key, pageUrl } of the page whose saved list is in memory (#197), fixed by
+  // init; see bindFeedbackScope.
+  feedbackScope: null
 };
 
 return { DEFAULTS, state };
@@ -1301,7 +1305,7 @@ function loadPersistedFeedback() {
   if (!state.options.feedbackStorageKey) return [];
 
   try {
-    const storageKey = scopedFeedbackStorageKey();
+    const storageKey = feedbackScope().key;
     const scoped = window.localStorage.getItem(storageKey);
     const raw = scoped ?? window.localStorage.getItem(state.options.feedbackStorageKey);
     if (!raw) return [];
@@ -1361,7 +1365,7 @@ function persistFeedbackList() {
   if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return;
 
   const envelope = feedbackStorageEnvelope(state.feedback);
-  const storageKey = scopedFeedbackStorageKey();
+  const storageKey = feedbackScope().key;
   try {
     window.localStorage.setItem(storageKey, JSON.stringify(envelope));
   } catch (error) {
@@ -1379,7 +1383,7 @@ function clearPersistedFeedback() {
   if (!state.options.feedbackStorageKey) return;
 
   try {
-    window.localStorage.removeItem(scopedFeedbackStorageKey());
+    window.localStorage.removeItem(feedbackScope().key);
     const legacy = window.localStorage.getItem(state.options.feedbackStorageKey);
     if (legacy && isMatchingFeedbackEnvelope(JSON.parse(legacy))) {
       window.localStorage.removeItem(state.options.feedbackStorageKey);
@@ -1389,11 +1393,27 @@ function clearPersistedFeedback() {
   }
 }
 
-function scopedFeedbackStorageKey() {
+// The page whose saved list is in memory (#197). init fixes it as it loads
+// the list, so a single-page app that changes the URL without re-initializing
+// keeps saving that list under its own page instead of over another page's,
+// and an export still tells it apart from the other pages.
+function bindFeedbackScope() {
+  state.feedbackScope = currentFeedbackScope();
+}
+
+function feedbackScope() {
+  return state.feedbackScope || currentFeedbackScope();
+}
+
+function currentFeedbackScope() {
+  return { key: scopedFeedbackStorageKey(window.location.href), pageUrl: pageUrlForSharing(window.location.href, []) };
+}
+
+function scopedFeedbackStorageKey(pageUrl) {
   return `${state.options.feedbackStorageKey}:${JSON.stringify([
     state.options.projectId,
     state.options.demoId,
-    normalizePageUrl(window.location.href, undefined)
+    normalizePageUrl(pageUrl, undefined)
   ])}`;
 }
 
@@ -1403,7 +1423,7 @@ function feedbackStorageEnvelope(feedback, options = {}) {
     projectId: state.options.projectId,
     demoId: state.options.demoId,
     // Only the page identity is compared on load, so no query is kept (#163).
-    pageUrl: pageUrlForSharing(window.location.href, []),
+    pageUrl: feedbackScope().pageUrl,
     savedAt: new Date().toISOString(),
     feedback: feedback.map((item) => serializeFeedbackForStorage(item, options)).filter(Boolean)
   };
@@ -1429,7 +1449,7 @@ function normalizePersistedFeedback(item) {
 }
 
 function isMatchingFeedbackEnvelope(value) {
-  return isDemoFeedbackEnvelope(value) && samePersistedPage(value.pageUrl, window.location.href);
+  return isDemoFeedbackEnvelope(value) && samePersistedPage(value.pageUrl, feedbackScope().pageUrl);
 }
 
 // An envelope saved by any page of the current project / demo.
@@ -1445,11 +1465,10 @@ function isDemoFeedbackEnvelope(value) {
 // (#197), so an export can take them along: [{ key, envelope, feedback }],
 // where feedback holds the envelope's own valid items. URLs are trimmed to the
 // current rule (#163) in memory; saveOtherPageFeedback writes them back.
-// The legacy single key is left out: it is migrated when its page is opened.
 function loadOtherPagesFeedback() {
   if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return [];
   const prefix = `${state.options.feedbackStorageKey}:`;
-  const ownKey = scopedFeedbackStorageKey();
+  const ownKey = feedbackScope().key;
   let keys;
   try {
     const storage = window.localStorage;
@@ -1458,18 +1477,39 @@ function loadOtherPagesFeedback() {
     console.warn("[PatchLoop] saved feedback of other pages unavailable", error);
     return [];
   }
-  return keys.flatMap((key) => {
+  const scoped = keys.flatMap((key) => {
     if (typeof key !== "string" || !key.startsWith(prefix) || key === ownKey || !isDemoScope(key.slice(prefix.length))) return [];
-    try {
-      const envelope = JSON.parse(window.localStorage.getItem(key));
-      if (!isDemoFeedbackEnvelope(envelope)) return [];
-      trimEnvelopeUrls(envelope);
-      return [{ key, envelope, feedback: envelope.feedback.map(normalizePersistedFeedback).filter(Boolean) }];
-    } catch (error) {
-      console.warn("[PatchLoop] saved feedback of another page ignored", key, error);
-      return [];
-    }
+    return otherPageFeedback(key, () => true);
   });
+  // A list saved under the legacy single key, before the per-page keys, is
+  // its page's until that page is opened and migrates it; a per-page list of
+  // that page wins over it, as it does on load.
+  const legacy = otherPageFeedback(state.options.feedbackStorageKey, (envelope) => {
+    const pageKey = scopedFeedbackStorageKey(envelope.pageUrl);
+    return pageKey !== ownKey && window.localStorage.getItem(pageKey) === null;
+  });
+  return [...scoped, ...legacy];
+}
+
+function otherPageFeedback(key, belongsToOtherPage) {
+  try {
+    const envelope = JSON.parse(window.localStorage.getItem(key));
+    if (!isDemoFeedbackEnvelope(envelope) || !belongsToOtherPage(envelope)) return [];
+    trimEnvelopeUrls(envelope);
+    return [{ key, envelope, feedback: envelope.feedback.map(normalizePersistedFeedback).filter(Boolean) }];
+  } catch (error) {
+    console.warn("[PatchLoop] saved feedback of another page ignored", key, error);
+    return [];
+  }
+}
+
+// Whether a storage change can touch the saved feedback of the project / demo;
+// a null key is a clear().
+function isDemoFeedbackKey(key) {
+  const base = state.options.feedbackStorageKey;
+  if (key === null) return true;
+  if (!base || typeof key !== "string") return false;
+  return key === base || (key.startsWith(`${base}:`) && isDemoScope(key.slice(base.length + 1)));
 }
 
 // The scope part of a scoped key: [projectId, demoId, page].
@@ -1493,7 +1533,7 @@ function saveOtherPageFeedback(page) {
   }
 }
 
-return { FEEDBACK_STORAGE_VERSION, loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadPersistedFeedback, persistFeedbackList, clearPersistedFeedback, serializeFeedbackForStorage, normalizePersistedFeedback, isMatchingFeedbackEnvelope, loadOtherPagesFeedback, saveOtherPageFeedback };
+return { FEEDBACK_STORAGE_VERSION, loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadPersistedFeedback, persistFeedbackList, clearPersistedFeedback, bindFeedbackScope, serializeFeedbackForStorage, normalizePersistedFeedback, isMatchingFeedbackEnvelope, loadOtherPagesFeedback, isDemoFeedbackKey, saveOtherPageFeedback };
 })();
 const { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarget, rectFromStoredArea, round, numberOrNull } = __pl_widget_src_geometry;
 const { pointAnchorOffsets, areaAnchorOffsets, geometryFromAnchor, viewportDiffersFromCreation } = __pl_widget_src_anchoring;
@@ -1504,7 +1544,7 @@ const { DEFAULTS, state } = __pl_widget_src_state;
 const { buildPayload } = __pl_widget_src_payload;
 const { uncapturedTouching } = __pl_widget_src_screenshot;
 const { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } = __pl_widget_src_inbox_status;
-const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback } = __pl_widget_src_persistence;
+const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey } = __pl_widget_src_persistence;
 const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } = __pl_shared_format;
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
@@ -1544,6 +1584,8 @@ function init(options = {}) {
   state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
   state.options.keepQueryParams = normalizeKeepQueryParams(state.options.keepQueryParams);
   state.displayMode = loadDisplayMode();
+  // Before anything renders: the panel counts the other pages against it.
+  bindFeedbackScope();
   state.otherPages = null;
   resetInboxStatus();
   injectStyles();
@@ -1571,6 +1613,7 @@ function destroy() {
   window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   window.removeEventListener("storage", handleStorageChange);
+  window.clearTimeout(state.otherPagesTimer);
   window.clearTimeout(state.resizeTimer);
   resetInboxStatus();
   state.approximateIds.clear();
@@ -2380,9 +2423,11 @@ function otherPagesSummary() {
 }
 
 function handleStorageChange(event) {
-  if (event.key !== null && !String(event.key).startsWith(`${state.options.feedbackStorageKey}:`)) return;
+  if (!isDemoFeedbackKey(event.key)) return;
   state.otherPages = null;
-  updateDownloadAllButton();
+  // An export in another tab writes one key per page: count once after them.
+  window.clearTimeout(state.otherPagesTimer);
+  state.otherPagesTimer = window.setTimeout(updateDownloadAllButton, 100);
 }
 
 async function postSlackWebhook(payload) {

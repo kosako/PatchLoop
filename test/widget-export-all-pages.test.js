@@ -6,6 +6,7 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const { setTimeout: sleep } = require("node:timers/promises");
 const { widgetHarness } = require("../test-support/widget-dom.js");
 
 const BASE = "https://demo.example";
@@ -25,6 +26,26 @@ function storageKeyFor(w, path) {
   const storage = w.window.localStorage;
   return Array.from({ length: storage.length }, (_, index) => storage.key(index))
     .find((key) => key.endsWith(`${JSON.stringify(`${BASE}${path}`)}]`));
+}
+
+const savedComments = (w, key) => JSON.parse(w.window.localStorage.getItem(key)).feedback.map((item) => item.comment);
+
+// Records which keys the widget reads from here on.
+function watchReads(w) {
+  const reads = [];
+  const storage = w.window.localStorage;
+  const { getItem, key } = storage;
+  storage.getItem = (name) => { reads.push(name); return getItem(name); };
+  storage.key = (index) => { reads.push(`key(${index})`); return key(index); };
+  return reads;
+}
+
+// A list saved under the single key the widget used before per-page keys.
+function saveLegacyList(w, path, comment) {
+  w.window.localStorage.setItem("patchloop:feedback", JSON.stringify({
+    version: 1, projectId: "local-demo", demoId: "plain-html", pageUrl: `${BASE}${path}`, savedAt: "2026-01-01T00:00:00.000Z",
+    feedback: [{ id: `legacy-${comment}`, comment, page: { url: `${BASE}${path}` }, target: { kind: "point", pageX: 10, pageY: 10 } }]
+  }));
 }
 
 test("the export takes the unexported comments of the demo's other pages and marks them on those pages", async () => {
@@ -96,10 +117,54 @@ test("a comment saved by another tab on another page shows up in the count", asy
 
   openPage(w, "/b");
   assert.equal(button(w).textContent, "すべて書き出し済み");
+  const reads = watchReads(w);
   w.window.localStorage.setItem(key, value);
+  // An export in another tab writes a key per page; one count follows them.
   w.window.emit("storage", { key });
+  w.window.emit("storage", { key });
+  w.window.emit("storage", { key: `patchloop:feedback:${JSON.stringify(["local-demo", "other-demo", `${BASE}/a`])}` });
+  await sleep(150);
   assert.equal(button(w).textContent, "未送信を書き出す（1）");
   assert.equal(note(w).hidden, false);
+  assert.equal(reads.filter((name) => name === key).length, 1);
+});
+
+test("a single-page app that changes the URL without a new init exports each page once and keeps saving its own list", async () => {
+  const w = widgetHarness();
+  openPage(w, "/b");
+  await w.submit("On B");
+  openPage(w, "/a");
+  await w.submit("On A");
+  const keyA = storageKeyFor(w, "/a");
+  const keyB = storageKeyFor(w, "/b");
+
+  w.window.location.href = `${BASE}/b`;
+  button(w).click();
+  assert.deepEqual((await bundleAt(w, 0)).feedback.map((item) => item.comment).sort(), ["On A", "On B"]);
+
+  await w.submit("After the URL changed");
+  assert.deepEqual(savedComments(w, keyA), ["After the URL changed", "On A"]);
+  assert.deepEqual(savedComments(w, keyB), ["On B"]);
+});
+
+test("a list under the legacy single key is exported as its page's, unless that page has its own list", async () => {
+  const w = widgetHarness();
+  saveLegacyList(w, "/old", "Legacy");
+  openPage(w, "/b");
+  assert.match(note(w).textContent, /1 件/);
+  button(w).click();
+  assert.deepEqual((await bundleAt(w, 0)).feedback.map((item) => item.comment), ["Legacy"]);
+
+  // Opening the page migrates the list, export mark included.
+  openPage(w, "/old");
+  assert.equal(w.api.getFeedback()[0].exported, true);
+
+  openPage(w, "/a");
+  await w.submit("On A");
+  saveLegacyList(w, "/a", "Stale legacy copy");
+  openPage(w, "/b");
+  again(w).click();
+  assert.deepEqual((await bundleAt(w, 1)).feedback.map((item) => item.comment).sort(), ["Legacy", "On A"]);
 });
 
 test("a broken entry of another page is skipped with a warning and the rest is exported", async () => {
@@ -137,8 +202,27 @@ test("the other pages are not read outside download mode", async () => {
   const w = widgetHarness();
   openPage(w, "/a");
   await w.submit("On A");
+  const keyA = storageKeyFor(w, "/a");
+  const reads = watchReads(w);
   openPage(w, "/b", { deliveryMode: "none" });
+  w.window.emit("storage", { key: keyA });
+  await sleep(150);
   assert.equal(button(w).hidden, true);
   assert.equal(again(w).hidden, true);
   assert.equal(note(w).hidden, true);
+  assert.deepEqual(reads.filter((name) => name === keyA || name.startsWith("key(")), []);
+});
+
+test("without persistFeedback the export holds the open page's comments only", async () => {
+  const w = widgetHarness();
+  openPage(w, "/a");
+  await w.submit("On A");
+  const keyA = storageKeyFor(w, "/a");
+  const reads = watchReads(w);
+  openPage(w, "/b", { persistFeedback: false });
+  await w.submit("On B");
+  assert.equal(note(w).hidden, true);
+  button(w).click();
+  assert.deepEqual((await bundleAt(w, 0)).feedback.map((item) => item.comment), ["On B"]);
+  assert.deepEqual(reads.filter((name) => name === keyA || name.startsWith("key(")), []);
 });

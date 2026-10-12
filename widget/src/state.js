@@ -55,5 +55,9 @@ export const state = {
   uncapturedHint: "",
   // { total, unexported } of the comments saved by the other pages of the demo
   // (#197); null until counted again.
-  otherPages: null
+  otherPages: null,
+  otherPagesTimer: null,
+  // { key, pageUrl } of the page whose saved list is in memory (#197), fixed by
+  // init; see bindFeedbackScope.
+  feedbackScope: null
 };
