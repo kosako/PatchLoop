@@ -35,9 +35,10 @@ const byteLength = (text) => new TextEncoder().encode(text).length;
 // first, and each part lists its comments in the file's order as the receiver
 // expects: the inbox ends up as one request would leave it. A part the
 // receiver refuses (an invalid comment) leaves the other parts imported.
-// Returns [{ body, count, oversized }]: count is the number of comments in
-// the part (null when unknown), oversized whether it is still over maxBytes,
-// as a single comment that large is.
+// Returns [{ body, count, oversized, sameId }]: count is the number of
+// comments in the part (null when unknown), oversized whether it is still
+// over maxBytes, as a single comment (or the comments of one id) that large
+// is, and sameId whether all of them share one id.
 function importParts(text, maxBytes, maxItems) {
   const oversized = Boolean(maxBytes) && byteLength(text) > maxBytes;
   const whole = [{ body: text, count: null, oversized }];
@@ -53,6 +54,9 @@ function importParts(text, maxBytes, maxItems) {
   // Serializing again would turn a number JSON cannot hold (1e400 parses to
   // Infinity) into null, a value the receiver accepts.
   if (hasNonFiniteNumber(parsed)) return whole;
+  // The parts are ordered by createdAt as read here; a date without a time
+  // zone could read otherwise on the receiver and change the order.
+  if (!parsed.feedback.every((item) => item?.createdAt == null || UNAMBIGUOUS_DATE.test(item.createdAt))) return whole;
 
   // Each unit: the first comment with an id, and the later ones with that id.
   const byId = new Map();
@@ -100,9 +104,13 @@ function importParts(text, maxBytes, maxItems) {
   return groups.map((group) => {
     const items = group.slice().reverse().flat();
     const body = JSON.stringify(wrap(items));
-    return { body, count: items.length, oversized: byteLength(body) > maxBytes };
+    return { body, count: items.length, oversized: byteLength(body) > maxBytes, sameId: group.length === 1 };
   });
 }
+
+// An ISO 8601 date, or date and time with a time zone, which every browser
+// and the receiver read the same.
+const UNAMBIGUOUS_DATE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/;
 
 function hasNonFiniteNumber(value) {
   const pending = [value];
@@ -188,7 +196,8 @@ function importFailureMessage(failed) {
           failed.push(...(result.failed || []));
         } else if (!response.ok) {
           const error = response.status === 413 && part.oversized
-            ? (part.count === 1 ? "コメント 1 件で" : "ファイルが分けられず、") + "受信側の上限（" + maxBytes + " byte）を超えています。"
+            ? (part.count === 1 ? "コメント 1 件で" : part.sameId ? "同じ id のコメント " + part.count + " 件で" : "ファイルが分けられず、")
+              + "受信側の上限（" + maxBytes + " byte）を超えています。"
               + "receiver の MAX_BODY_BYTES（設定の maxBodyBytes）を上げると読み込めます。"
             : result.error || "ファイルを読み込めませんでした。";
           // A file sent whole keeps its error as the message, as before #140.

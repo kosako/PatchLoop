@@ -99,8 +99,9 @@ test("comments sharing an id go in one part in file order, so the receiver check
   assert.equal(status.textContent, "6 件を追加しました。重複 1 件はスキップしました。「受信箱を更新」で一覧に反映します。");
 });
 
-test("files that cannot be split are sent as they are: an array, or a number JSON cannot hold", async () => {
-  for (const text of [JSON.stringify(FIVE), JSON.stringify(bundle(FIVE)).replace('"schemaVersion":3', '"schemaVersion":1e400')]) {
+test("files that cannot be split are sent as they are: an array, a number JSON cannot hold, or a date without a time zone", async () => {
+  const withoutZone = bundle([comment(6, "2026-10-13T12:00:00"), ...FIVE]);
+  for (const text of [JSON.stringify(FIVE), JSON.stringify(bundle(FIVE)).replace('"schemaVersion":3', '"schemaVersion":1e400'), JSON.stringify(withoutZone)]) {
     const ui = inboxHarness([], { maxBodyBytes: TWO, replies: [{ ok: false, status: 400, body: { ok: false, error: "Import body must be an object" } }] });
     const status = await importFile(ui, text);
     assert.equal(ui.requests.length, 1);
@@ -160,4 +161,13 @@ test("a stop after a part over the limit still says what failed and why", async 
   assert.equal(ui.requests.length, 2);
   assert.match(status.textContent, new RegExp(`^0 件を追加したところで止まりました。失敗 1 件。コメント 1 件で受信側の上限（${TWO} byte）を超えています。.*リクエストが集中しています。`));
   assert.equal(ui.get("[data-import-reload]").hidden, true);
+});
+
+test("the comments of one id that together go over the limit fail together, and the message says so", async () => {
+  const copy = (text) => comment(9, "2026-10-09T00:00:00.000Z", text);
+  const filler = "y".repeat(TWO - ONE - 10);
+  const replies = Array(10).fill((options) => (byteLength(options.body) > TWO ? tooLarge : importsAll(options)));
+  const ui = inboxHarness([], { maxBodyBytes: TWO, replies });
+  const status = await importFile(ui, bundle([copy(filler), ...FIVE, copy(filler)]));
+  assert.equal(status.textContent, `5 件を追加しました。失敗 2 件。同じ id のコメント 2 件で受信側の上限（${TWO} byte）を超えています。receiver の MAX_BODY_BYTES（設定の maxBodyBytes）を上げると読み込めます。「受信箱を更新」で一覧に反映します。`);
 });
