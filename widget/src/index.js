@@ -641,6 +641,10 @@ async function submitComment(event) {
 
   saveReviewer(reviewer);
   const includeScreenshot = form.querySelector("[data-pl-include-screenshot]")?.checked ?? state.options.captureScreenshot;
+  // #155: record the target as of confirming, like environment.viewport and the
+  // screenshot: the reviewer may have scrolled since choosing the spot.
+  const placement = storedPlacement(state.pendingTarget);
+  if (placement) refreshTargetCoordinates(state.pendingTarget, placement);
   const payload = buildPayload(comment, reviewer, state.pendingTarget, includeScreenshot);
   const delivering = shouldDeliverFeedback();
   if (delivering) payload.delivery = pendingDelivery();
@@ -970,23 +974,17 @@ function restoreFeedbackMarkers() {
 }
 
 function markerFromFeedback(item) {
-  const target = item?.target || {};
-  const geometry = reanchorGeometry(target);
-  if (geometry) {
-    refreshTargetCoordinates(target, geometry);
+  const stored = item?.target || {};
+  const target = reanchoredTarget(stored);
+  if (target) {
     state.approximateIds.delete(item.id);
   } else if (viewportDiffersFromCreation(item, viewportMetrics())) {
     state.approximateIds.add(item.id);
   }
 
-  if (target.kind === "area" && target.area) {
-    const rect = rectFromStoredArea(target.area, viewportMetrics());
-    if (!rect) return null;
-    return addArea(rect);
-  }
-
-  const point = pointFromStoredTarget(target, viewportMetrics());
-  return point ? addPin(point) : null;
+  const placement = storedPlacement(target || stored);
+  if (!placement) return null;
+  return placement.kind === "area" ? addArea(placement) : addPin(placement);
 }
 
 // --- Re-anchoring (issue #41) -------------------------------------------
@@ -1082,9 +1080,11 @@ function reanchorGeometry(target, element) {
   return geometryFromAnchor(target.kind, anchor, rect, window.scrollX, window.scrollY);
 }
 
+// The viewport values are derived from the page pixels as rounded for storage,
+// the way the screenshot places its mark, so both agree under a fractional scroll.
 function refreshTargetCoordinates(target, geometry) {
   if (geometry.kind === "area" && target.area) {
-    const topLeft = pointFromClient(geometry.pageLeftPx - window.scrollX, geometry.pageTopPx - window.scrollY, viewportMetrics());
+    const topLeft = pointFromClient(Math.round(geometry.pageLeftPx) - window.scrollX, Math.round(geometry.pageTopPx) - window.scrollY, viewportMetrics());
     const viewportWidth = Math.max(document.documentElement.clientWidth, 1);
     const viewportHeight = Math.max(document.documentElement.clientHeight, 1);
     const documentWidth = Math.max(document.documentElement.scrollWidth, 1);
@@ -1110,8 +1110,30 @@ function refreshTargetCoordinates(target, geometry) {
     return;
   }
 
-  const point = pointFromClient(geometry.pageX - window.scrollX, geometry.pageY - window.scrollY, viewportMetrics());
+  const point = pointFromClient(Math.round(geometry.pageX) - window.scrollX, Math.round(geometry.pageY) - window.scrollY, viewportMetrics());
   assignPointFields(target, point);
+}
+
+// #155: a comment's target stays the record of when it was confirmed, so a
+// re-anchor works on a copy and only moves the marker; null when the element
+// cannot be resolved.
+function reanchoredTarget(target) {
+  const geometry = reanchorGeometry(target);
+  if (!geometry) return null;
+  const copy = { ...target, area: target.area && { ...target.area } };
+  refreshTargetCoordinates(copy, geometry);
+  return copy;
+}
+
+// The page pixels a target's stored coordinates place it at, shaped like a
+// re-anchor geometry; null when they are missing.
+function storedPlacement(target) {
+  if (target.kind === "area" && target.area) {
+    const rect = rectFromStoredArea(target.area, viewportMetrics());
+    return rect && { kind: "area", ...rect };
+  }
+  const point = pointFromStoredTarget(target, viewportMetrics());
+  return point && { kind: "point", ...point };
 }
 
 function assignPointFields(target, point) {
@@ -1127,15 +1149,17 @@ function assignPointFields(target, point) {
 
 function repositionMarker(marker, target) {
   if (!marker || !marker.node) return;
-  if (target.kind === "area" && target.area) {
+  const placement = storedPlacement(target);
+  if (!placement) return;
+  if (placement.kind === "area") {
     Object.assign(marker.node.style, {
-      ...markerPosition(target.area.pageX, target.area.pageY),
-      width: `${target.area.clientWidth}px`,
-      height: `${target.area.clientHeight}px`
+      ...markerPosition(placement.pageLeftPx, placement.pageTopPx),
+      width: `${placement.widthPx}px`,
+      height: `${placement.heightPx}px`
     });
     return;
   }
-  Object.assign(marker.node.style, markerPosition(target.pageX, target.pageY));
+  Object.assign(marker.node.style, markerPosition(placement.pageX, placement.pageY));
 }
 
 // #173: markers are position: absolute children of body, so their left/top
@@ -1176,18 +1200,16 @@ function handleWindowResize() {
 }
 
 function reanchorAllMarkers() {
-  let changed = false;
-
   state.feedback.forEach((item) => {
     const marker = state.feedbackMarkers.get(item.id);
-    const geometry = reanchorGeometry(item.target);
-    if (geometry) {
-      refreshTargetCoordinates(item.target, geometry);
-      repositionMarker(marker, item.target);
+    const target = reanchoredTarget(item.target);
+    if (target) {
+      repositionMarker(marker, target);
       state.approximateIds.delete(item.id);
       setMarkerApproximate(marker, false);
-      changed = true;
     } else {
+      // An earlier re-anchor may have moved it; fall back to the stored position.
+      repositionMarker(marker, item.target);
       const isApproximate = viewportDiffersFromCreation(item, viewportMetrics());
       if (isApproximate) state.approximateIds.add(item.id);
       else state.approximateIds.delete(item.id);
@@ -1204,7 +1226,6 @@ function reanchorAllMarkers() {
     }
   }
 
-  if (changed) persistFeedbackList();
   renderFeedbackList();
 }
 

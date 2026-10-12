@@ -69,7 +69,7 @@ script-tag widget:
 - viewport の lightweight screenshot snapshot（SVG）を payload に添付
 - feedback list の `localStorage` 永続化と reload 後の pin / area overlay 復元
 - ウィンドウリサイズ時は selector で対象要素を引き直し、pin / area を要素に追従して再配置
-- 再配置できない場合（要素が見つからない・非表示など）は従来座標のまま、marker と一覧に近似表示（≈）
+- 再配置できない場合（要素が見つからない・非表示など）は保存した位置に置き、ウィンドウサイズがコメントを作ったときと違えば marker と一覧に近似表示（≈）
 - 任意の `onSubmit(payload)` callback
 - 任意の `endpoint` 設定で payload を receiver に POST
 - ローカル receiver から任意の Slack Incoming Webhook へ、スクショリンク / image block / 任意の file upload 付きで転送
@@ -198,7 +198,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 
 `target.kind` は `point` または `area` です。範囲選択の場合は `target.area` に viewport 上の percentage (`x` / `y` / `width` / `height`) に加えて、`clientX/Y/Width/Height`、`pageX/Y`、`documentX/Y/Width/Height` のピクセル値も入ります。
 
-`clientX/clientY` は現在の viewport 上の位置、`pageX/pageY` はスクロールを含む document 上の位置です。pin / area overlay は document 上に固定されるため、スクロールしても対象箇所に追従します。ウィンドウリサイズでレイアウトが変わった場合は `target.selector` + `target.anchor` で対象要素に再アンカーされ、保存座標も再計算されます。
+`target` の座標は、`environment.viewport` や画面画像と同じく、コメントを確定した時点の記録です。`clientX/clientY` はその時点の viewport 上の位置、`pageX/pageY` はスクロールを含む document 上の位置です。pin / area overlay は document 上に固定されるため、スクロールしても対象箇所に追従します。ウィンドウリサイズや reload でレイアウトが変わった場合は `target.selector` + `target.anchor` で marker を対象要素に置き直しますが、`target` の座標は書き換えません（保存・送信・書き出しの値は確定した時点のまま）。
 
 ## ローカル receiver
 
