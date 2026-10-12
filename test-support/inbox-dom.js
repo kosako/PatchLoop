@@ -251,7 +251,7 @@ function parseDocument(html) {
 
 // Runs inbox.js unchanged on the page renderInbox(items) draws. Requests are
 // answered from `replies` in order ({ ok, status, body }, or a function of the
-// request options returning one).
+// request options returning one or a promise of one).
 function inboxHarness(items, { githubConfigured = true, replies = [], confirm = true, maxBodyBytes, maxImportItems } = {}) {
   const document = parseDocument(renderInbox(items, { githubConfigured, maxBodyBytes, maxImportItems }));
   const pending = replies.slice();
@@ -268,7 +268,7 @@ function inboxHarness(items, { githubConfigured = true, replies = [], confirm = 
     fetch: async (url, options) => {
       requests.push({ url, options });
       const next = pending.shift();
-      const reply = (typeof next === "function" ? next(options) : next) || { ok: true, body: {} };
+      const reply = (typeof next === "function" ? await next(options) : next) || { ok: true, body: {} };
       return { ok: reply.ok, status: reply.status, json: async () => reply.body };
     }
   });
