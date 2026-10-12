@@ -28,17 +28,19 @@ const byteLength = (text) => new TextEncoder().encode(text).length;
 // The import requests for a file (#140): the file as it is when it fits the
 // receiver's request limit or cannot be split, otherwise parts of its
 // feedback array, each a copy of the file's object, holding as many comments
-// as fit in maxBytes and maxItems. Like one request, the first comment with
-// an id wins and later ones with that id are skipped as duplicates. The
-// receiver inserts each request's comments oldest first (#156), so parts are
-// cut from the comments in that order, oldest part first, and each part lists
-// its comments in the file's order as the receiver expects: the inbox ends up
-// as one request would leave it. Returns { parts, skipped }: each part is
-// { body, count, oversized } (count: comments in it, null when unknown;
-// oversized: still over maxBytes, as a single comment that large is).
+// as fit in maxBytes and maxItems. Comments sharing an id go in one part, in
+// file order, so the receiver checks each of them and keeps the first, as one
+// request does. The receiver inserts each request's comments oldest first
+// (#156), so parts are cut from the comments in that order, oldest part
+// first, and each part lists its comments in the file's order as the receiver
+// expects: the inbox ends up as one request would leave it. A part the
+// receiver refuses (an invalid comment) leaves the other parts imported.
+// Returns [{ body, count, oversized }]: count is the number of comments in
+// the part (null when unknown), oversized whether it is still over maxBytes,
+// as a single comment that large is.
 function importParts(text, maxBytes, maxItems) {
   const oversized = Boolean(maxBytes) && byteLength(text) > maxBytes;
-  const whole = { parts: [{ body: text, count: null, oversized }], skipped: 0 };
+  const whole = [{ body: text, count: null, oversized }];
   if (!oversized) return whole;
   let parsed;
   try {
@@ -52,22 +54,24 @@ function importParts(text, maxBytes, maxItems) {
   // Infinity) into null, a value the receiver accepts.
   if (hasNonFiniteNumber(parsed)) return whole;
 
-  const ids = new Set();
-  let skipped = 0;
-  const list = parsed.feedback.filter((item) => {
-    if (typeof item?.id !== "string") return true;
-    if (ids.has(item.id)) {
-      skipped += 1;
-      return false;
+  // Each unit: the first comment with an id, and the later ones with that id.
+  const byId = new Map();
+  const units = [];
+  for (const item of parsed.feedback) {
+    const id = typeof item?.id === "string" ? item.id : null;
+    if (id !== null && byId.has(id)) {
+      byId.get(id).push(item);
+      continue;
     }
-    ids.add(item.id);
-    return true;
-  });
-  if (list.length < 2 && skipped === 0) return { parts: [{ body: text, count: list.length, oversized }], skipped };
+    const unit = [item];
+    if (id !== null) byId.set(id, unit);
+    units.push(unit);
+  }
+  if (units.length < 2) return [{ body: text, count: parsed.feedback.length, oversized }];
   const wrap = (items) => ({ ...parsed, feedback: items });
 
-  const created = (item) => Date.parse(item?.createdAt);
-  const ordered = list.slice().reverse().sort((a, b) => {
+  const created = (unit) => Date.parse(unit[0]?.createdAt);
+  const ordered = units.slice().reverse().sort((a, b) => {
     const aUnknown = Number.isNaN(created(a));
     const bUnknown = Number.isNaN(created(b));
     if (aUnknown !== bUnknown) return aUnknown ? -1 : 1;
@@ -78,23 +82,26 @@ function importParts(text, maxBytes, maxItems) {
   const groups = [];
   let current = [];
   let size = overhead;
-  for (const item of ordered) {
-    const itemSize = byteLength(JSON.stringify(item));
-    const grown = size + itemSize + (current.length ? 1 : 0);
-    if (current.length && (grown > maxBytes || (maxItems && current.length >= maxItems))) {
+  let count = 0;
+  for (const unit of ordered) {
+    const unitSize = unit.reduce((total, item) => total + byteLength(JSON.stringify(item)), unit.length - 1);
+    const grown = size + unitSize + (current.length ? 1 : 0);
+    if (current.length && (grown > maxBytes || (maxItems && count + unit.length > maxItems))) {
       groups.push(current);
       current = [];
       size = overhead;
+      count = 0;
     }
-    size += itemSize + (current.length ? 1 : 0);
-    current.push(item);
+    size += unitSize + (current.length ? 1 : 0);
+    count += unit.length;
+    current.push(unit);
   }
   groups.push(current);
-  const parts = groups.map((items) => {
-    const body = JSON.stringify(wrap(items.slice().reverse()));
+  return groups.map((group) => {
+    const items = group.slice().reverse().flat();
+    const body = JSON.stringify(wrap(items));
     return { body, count: items.length, oversized: byteLength(body) > maxBytes };
   });
-  return { parts, skipped };
 }
 
 function hasNonFiniteNumber(value) {
@@ -105,6 +112,11 @@ function hasNonFiniteNumber(value) {
     if (current && typeof current === "object") for (const child of Object.values(current)) pending.push(child);
   }
   return false;
+}
+
+function importOutcome(skipped, failed) {
+  return (skipped ? "重複 " + skipped + " 件はスキップしました。" : "")
+    + (failed.length ? "失敗 " + failed.length + " 件。" + importFailureMessage(failed) : "");
 }
 
 function importFailureMessage(failed) {
@@ -157,13 +169,10 @@ function importFailureMessage(failed) {
     try {
       text = await file.text();
       const maxBytes = positiveInteger(form.dataset.maxBodyBytes);
-      const split = importParts(text, maxBytes, positiveInteger(form.dataset.maxImportItems));
-      parts = split.parts;
+      parts = importParts(text, maxBytes, positiveInteger(form.dataset.maxImportItems));
       if (resume && resume.text === text) {
         ({ next, imported, skipped } = resume);
         failed = resume.failed.slice();
-      } else {
-        skipped = split.skipped;
       }
       resume = null;
       for (; next < parts.length; next += 1) {
@@ -189,15 +198,13 @@ function importFailureMessage(failed) {
         }
       }
       status.dataset.state = failed.length ? "error" : "success";
-      status.textContent = imported + " 件を追加しました。"
-        + (skipped ? "重複 " + skipped + " 件はスキップしました。" : "")
-        + (failed.length ? "失敗 " + failed.length + " 件。" + importFailureMessage(failed) : "")
+      status.textContent = imported + " 件を追加しました。" + importOutcome(skipped, failed)
         + (imported ? "「受信箱を更新」で一覧に反映します。" : "");
     } catch (error) {
       status.dataset.state = "error";
       if (parts.length > 1) {
         resume = { text, next, imported, skipped, failed };
-        status.textContent = imported + " 件を追加したところで止まりました。" + error.message
+        status.textContent = imported + " 件を追加したところで止まりました。" + importOutcome(skipped, failed) + error.message
           + "同じファイルをもう一度読み込むと、続きから送ります（ページを読み込み直した後は、追加済みのものを重複としてスキップします）。";
       } else {
         status.textContent = error.message;

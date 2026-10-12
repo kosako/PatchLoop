@@ -1216,6 +1216,36 @@ test("a file the inbox sends in parts is stored as one request stores it (#140)"
   assert.deepEqual(await stored(split), await stored(whole));
 });
 
+test("a later copy of a comment that the receiver finds invalid fails its part, as it fails one request (#140)", async (t) => {
+  const { inboxHarness } = require("../test-support/inbox-dom.js");
+  const at = (id, createdAt, extra = {}) => ({ ...feedbackPayload(id), createdAt, ...extra });
+  const file = {
+    kind: "patchloop-feedback-bundle",
+    version: 2,
+    feedback: [
+      at("pl_copy_late", "2026-06-05T00:00:00.000Z"),
+      at("pl_copy", "2026-06-03T00:00:00.000Z"),
+      at("pl_copy_early", "2026-06-01T00:00:00.000Z"),
+      at("pl_copy", "2026-06-03T00:00:00.000Z", { reviewer: "" })
+    ]
+  };
+  const whole = await startReceiver(t);
+  assert.equal((await postJson(`${whole.baseUrl}/import`, file)).status, 400);
+
+  const limit = Buffer.byteLength(JSON.stringify({ ...file, feedback: file.feedback.slice(0, 2) }));
+  const split = await startReceiver(t, { MAX_BODY_BYTES: String(limit) });
+  const forward = async (options) => {
+    const response = await fetch(`${split.baseUrl}/import`, { method: "POST", headers: options.headers, body: options.body });
+    return { ok: response.ok, status: response.status, body: await response.json() };
+  };
+  const ui = inboxHarness([], { maxBodyBytes: limit, replies: Array(10).fill(forward) });
+  ui.get("[data-import-file]").files = [{ text: async () => JSON.stringify(file) }];
+  await ui.submit(ui.get("[data-import-form]"));
+
+  assert.match(ui.get("[data-import-status]").textContent, /^2 件を追加しました。失敗 2 件。.*reviewer/);
+  assert.deepEqual((await readStoredFeedback(split.dbPath)).map((item) => item.id).sort(), ["pl_copy_early", "pl_copy_late"]);
+});
+
 test("nested screenshot keys cannot bypass the nesting-depth cap", async (t) => {
   // Regression: exempting the whole screenshot subtree let a crafted
   // environment.screenshot bury deep nesting that bypassed the depth cap and

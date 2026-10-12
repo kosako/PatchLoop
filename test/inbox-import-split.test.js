@@ -27,8 +27,17 @@ const FIVE = [5, 4, 3, 2, 1].map((index) => comment(index, `2026-10-0${index}T00
 const ONE = byteLength(JSON.stringify(bundle(FIVE.slice(0, 1))));
 const TWO = byteLength(JSON.stringify(bundle(FIVE.slice(0, 2))));
 
-// The receiver's answer to a part: everything in it imported.
-const importsAll = (options) => ({ ok: true, status: 201, body: { imported: JSON.parse(options.body).feedback.length, duplicates: [], failed: [] } });
+// The receiver's answer to a part: each id imported once, later copies duplicates.
+const importsAll = (options) => {
+  const ids = new Set();
+  const duplicates = [];
+  for (const item of JSON.parse(options.body).feedback) {
+    if (ids.has(item.id)) duplicates.push(item.id);
+    ids.add(item.id);
+  }
+  return { ok: true, status: 201, body: { imported: ids.size, duplicates, failed: [] } };
+};
+const busy = { ok: false, status: 429, body: {} };
 const tooLarge = { ok: false, status: 413, body: { ok: false, error: "Payload too large" } };
 
 async function importFile(ui, value) {
@@ -79,13 +88,14 @@ test("parts also keep to the receiver's item limit", async () => {
   assert.deepEqual(sentParts(ui).map((part) => part.feedback.length), [2, 2, 1]);
 });
 
-test("a comment repeated in the file goes once, the first one, as one request would take it", async () => {
+test("comments sharing an id go in one part in file order, so the receiver checks both and keeps the first", async () => {
   const repeated = [comment(9, "2026-10-09T00:00:00.000Z", "first"), ...FIVE, comment(9, "2026-10-09T00:00:00.000Z", "second")];
-  const ui = inboxHarness([], { maxBodyBytes: TWO, replies: Array(10).fill(importsAll) });
+  const ui = inboxHarness([], { maxBodyBytes: TWO + ONE, replies: Array(10).fill(importsAll) });
   const status = await importFile(ui, bundle(repeated));
 
-  const sent = sentParts(ui).flatMap((part) => part.feedback);
-  assert.deepEqual(sent.filter((item) => item.id === "pl_9").map((item) => item.comment), ["first"]);
+  const holding = sentParts(ui).filter((part) => part.feedback.some((item) => item.id === "pl_9"));
+  assert.equal(holding.length, 1);
+  assert.deepEqual(holding[0].feedback.filter((item) => item.id === "pl_9").map((item) => item.comment), ["first", "second"]);
   assert.equal(status.textContent, "6 件を追加しました。重複 1 件はスキップしました。「受信箱を更新」で一覧に反映します。");
 });
 
@@ -127,7 +137,6 @@ test("a file of one comment over the limit is sent whole and explained", async (
 });
 
 test("an import stopped part way goes on from the part that did not go, when the same file is imported again", async () => {
-  const busy = { ok: false, status: 429, body: {} };
   const ui = inboxHarness([], { maxBodyBytes: TWO, replies: [importsAll, busy, importsAll, importsAll] });
   const file = bundle(FIVE);
   let status = await importFile(ui, file);
@@ -142,4 +151,13 @@ test("an import stopped part way goes on from the part that did not go, when the
   assert.deepEqual([bodies[2] === bodies[1], bodies.slice(2).includes(bodies[0])], [true, false]);
   assert.equal(status.dataset.state, "success");
   assert.equal(status.textContent, "5 件を追加しました。「受信箱を更新」で一覧に反映します。");
+});
+
+test("a stop after a part over the limit still says what failed and why", async () => {
+  const huge = comment(9, "2026-09-30T00:00:00.000Z", "y".repeat(TWO));
+  const ui = inboxHarness([], { maxBodyBytes: TWO, replies: [tooLarge, busy] });
+  const status = await importFile(ui, bundle([...FIVE, huge]));
+  assert.equal(ui.requests.length, 2);
+  assert.match(status.textContent, new RegExp(`^0 件を追加したところで止まりました。失敗 1 件。コメント 1 件で受信側の上限（${TWO} byte）を超えています。.*リクエストが集中しています。`));
+  assert.equal(ui.get("[data-import-reload]").hidden, true);
 });
