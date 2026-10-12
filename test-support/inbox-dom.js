@@ -67,12 +67,14 @@ function textNode(value) {
 // changes which actions a card renders. The view only checks whether a
 // receiver token is set (to render the logout form), so no token value is
 // needed.
-function renderInbox(items, { githubConfigured = true } = {}) {
+function renderInbox(items, { githubConfigured = true, maxBodyBytes = 3_000_000, maxImportItems = 500 } = {}) {
   return createInboxView({
     formatScreenshotStatus: (screenshot) => screenshot.status,
     safeLinkUrl: (value) => /^https?:\/\//i.test(String(value || "").trim()) ? String(value).trim() : "",
     GITHUB_CONFIGURED: githubConfigured,
-    RECEIVER_TOKEN: true
+    RECEIVER_TOKEN: true,
+    MAX_BODY_BYTES: maxBodyBytes,
+    MAX_IMPORT_ITEMS: maxImportItems
   }).renderInbox(items);
 }
 
@@ -248,9 +250,10 @@ function parseDocument(html) {
 }
 
 // Runs inbox.js unchanged on the page renderInbox(items) draws. Requests are
-// answered from `replies` in order ({ ok, status, body }).
-function inboxHarness(items, { githubConfigured = true, replies = [], confirm = true } = {}) {
-  const document = parseDocument(renderInbox(items, { githubConfigured }));
+// answered from `replies` in order ({ ok, status, body }, or a function of the
+// request options returning one).
+function inboxHarness(items, { githubConfigured = true, replies = [], confirm = true, maxBodyBytes, maxImportItems } = {}) {
+  const document = parseDocument(renderInbox(items, { githubConfigured, maxBodyBytes, maxImportItems }));
   const pending = replies.slice();
   const requests = [];
   const alerts = [];
@@ -261,10 +264,11 @@ function inboxHarness(items, { githubConfigured = true, replies = [], confirm = 
     location: { reload: () => { reloads += 1; } }
   };
   vm.runInNewContext(script, {
-    document, window, URL,
+    document, window, URL, TextEncoder,
     fetch: async (url, options) => {
       requests.push({ url, options });
-      const reply = pending.shift() || { ok: true, body: {} };
+      const next = pending.shift();
+      const reply = (typeof next === "function" ? next(options) : next) || { ok: true, body: {} };
       return { ok: reply.ok, status: reply.status, json: async () => reply.body };
     }
   });

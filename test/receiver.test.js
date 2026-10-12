@@ -1172,6 +1172,12 @@ test("POST /import rejects a bundle with too many items with 413", async (t) => 
   assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
 });
 
+test("the inbox import form carries the receiver's limits, so the inbox can split a large file (#140)", async (t) => {
+  const receiver = await startReceiver(t, { MAX_BODY_BYTES: "1000", MAX_IMPORT_ITEMS: "2" });
+  const html = await fetch(`${receiver.baseUrl}/`).then((response) => response.text());
+  assert.match(html, /<form class="import-form" data-import-form data-max-body-bytes="1000" data-max-import-items="2">/);
+});
+
 test("nested screenshot keys cannot bypass the nesting-depth cap", async (t) => {
   // Regression: exempting the whole screenshot subtree let a crafted
   // environment.screenshot bury deep nesting that bypassed the depth cap and
