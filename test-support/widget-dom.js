@@ -253,7 +253,10 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [], stat
     location: { href: "https://demo.example/page" }, clearTimeout: timers.clearTimeout, setTimeout: timers.setTimeout,
     confirm: () => true,
     ...(pointerEvents ? { PointerEvent: function () {} } : {}),
-    localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) }
+    localStorage: {
+      getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key),
+      get length() { return storage.size; }, key: (index) => [...storage.keys()][index] ?? null
+    }
   };
   vm.runInNewContext(bundle, {
     window, document, Blob, AbortController, URLSearchParams,

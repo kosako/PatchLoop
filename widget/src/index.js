@@ -7,7 +7,7 @@ import { DEFAULTS, state } from "./state.js";
 import { buildPayload } from "./payload.js";
 import { uncapturedTouching } from "./screenshot.js";
 import { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } from "./inbox-status.js";
-import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback } from "./persistence.js";
+import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback } from "./persistence.js";
 import { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } from "../../shared/format.js";
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
@@ -47,6 +47,7 @@ function init(options = {}) {
   state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
   state.options.keepQueryParams = normalizeKeepQueryParams(state.options.keepQueryParams);
   state.displayMode = loadDisplayMode();
+  state.otherPages = null;
   resetInboxStatus();
   injectStyles();
   renderShell();
@@ -72,6 +73,7 @@ function destroy() {
   window.visualViewport?.removeEventListener("resize", positionVisibleCommentForm);
   window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
+  window.removeEventListener("storage", handleStorageChange);
   window.clearTimeout(state.resizeTimer);
   resetInboxStatus();
   state.approximateIds.clear();
@@ -130,6 +132,7 @@ function renderShell() {
           <button type="button" data-pl-download-again hidden>全件を再ダウンロード</button>
           <button type="button" data-pl-clear hidden>この端末のコメントを消す</button>
         </div>
+        <p class="pl-other-pages" data-pl-other-pages hidden></p>
         ${renderDeliverySettings()}
       </div>
     </section>
@@ -164,7 +167,7 @@ function renderShell() {
   root.querySelector("[data-pl-mode]").addEventListener("click", toggleFeedbackMode);
   root.querySelector("[data-pl-stop-capture]")?.addEventListener("click", () => setFeedbackMode(false));
   root.querySelector("[data-pl-download-all]").addEventListener("click", downloadUnsentFeedback);
-  root.querySelector("[data-pl-download-again]")?.addEventListener("click", () => downloadFeedbackItems(state.feedback));
+  root.querySelector("[data-pl-download-again]")?.addEventListener("click", downloadAllFeedback);
   root.querySelector("[data-pl-clear]").addEventListener("click", () => {
     if (state.feedback.some((item) => item.delivery?.pending)) return;
     if (window.confirm("この端末に保存したコメントをすべて消します。送信先の内容は削除されません。続けますか？")) clearPins();
@@ -236,6 +239,8 @@ function bindGlobalCapture() {
   window.visualViewport?.addEventListener("scroll", positionVisibleCommentForm);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   document.addEventListener("visibilitychange", handleVisibilityChange);
+  window.removeEventListener("storage", handleStorageChange);
+  window.addEventListener("storage", handleStorageChange);
 }
 
 function cancelCaptureDrag() {
@@ -764,13 +769,22 @@ function pendingDelivery() {
 // Demo-scoped batch export: write every still-unsent comment as one bundle,
 // then flag them as exported so the next batch skips them. Replaces the old
 // one-file-per-comment download, which buried reviewers (and receivers) under
-// a file per click.
+// a file per click. The bundle takes the comments saved on this device by the
+// other pages of the demo too (#197), so a page left unexported loses nothing.
 function downloadUnsentFeedback() {
-  const unsent = state.feedback.filter((item) => !item.exported);
-  downloadFeedbackItems(unsent);
+  const pages = loadOtherPagesFeedback();
+  const unsent = [...state.feedback, ...pages.flatMap((page) => page.feedback)].filter((item) => !item.exported);
+  downloadFeedbackItems(unsent, pages);
 }
 
-function downloadFeedbackItems(items) {
+function downloadAllFeedback() {
+  const pages = loadOtherPagesFeedback();
+  downloadFeedbackItems([...state.feedback, ...pages.flatMap((page) => page.feedback)], pages);
+}
+
+// pages: the other pages' saved data the items were read from, written back
+// with their exported marks (#197).
+function downloadFeedbackItems(items, pages = []) {
   if (items.length === 0) return;
 
   items.forEach((item) => applyPageUrlRule(item, state.options.keepQueryParams));
@@ -803,6 +817,9 @@ function downloadFeedbackItems(items) {
       item.exportedFileName = link.download;
     });
     persistFeedbackList();
+    const exported = new Set(items);
+    pages.filter((page) => page.feedback.some((item) => exported.has(item))).forEach(saveOtherPageFeedback);
+    state.otherPages = null;
     renderFeedbackList();
     showWidgetNotice("ファイルの保存を開始しました。保存できなかった場合は「全件を再ダウンロード」を使ってください。");
     console.info("[PatchLoop] batch download", items.length, link.download);
@@ -836,15 +853,39 @@ function updateDownloadAllButton() {
   const button = root.querySelector("[data-pl-download-all]");
   if (!button) return;
   const again = root.querySelector("[data-pl-download-again]");
-  if (again) again.hidden = state.options.deliveryMode !== "download" || state.feedback.length === 0;
+  const note = root.querySelector("[data-pl-other-pages]");
   if (state.options.deliveryMode !== "download") {
     button.hidden = true;
+    if (again) again.hidden = true;
+    if (note) note.hidden = true;
     return;
   }
-  const unsent = state.feedback.filter((item) => !item.exported).length;
+  const other = otherPagesSummary();
+  if (again) again.hidden = state.feedback.length + other.total === 0;
+  const unsent = state.feedback.filter((item) => !item.exported).length + other.unexported;
   button.hidden = false;
   button.disabled = unsent === 0;
   button.textContent = unsent > 0 ? `未送信を書き出す（${unsent}）` : "すべて書き出し済み";
+  if (note) {
+    note.hidden = other.unexported === 0;
+    note.textContent = other.unexported > 0 ? `ほかのページに未書き出しのコメントが ${other.unexported} 件あります。書き出すときに一緒に入ります。` : "";
+  }
+}
+
+// Counts of the other pages' saved comments (#197), read again only after
+// they may have changed: an init, an export, or a write from another tab.
+function otherPagesSummary() {
+  if (!state.otherPages) {
+    const feedback = loadOtherPagesFeedback().flatMap((page) => page.feedback);
+    state.otherPages = { total: feedback.length, unexported: feedback.filter((item) => !item.exported).length };
+  }
+  return state.otherPages;
+}
+
+function handleStorageChange(event) {
+  if (event.key !== null && !String(event.key).startsWith(`${state.options.feedbackStorageKey}:`)) return;
+  state.otherPages = null;
+  updateDownloadAllButton();
 }
 
 async function postSlackWebhook(payload) {
@@ -1829,6 +1870,7 @@ function injectStyles() {
     .pl-feedback-item:focus { outline: 3px solid #168565; outline-offset: -3px; }
     .pl-actions [data-pl-clear] { border: 0; color: #65716d; font-size: 10px; padding: 5px 0; min-height: 32px; }
     .pl-actions [data-pl-download-again] { font-size: 11px; }
+    .pl-panel .pl-other-pages { margin: -8px 20px 16px; color: #7a5200; font-size: 11px; line-height: 1.5; }
     .pl-panel .pl-notice { margin: 0 20px 16px; padding: 10px 12px; border-radius: 8px; background: #edf6ef; color: #245840; font-size: 11px; }
     .pl-panel .pl-notice[data-state="error"] { background: #fff0f2; color: #a32f45; }
     .pl-form-heading { display: grid; gap: 4px; }

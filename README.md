@@ -73,7 +73,7 @@ script-tag widget:
 - 任意の `onSubmit(payload)` callback
 - 任意の `endpoint` 設定で payload を receiver に POST
 - ローカル receiver から任意の Slack Incoming Webhook へ、スクショリンク / image block / 任意の file upload 付きで転送
-- Download mode で、未送信ぶんをデモ単位でまとめた versioned JSON bundle を一括保存（書き出し済みの印 `exported` で管理）
+- Download mode で、この端末に保存した同じ project / demo の全ページの未送信ぶんを、1 つの versioned JSON bundle に一括保存（書き出し済みの印 `exported` で管理）
 - receiver inbox から download mode の bundle（単一・batch の両方）を import
 - 設定またはパネルの「送信先・設定」から、receiver 経由送信 / Slack webhook 直送 / download / 送信なしを切り替え
 
@@ -357,7 +357,7 @@ window.PatchLoop.init({
 });
 ```
 
-download mode では、コメントをパネルにため、「未送信を書き出す（N）」で **未書き出しのコメントを 1 ファイル**（`<project>-<demo>-<件数>-<timestamp>.patchloop-feedback.json`）へ出力します。「書き出し済み」はダウンロード開始の記録で、保存完了や受信箱への取込完了を保証しません。保存できなかった場合は「全件を再ダウンロード」を使えます。編集した項目は再び書き出せますが、同じ ID の再取込は重複としてスキップされ、受信済みの内容を上書きしません。bundle は単一 JSON ファイルで、形式は versioned、`feedback` は配列です。
+download mode では、コメントをパネルにため、「未送信を書き出す（N）」で **未書き出しのコメントを 1 ファイル**（`<project>-<demo>-<件数>-<timestamp>.patchloop-feedback.json`）へ出力します。「書き出し済み」はダウンロード開始の記録で、保存完了や受信箱への取込完了を保証しません。保存できなかった場合は「全件を再ダウンロード」を使えます。どちらも、この端末に保存した同じ `projectId` / `demoId` の全ページのコメントを対象にするので、ページごとに書き出す必要はありません（`persistFeedback: false` のときは、開いているページのコメントだけ）。ほかのページに未書き出しのコメントがあると、パネルにその件数を出します。書き出し済みの印は、それぞれのページの保存データに付けます。ほかのページを別のタブで開いたままだと、そのタブが保存し直したときにこの印が消えることがあります。その場合は次の書き出しにもう一度入り、受信箱では重複としてスキップされます。編集した項目は再び書き出せますが、同じ ID の再取込は重複としてスキップされ、受信済みの内容を上書きしません。bundle は単一 JSON ファイルで、形式は versioned、`feedback` は配列です。
 
 ```json
 {

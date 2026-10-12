@@ -176,10 +176,66 @@ export function normalizePersistedFeedback(item) {
 }
 
 export function isMatchingFeedbackEnvelope(value) {
+  return isDemoFeedbackEnvelope(value) && samePersistedPage(value.pageUrl, window.location.href);
+}
+
+// An envelope saved by any page of the current project / demo.
+function isDemoFeedbackEnvelope(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   if (value.version !== FEEDBACK_STORAGE_VERSION) return false;
   if (value.projectId !== state.options.projectId) return false;
   if (value.demoId !== state.options.demoId) return false;
-  if (!samePersistedPage(value.pageUrl, window.location.href)) return false;
   return Array.isArray(value.feedback);
+}
+
+// The comments saved on this device by the other pages of the project / demo
+// (#197), so an export can take them along: [{ key, envelope, feedback }],
+// where feedback holds the envelope's own valid items. URLs are trimmed to the
+// current rule (#163) in memory; saveOtherPageFeedback writes them back.
+// The legacy single key is left out: it is migrated when its page is opened.
+export function loadOtherPagesFeedback() {
+  if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return [];
+  const prefix = `${state.options.feedbackStorageKey}:`;
+  const ownKey = scopedFeedbackStorageKey();
+  let keys;
+  try {
+    const storage = window.localStorage;
+    keys = Array.from({ length: storage.length }, (_, index) => storage.key(index));
+  } catch (error) {
+    console.warn("[PatchLoop] saved feedback of other pages unavailable", error);
+    return [];
+  }
+  return keys.flatMap((key) => {
+    if (typeof key !== "string" || !key.startsWith(prefix) || key === ownKey || !isDemoScope(key.slice(prefix.length))) return [];
+    try {
+      const envelope = JSON.parse(window.localStorage.getItem(key));
+      if (!isDemoFeedbackEnvelope(envelope)) return [];
+      trimEnvelopeUrls(envelope);
+      return [{ key, envelope, feedback: envelope.feedback.map(normalizePersistedFeedback).filter(Boolean) }];
+    } catch (error) {
+      console.warn("[PatchLoop] saved feedback of another page ignored", key, error);
+      return [];
+    }
+  });
+}
+
+// The scope part of a scoped key: [projectId, demoId, page].
+function isDemoScope(scope) {
+  try {
+    const parts = JSON.parse(scope);
+    // Compared as serialized, the way scopedFeedbackStorageKey wrote them.
+    return Array.isArray(parts) && parts.length === 3
+      && JSON.stringify(parts.slice(0, 2)) === JSON.stringify([state.options.projectId, state.options.demoId]);
+  } catch (_) {
+    return false;
+  }
+}
+
+export function saveOtherPageFeedback(page) {
+  page.envelope.savedAt = new Date().toISOString();
+  try {
+    window.localStorage.setItem(page.key, JSON.stringify(page.envelope));
+  } catch (error) {
+    console.warn("[PatchLoop] unable to save another page's feedback", page.key, error);
+  }
 }

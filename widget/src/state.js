@@ -52,5 +52,8 @@ export const state = {
   statusLookupRequest: null,
   // The comment form's note about elements the screenshot will not show (#148),
   // shown while the screenshot is included.
-  uncapturedHint: ""
+  uncapturedHint: "",
+  // { total, unexported } of the comments saved by the other pages of the demo
+  // (#197); null until counted again.
+  otherPages: null
 };
