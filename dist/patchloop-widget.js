@@ -561,7 +561,14 @@ const state = {
   statusLookupRequest: null,
   // The comment form's note about elements the screenshot will not show (#148),
   // shown while the screenshot is included.
-  uncapturedHint: ""
+  uncapturedHint: "",
+  // { total, unexported } of the comments saved by the other pages of the demo
+  // (#197); null until counted again.
+  otherPages: null,
+  otherPagesTimer: null,
+  // { key, pageUrl } of the page whose saved list is in memory (#197), fixed by
+  // init; see bindFeedbackScope.
+  feedbackScope: null
 };
 
 return { DEFAULTS, state };
@@ -1298,7 +1305,7 @@ function loadPersistedFeedback() {
   if (!state.options.feedbackStorageKey) return [];
 
   try {
-    const storageKey = scopedFeedbackStorageKey();
+    const storageKey = feedbackScope().key;
     const scoped = window.localStorage.getItem(storageKey);
     const raw = scoped ?? window.localStorage.getItem(state.options.feedbackStorageKey);
     if (!raw) return [];
@@ -1358,7 +1365,7 @@ function persistFeedbackList() {
   if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return;
 
   const envelope = feedbackStorageEnvelope(state.feedback);
-  const storageKey = scopedFeedbackStorageKey();
+  const storageKey = feedbackScope().key;
   try {
     window.localStorage.setItem(storageKey, JSON.stringify(envelope));
   } catch (error) {
@@ -1376,7 +1383,7 @@ function clearPersistedFeedback() {
   if (!state.options.feedbackStorageKey) return;
 
   try {
-    window.localStorage.removeItem(scopedFeedbackStorageKey());
+    window.localStorage.removeItem(feedbackScope().key);
     const legacy = window.localStorage.getItem(state.options.feedbackStorageKey);
     if (legacy && isMatchingFeedbackEnvelope(JSON.parse(legacy))) {
       window.localStorage.removeItem(state.options.feedbackStorageKey);
@@ -1386,11 +1393,27 @@ function clearPersistedFeedback() {
   }
 }
 
-function scopedFeedbackStorageKey() {
+// The page whose saved list is in memory (#197). init fixes it as it loads
+// the list, so a single-page app that changes the URL without re-initializing
+// keeps saving that list under its own page instead of over another page's,
+// and an export still tells it apart from the other pages.
+function bindFeedbackScope() {
+  state.feedbackScope = currentFeedbackScope();
+}
+
+function feedbackScope() {
+  return state.feedbackScope || currentFeedbackScope();
+}
+
+function currentFeedbackScope() {
+  return { key: scopedFeedbackStorageKey(window.location.href), pageUrl: pageUrlForSharing(window.location.href, []) };
+}
+
+function scopedFeedbackStorageKey(pageUrl) {
   return `${state.options.feedbackStorageKey}:${JSON.stringify([
     state.options.projectId,
     state.options.demoId,
-    normalizePageUrl(window.location.href, undefined)
+    normalizePageUrl(pageUrl, undefined)
   ])}`;
 }
 
@@ -1400,7 +1423,7 @@ function feedbackStorageEnvelope(feedback, options = {}) {
     projectId: state.options.projectId,
     demoId: state.options.demoId,
     // Only the page identity is compared on load, so no query is kept (#163).
-    pageUrl: pageUrlForSharing(window.location.href, []),
+    pageUrl: feedbackScope().pageUrl,
     savedAt: new Date().toISOString(),
     feedback: feedback.map((item) => serializeFeedbackForStorage(item, options)).filter(Boolean)
   };
@@ -1426,15 +1449,91 @@ function normalizePersistedFeedback(item) {
 }
 
 function isMatchingFeedbackEnvelope(value) {
+  return isDemoFeedbackEnvelope(value) && samePersistedPage(value.pageUrl, feedbackScope().pageUrl);
+}
+
+// An envelope saved by any page of the current project / demo.
+function isDemoFeedbackEnvelope(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   if (value.version !== FEEDBACK_STORAGE_VERSION) return false;
   if (value.projectId !== state.options.projectId) return false;
   if (value.demoId !== state.options.demoId) return false;
-  if (!samePersistedPage(value.pageUrl, window.location.href)) return false;
   return Array.isArray(value.feedback);
 }
 
-return { FEEDBACK_STORAGE_VERSION, loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadPersistedFeedback, persistFeedbackList, clearPersistedFeedback, serializeFeedbackForStorage, normalizePersistedFeedback, isMatchingFeedbackEnvelope };
+// The comments saved on this device by the other pages of the project / demo
+// (#197), so an export can take them along: [{ key, envelope, feedback }],
+// where feedback holds the envelope's own valid items. URLs are trimmed to the
+// current rule (#163) in memory; saveOtherPageFeedback writes them back.
+function loadOtherPagesFeedback() {
+  if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return [];
+  const prefix = `${state.options.feedbackStorageKey}:`;
+  const ownKey = feedbackScope().key;
+  let keys;
+  try {
+    const storage = window.localStorage;
+    keys = Array.from({ length: storage.length }, (_, index) => storage.key(index));
+  } catch (error) {
+    console.warn("[PatchLoop] saved feedback of other pages unavailable", error);
+    return [];
+  }
+  const scoped = keys.flatMap((key) => {
+    if (typeof key !== "string" || !key.startsWith(prefix) || key === ownKey || !isDemoScope(key.slice(prefix.length))) return [];
+    return otherPageFeedback(key, () => true);
+  });
+  // A list saved under the legacy single key, before the per-page keys, is
+  // its page's until that page is opened and migrates it; a per-page list of
+  // that page wins over it, as it does on load.
+  const legacy = otherPageFeedback(state.options.feedbackStorageKey, (envelope) => {
+    const pageKey = scopedFeedbackStorageKey(envelope.pageUrl);
+    return pageKey !== ownKey && window.localStorage.getItem(pageKey) === null;
+  });
+  return [...scoped, ...legacy];
+}
+
+function otherPageFeedback(key, belongsToOtherPage) {
+  try {
+    const envelope = JSON.parse(window.localStorage.getItem(key));
+    if (!isDemoFeedbackEnvelope(envelope) || !belongsToOtherPage(envelope)) return [];
+    trimEnvelopeUrls(envelope);
+    return [{ key, envelope, feedback: envelope.feedback.map(normalizePersistedFeedback).filter(Boolean) }];
+  } catch (error) {
+    console.warn("[PatchLoop] saved feedback of another page ignored", key, error);
+    return [];
+  }
+}
+
+// Whether a storage change can touch the saved feedback of the project / demo;
+// a null key is a clear().
+function isDemoFeedbackKey(key) {
+  const base = state.options.feedbackStorageKey;
+  if (key === null) return true;
+  if (!base || typeof key !== "string") return false;
+  return key === base || (key.startsWith(`${base}:`) && isDemoScope(key.slice(base.length + 1)));
+}
+
+// The scope part of a scoped key: [projectId, demoId, page].
+function isDemoScope(scope) {
+  try {
+    const parts = JSON.parse(scope);
+    // Compared as serialized, the way scopedFeedbackStorageKey wrote them.
+    return Array.isArray(parts) && parts.length === 3
+      && JSON.stringify(parts.slice(0, 2)) === JSON.stringify([state.options.projectId, state.options.demoId]);
+  } catch (_) {
+    return false;
+  }
+}
+
+function saveOtherPageFeedback(page) {
+  page.envelope.savedAt = new Date().toISOString();
+  try {
+    window.localStorage.setItem(page.key, JSON.stringify(page.envelope));
+  } catch (error) {
+    console.warn("[PatchLoop] unable to save another page's feedback", page.key, error);
+  }
+}
+
+return { FEEDBACK_STORAGE_VERSION, loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadPersistedFeedback, persistFeedbackList, clearPersistedFeedback, bindFeedbackScope, serializeFeedbackForStorage, normalizePersistedFeedback, isMatchingFeedbackEnvelope, loadOtherPagesFeedback, isDemoFeedbackKey, saveOtherPageFeedback };
 })();
 const { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarget, rectFromStoredArea, round, numberOrNull } = __pl_widget_src_geometry;
 const { pointAnchorOffsets, areaAnchorOffsets, geometryFromAnchor, viewportDiffersFromCreation } = __pl_widget_src_anchoring;
@@ -1445,7 +1544,7 @@ const { DEFAULTS, state } = __pl_widget_src_state;
 const { buildPayload } = __pl_widget_src_payload;
 const { uncapturedTouching } = __pl_widget_src_screenshot;
 const { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } = __pl_widget_src_inbox_status;
-const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback } = __pl_widget_src_persistence;
+const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey } = __pl_widget_src_persistence;
 const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } = __pl_shared_format;
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
@@ -1485,6 +1584,9 @@ function init(options = {}) {
   state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
   state.options.keepQueryParams = normalizeKeepQueryParams(state.options.keepQueryParams);
   state.displayMode = loadDisplayMode();
+  // Before anything renders: the panel counts the other pages against it.
+  bindFeedbackScope();
+  state.otherPages = null;
   resetInboxStatus();
   injectStyles();
   renderShell();
@@ -1510,6 +1612,8 @@ function destroy() {
   window.visualViewport?.removeEventListener("resize", positionVisibleCommentForm);
   window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
+  window.removeEventListener("storage", handleStorageChange);
+  window.clearTimeout(state.otherPagesTimer);
   window.clearTimeout(state.resizeTimer);
   resetInboxStatus();
   state.approximateIds.clear();
@@ -1568,6 +1672,7 @@ function renderShell() {
           <button type="button" data-pl-download-again hidden>全件を再ダウンロード</button>
           <button type="button" data-pl-clear hidden>この端末のコメントを消す</button>
         </div>
+        <p class="pl-other-pages" data-pl-other-pages hidden></p>
         ${renderDeliverySettings()}
       </div>
     </section>
@@ -1602,7 +1707,7 @@ function renderShell() {
   root.querySelector("[data-pl-mode]").addEventListener("click", toggleFeedbackMode);
   root.querySelector("[data-pl-stop-capture]")?.addEventListener("click", () => setFeedbackMode(false));
   root.querySelector("[data-pl-download-all]").addEventListener("click", downloadUnsentFeedback);
-  root.querySelector("[data-pl-download-again]")?.addEventListener("click", () => downloadFeedbackItems(state.feedback));
+  root.querySelector("[data-pl-download-again]")?.addEventListener("click", downloadAllFeedback);
   root.querySelector("[data-pl-clear]").addEventListener("click", () => {
     if (state.feedback.some((item) => item.delivery?.pending)) return;
     if (window.confirm("この端末に保存したコメントをすべて消します。送信先の内容は削除されません。続けますか？")) clearPins();
@@ -1674,6 +1779,8 @@ function bindGlobalCapture() {
   window.visualViewport?.addEventListener("scroll", positionVisibleCommentForm);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   document.addEventListener("visibilitychange", handleVisibilityChange);
+  window.removeEventListener("storage", handleStorageChange);
+  window.addEventListener("storage", handleStorageChange);
 }
 
 function cancelCaptureDrag() {
@@ -2202,13 +2309,22 @@ function pendingDelivery() {
 // Demo-scoped batch export: write every still-unsent comment as one bundle,
 // then flag them as exported so the next batch skips them. Replaces the old
 // one-file-per-comment download, which buried reviewers (and receivers) under
-// a file per click.
+// a file per click. The bundle takes the comments saved on this device by the
+// other pages of the demo too (#197), so a page left unexported loses nothing.
 function downloadUnsentFeedback() {
-  const unsent = state.feedback.filter((item) => !item.exported);
-  downloadFeedbackItems(unsent);
+  const pages = loadOtherPagesFeedback();
+  const unsent = [...state.feedback, ...pages.flatMap((page) => page.feedback)].filter((item) => !item.exported);
+  downloadFeedbackItems(unsent, pages);
 }
 
-function downloadFeedbackItems(items) {
+function downloadAllFeedback() {
+  const pages = loadOtherPagesFeedback();
+  downloadFeedbackItems([...state.feedback, ...pages.flatMap((page) => page.feedback)], pages);
+}
+
+// pages: the other pages' saved data the items were read from, written back
+// with their exported marks (#197).
+function downloadFeedbackItems(items, pages = []) {
   if (items.length === 0) return;
 
   items.forEach((item) => applyPageUrlRule(item, state.options.keepQueryParams));
@@ -2241,6 +2357,9 @@ function downloadFeedbackItems(items) {
       item.exportedFileName = link.download;
     });
     persistFeedbackList();
+    const exported = new Set(items);
+    pages.filter((page) => page.feedback.some((item) => exported.has(item))).forEach(saveOtherPageFeedback);
+    state.otherPages = null;
     renderFeedbackList();
     showWidgetNotice("ファイルの保存を開始しました。保存できなかった場合は「全件を再ダウンロード」を使ってください。");
     console.info("[PatchLoop] batch download", items.length, link.download);
@@ -2274,15 +2393,41 @@ function updateDownloadAllButton() {
   const button = root.querySelector("[data-pl-download-all]");
   if (!button) return;
   const again = root.querySelector("[data-pl-download-again]");
-  if (again) again.hidden = state.options.deliveryMode !== "download" || state.feedback.length === 0;
+  const note = root.querySelector("[data-pl-other-pages]");
   if (state.options.deliveryMode !== "download") {
     button.hidden = true;
+    if (again) again.hidden = true;
+    if (note) note.hidden = true;
     return;
   }
-  const unsent = state.feedback.filter((item) => !item.exported).length;
+  const other = otherPagesSummary();
+  if (again) again.hidden = state.feedback.length + other.total === 0;
+  const unsent = state.feedback.filter((item) => !item.exported).length + other.unexported;
   button.hidden = false;
   button.disabled = unsent === 0;
   button.textContent = unsent > 0 ? `未送信を書き出す（${unsent}）` : "すべて書き出し済み";
+  if (note) {
+    note.hidden = other.unexported === 0;
+    note.textContent = other.unexported > 0 ? `ほかのページに未書き出しのコメントが ${other.unexported} 件あります。書き出すときに一緒に入ります。` : "";
+  }
+}
+
+// Counts of the other pages' saved comments (#197), read again only after
+// they may have changed: an init, an export, or a write from another tab.
+function otherPagesSummary() {
+  if (!state.otherPages) {
+    const feedback = loadOtherPagesFeedback().flatMap((page) => page.feedback);
+    state.otherPages = { total: feedback.length, unexported: feedback.filter((item) => !item.exported).length };
+  }
+  return state.otherPages;
+}
+
+function handleStorageChange(event) {
+  if (!isDemoFeedbackKey(event.key)) return;
+  state.otherPages = null;
+  // An export in another tab writes one key per page: count once after them.
+  window.clearTimeout(state.otherPagesTimer);
+  state.otherPagesTimer = window.setTimeout(updateDownloadAllButton, 100);
 }
 
 async function postSlackWebhook(payload) {
@@ -3267,6 +3412,7 @@ function injectStyles() {
     .pl-feedback-item:focus { outline: 3px solid #168565; outline-offset: -3px; }
     .pl-actions [data-pl-clear] { border: 0; color: #65716d; font-size: 10px; padding: 5px 0; min-height: 32px; }
     .pl-actions [data-pl-download-again] { font-size: 11px; }
+    .pl-panel .pl-other-pages { margin: -8px 20px 16px; color: #7a5200; font-size: 11px; line-height: 1.5; }
     .pl-panel .pl-notice { margin: 0 20px 16px; padding: 10px 12px; border-radius: 8px; background: #edf6ef; color: #245840; font-size: 11px; }
     .pl-panel .pl-notice[data-state="error"] { background: #fff0f2; color: #a32f45; }
     .pl-form-heading { display: grid; gap: 4px; }

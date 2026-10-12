@@ -73,7 +73,7 @@ script-tag widget:
 - Optional `onSubmit(payload)` callback
 - Optional `endpoint` setting that POSTs payloads to the bundled local receiver
 - Optional Slack Incoming Webhook forwarding from the local receiver with screenshot links, image blocks, and optional file upload
-- Download mode that batches unsent feedback for a demo into one versioned JSON bundle (tracked with an `exported` flag)
+- Download mode that batches the unsent feedback of every page of a project / demo saved on this device into one versioned JSON bundle (tracked with an `exported` flag)
 - Receiver inbox import for download-mode bundles (both single and batch)
 - Configurable delivery mode for receiver forwarding, direct Slack webhook delivery, download, or no delivery
 
@@ -358,7 +358,7 @@ window.PatchLoop.init({
 });
 ```
 
-In download mode, comments collect in the panel. “未送信を書き出す（N）” exports **all unexported comments in one JSON file** named `<project>-<demo>-<count>-<timestamp>.patchloop-feedback.json`. “書き出し済み” records that a download started, not that the file was saved or imported. Use “全件を再ダウンロード” to download everything again. Editing an exported comment makes it exportable again, but importing an existing ID skips it as a duplicate; it does not overwrite the received version. The bundle is a versioned JSON file with a `feedback` array.
+In download mode, comments collect in the panel. “未送信を書き出す（N）” exports **all unexported comments in one JSON file** named `<project>-<demo>-<count>-<timestamp>.patchloop-feedback.json`. “書き出し済み” records that a download started, not that the file was saved or imported. Use “全件を再ダウンロード” to download everything again. Both take the comments saved on this device by every page with the same `projectId` / `demoId`, so there is no need to export page by page (with `persistFeedback: false`, only the open page's comments). When other pages have unexported comments, the panel shows how many. The exported marks are saved with each page's data. If another page stays open in another tab, its next save can drop those marks; the comments then go into the next export again and the inbox skips them as duplicates. Editing an exported comment makes it exportable again, but importing an existing ID skips it as a duplicate; it does not overwrite the received version. The bundle is a versioned JSON file with a `feedback` array.
 
 ```json
 {
