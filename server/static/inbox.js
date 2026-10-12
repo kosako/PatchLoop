@@ -71,7 +71,7 @@ function importParts(text, maxBytes, maxItems) {
     if (id !== null) byId.set(id, unit);
     units.push(unit);
   }
-  if (units.length < 2) return [{ body: text, count: parsed.feedback.length, oversized }];
+  if (units.length < 2) return [{ body: text, count: parsed.feedback.length, oversized, sameId: units.length === 1 }];
   const wrap = (items) => ({ ...parsed, feedback: items });
 
   const created = (unit) => Date.parse(unit[0]?.createdAt);

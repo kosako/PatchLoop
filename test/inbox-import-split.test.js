@@ -171,3 +171,12 @@ test("the comments of one id that together go over the limit fail together, and 
   const status = await importFile(ui, bundle([copy(filler), ...FIVE, copy(filler)]));
   assert.equal(status.textContent, `5 件を追加しました。失敗 2 件。同じ id のコメント 2 件で受信側の上限（${TWO} byte）を超えています。receiver の MAX_BODY_BYTES（設定の maxBodyBytes）を上げると読み込めます。「受信箱を更新」で一覧に反映します。`);
 });
+
+test("a file of only the comments of one id over the limit is sent whole and says so", async () => {
+  const copy = (text) => comment(9, "2026-10-09T00:00:00.000Z", text);
+  const filler = "y".repeat(TWO - ONE - 10);
+  const ui = inboxHarness([], { maxBodyBytes: TWO, replies: [tooLarge] });
+  const status = await importFile(ui, bundle([copy(filler), copy(filler)]));
+  assert.equal(ui.requests.length, 1);
+  assert.match(status.textContent, new RegExp(`^同じ id のコメント 2 件で受信側の上限（${TWO} byte）を超えています。`));
+});
