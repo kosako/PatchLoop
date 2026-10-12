@@ -2518,9 +2518,11 @@ function reanchorGeometry(target, element) {
   return geometryFromAnchor(target.kind, anchor, rect, window.scrollX, window.scrollY);
 }
 
+// The viewport values are derived from the page pixels as rounded for storage,
+// the way the screenshot places its mark, so both agree under a fractional scroll.
 function refreshTargetCoordinates(target, geometry) {
   if (geometry.kind === "area" && target.area) {
-    const topLeft = pointFromClient(geometry.pageLeftPx - window.scrollX, geometry.pageTopPx - window.scrollY, viewportMetrics());
+    const topLeft = pointFromClient(Math.round(geometry.pageLeftPx) - window.scrollX, Math.round(geometry.pageTopPx) - window.scrollY, viewportMetrics());
     const viewportWidth = Math.max(document.documentElement.clientWidth, 1);
     const viewportHeight = Math.max(document.documentElement.clientHeight, 1);
     const documentWidth = Math.max(document.documentElement.scrollWidth, 1);
@@ -2546,7 +2548,7 @@ function refreshTargetCoordinates(target, geometry) {
     return;
   }
 
-  const point = pointFromClient(geometry.pageX - window.scrollX, geometry.pageY - window.scrollY, viewportMetrics());
+  const point = pointFromClient(Math.round(geometry.pageX) - window.scrollX, Math.round(geometry.pageY) - window.scrollY, viewportMetrics());
   assignPointFields(target, point);
 }
 

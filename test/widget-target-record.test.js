@@ -51,6 +51,20 @@ test("an area confirmed after a scroll records its viewport position of that mom
   assert.deepEqual([target.area.clientY, target.area.y, target.area.pageY], [110, 18.3, 130]);
 });
 
+test("under a fractional scroll the viewport position is taken from the rounded page position, as the screenshot mark is", async () => {
+  const w = widgetHarness();
+  w.init();
+  w.window.scrollY = 100.5;
+  await w.submit("Pin");
+  await w.submit("Area", { area: true });
+
+  const [pin, area] = w.requests.map((request) => JSON.parse(request.body).target);
+  assert.deepEqual([pin.clientY, pin.pageY], [31, 131]);
+  assert.equal(pin.clientY, Math.round(pin.pageY - 100.5));
+  assert.deepEqual([area.area.clientY, area.area.pageY], [31, 131]);
+  assert.equal(area.area.clientY, Math.round(area.area.pageY - 100.5));
+});
+
 test("a re-anchor moves the markers but keeps the recorded targets, in storage and in the export", async () => {
   const w = widgetHarness();
   w.init({ persistFeedback: true, deliveryMode: "download" });

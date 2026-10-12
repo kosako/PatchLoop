@@ -69,7 +69,7 @@ script-tag widget:
 - Lightweight viewport screenshot snapshot (SVG) attached to each payload
 - `localStorage` persistence for the feedback list, including pin / area overlay restoration after reload
 - Markers re-anchor to their target element (via selector) on window resize, following layout reflows
-- When re-anchoring fails (element missing or hidden), markers go back to their stored position and show an approximate badge (≈)
+- When re-anchoring fails (element missing or hidden), markers go back to their stored position, with an approximate badge (≈) when the window size differs from when the comment was made
 - Optional `onSubmit(payload)` callback
 - Optional `endpoint` setting that POSTs payloads to the bundled local receiver
 - Optional Slack Incoming Webhook forwarding from the local receiver with screenshot links, image blocks, and optional file upload
