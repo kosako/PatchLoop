@@ -4,7 +4,7 @@ import { selectorFor, textFor } from "./selector.js";
 import { resolveSourceContext } from "./source-context.js";
 import { applyPageUrlRule, normalizeKeepQueryParams } from "./url.js";
 import { DEFAULTS, state } from "./state.js";
-import { buildPayload } from "./payload.js";
+import { buildPayload, buildRevision } from "./payload.js";
 import { uncapturedTouching } from "./screenshot.js";
 import { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } from "./inbox-status.js";
 import { isLocallyEdited, pendingAge, receiverHasCopy } from "./delivery-state.js";
@@ -166,7 +166,7 @@ function renderShell() {
       <p class="pl-capture-note" data-pl-capture-note>画像には画面外の内容が含まれる場合があります。機密情報のあるページでは外してください。</p>
       <p class="pl-uncaptured-hint" id="pl-uncaptured-hint" data-pl-uncaptured-hint hidden></p>
       <p class="pl-form-error" id="pl-form-error" data-pl-form-error role="alert" hidden></p>
-      <p class="pl-edit-note" data-pl-edit-note hidden>編集はこの端末に保存されます。受信済みの内容や作成済みの Issue は更新されません。</p>
+      <p class="pl-edit-note" data-pl-edit-note hidden></p>
       <div class="pl-form-actions">
         <button type="button" data-pl-cancel>キャンセル</button>
         <button type="submit" data-pl-submit>コメントを送る</button>
@@ -475,7 +475,13 @@ function openCommentForm(point, options = {}) {
   const submit = form.querySelector("[data-pl-submit]");
   if (submit) submit.textContent = editing ? "変更を保存" : "コメントを送る";
   const editNote = form.querySelector("[data-pl-edit-note]");
-  if (editNote) editNote.hidden = !editing;
+  if (editNote) {
+    editNote.hidden = !editing;
+    const edited = editing ? state.feedback.find((item) => item.id === state.editingId) : null;
+    editNote.textContent = edited && hasLeftDevice(edited)
+      ? "書き出し済みか送信済みのコメントです。変更は元のコメントの修正版（新しいコメント）として届けます。受け取り済みの元のコメントや作成済みの Issue は変わりません。"
+      : "編集はこの端末に保存されます。";
+  }
   const screenshotField = form.querySelector("[data-pl-screenshot-field]");
   const captureNote = form.querySelector("[data-pl-capture-note]");
   if (screenshotField) screenshotField.hidden = editing || !state.options.captureScreenshot;
@@ -635,19 +641,24 @@ async function submitComment(event) {
 
   if (state.editingId) {
     const target = state.feedback.find((item) => item.id === state.editingId);
+    const changed = target && (target.comment !== comment || target.reviewer !== reviewer);
+    if (target && hasLeftDevice(target)) {
+      if (!changed && !isLocallyEdited(target)) {
+        state.editingId = null;
+        closeCommentForm();
+        showWidgetNotice("変更はありません。");
+        return;
+      }
+      // What left this device is not rewritten: the edit goes as a revision
+      // (#121). An earlier local change that never left goes with it.
+      saveReviewer(reviewer);
+      state.editingId = null;
+      await commitFeedback(buildRevision(target, comment, reviewer), root, target);
+      return;
+    }
     if (target) {
-      const changed = target.comment !== comment || target.reviewer !== reviewer;
       target.comment = comment;
       target.reviewer = reviewer;
-      // The receiver holds the comment when it took the post or answered 409
-      // (it already had that id), so an edit no longer matches the inbox (#187).
-      if (changed && (receiverHasCopy(target.delivery) || target.exported)) target.localEdited = true;
-      // Re-export the local change; receivers still deduplicate the original ID.
-      if (changed && target.exported) {
-        delete target.exported;
-        delete target.exportedAt;
-        delete target.exportedFileName;
-      }
       saveReviewer(reviewer);
       saveFeedbackList();
       renumberMarkers();
@@ -657,7 +668,7 @@ async function submitComment(event) {
     }
     state.editingId = null;
     closeCommentForm();
-    showWidgetNotice("変更をこの端末に保存しました。送信先の内容は更新されません。");
+    showWidgetNotice("変更をこの端末に保存しました。");
     return;
   }
 
@@ -669,12 +680,30 @@ async function submitComment(event) {
   // screenshot: the reviewer may have scrolled since choosing the spot.
   const placement = storedPlacement(state.pendingTarget);
   if (placement) refreshTargetCoordinates(state.pendingTarget, placement);
-  const payload = buildPayload(comment, reviewer, state.pendingTarget, includeScreenshot);
+  await commitFeedback(buildPayload(comment, reviewer, state.pendingTarget, includeScreenshot), root);
+}
+
+// Whether the comment has left this device: exported, or the receiver (or
+// Slack) may hold it, or edited here after it did (localEdited, before #121).
+function hasLeftDevice(item) {
+  return Boolean(item.exported || item.localEdited || receiverHasCopy(item.delivery));
+}
+
+// Lists, saves, announces and delivers a new comment, or the revision of one
+// that has left this device (#121), which takes the original's place in the
+// list and on the page.
+async function commitFeedback(payload, root, replacing = null) {
   const delivering = shouldDeliverFeedback();
-  if (delivering) payload.delivery = pendingDelivery();
-  state.feedback.unshift(payload);
-  finalizePendingMarker(payload);
-  if (delivering) state.deliveringIds.add(payload.id);
+  if (delivering) {
+    payload.delivery = pendingDelivery();
+    state.deliveringIds.add(payload.id);
+  }
+  if (replacing) {
+    replaceFeedback(replacing, payload);
+  } else {
+    state.feedback.unshift(payload);
+    finalizePendingMarker(payload);
+  }
   saveFeedbackList();
   renderFeedbackList();
   expandPanel();
@@ -697,9 +726,22 @@ async function submitComment(event) {
     saveFeedbackList();
     renderFeedbackList();
     showWidgetNotice(deliveryStatusText(payload.delivery), payload.delivery.ok === false);
+  } else if (state.options.deliveryMode === "download") {
+    showWidgetNotice(replacing ? "変更を元のコメントの修正版として保存しました。「未送信を書き出す」から共有できます。" : "コメントを保存しました。「未送信を書き出す」から共有できます。");
   } else {
-    showWidgetNotice(state.options.deliveryMode === "download" ? "コメントを保存しました。「未送信を書き出す」から共有できます。" : "コメントをこの端末に保存しました。外部には送信していません。");
+    showWidgetNotice(replacing ? "変更を元のコメントの修正版としてこの端末に保存しました。外部には送信していません。" : "コメントをこの端末に保存しました。外部には送信していません。");
   }
+}
+
+function replaceFeedback(original, revision) {
+  const index = state.feedback.indexOf(original);
+  if (index === -1) state.feedback.unshift(revision);
+  else state.feedback.splice(index, 1, revision);
+  state.feedbackMarkers.get(original.id)?.node?.remove();
+  state.feedbackMarkers.delete(original.id);
+  state.approximateIds.delete(original.id);
+  addCommittedMarker(revision);
+  renumberMarkers();
 }
 
 function showWidgetNotice(message, error = false) {
