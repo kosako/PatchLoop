@@ -173,6 +173,9 @@ function readStoredFeedback() {
       // The legacy key holds one page's list, maybe another page's.
       return scoped === null && isDemoFeedbackEnvelope(parsed) ? [] : null;
     }
+    // As loading reads it (#163), so a trim whose write-back failed does not
+    // look like another tab's change.
+    trimEnvelopeUrls(parsed);
     return parsed.feedback.map(normalizePersistedFeedback).filter(Boolean);
   } catch (error) {
     console.warn("[PatchLoop] saved feedback unreadable; other tabs' changes not merged", error);

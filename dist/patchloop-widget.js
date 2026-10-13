@@ -1588,6 +1588,9 @@ function readStoredFeedback() {
       // The legacy key holds one page's list, maybe another page's.
       return scoped === null && isDemoFeedbackEnvelope(parsed) ? [] : null;
     }
+    // As loading reads it (#163), so a trim whose write-back failed does not
+    // look like another tab's change.
+    trimEnvelopeUrls(parsed);
     return parsed.feedback.map(normalizePersistedFeedback).filter(Boolean);
   } catch (error) {
     console.warn("[PatchLoop] saved feedback unreadable; other tabs' changes not merged", error);
@@ -3312,7 +3315,7 @@ function renderFeedbackList() {
             <div class="pl-feedback-text">${escapeHtml(item.comment || "")}</div>
           </div>
           <div class="pl-feedback-actions">
-            ${(item.delivery?.ok === false || (item.delivery?.interrupted && item.delivery.target !== "slack-webhook")) && !isLocallyEdited(item) && item.delivery.status !== 409 ? '<button type="button" data-pl-retry>再送</button>' : ""}
+            ${canRetry(item) ? '<button type="button" data-pl-retry>再送</button>' : ""}
             <button type="button" data-pl-edit title="この端末のコメントを編集"${item.delivery?.pending ? " disabled" : ""}>編集</button>
             <button type="button" data-pl-delete title="この端末のコメントを削除"${item.delivery?.pending ? " disabled" : ""}>削除</button>
           </div>
@@ -3406,6 +3409,12 @@ function handleVisibilityChange() {
   if (document.visibilityState === "visible") refreshInboxStatuses();
 }
 
+// A failed delivery, or an interrupted one to the receiver (Slack may have it
+// already), of a comment the receiver does not hold in another text.
+function canRetry(item) {
+  return (item.delivery?.ok === false || (item.delivery?.interrupted && item.delivery.target !== "slack-webhook")) && !isLocallyEdited(item) && item.delivery.status !== 409;
+}
+
 function deliveryStatusText(delivery) {
   if (!delivery) return "";
   if (delivery.pending) return "送信しています…";
@@ -3460,8 +3469,11 @@ function handleListClick(event) {
 
 async function retryFeedback(id) {
   const root = getRoot();
+  // Another tab may have retried it, or deleted or edited it, without this
+  // tab having heard of it yet (#139).
+  syncFeedbackFromOtherTab();
   const item = state.feedback.find((entry) => entry.id === id);
-  if (!item || item.delivery?.pending || isLocallyEdited(item)) return;
+  if (!item || !canRetry(item)) return;
   if (!shouldDeliverFeedback()) {
     showWidgetNotice("送信先・設定を確認してください。ファイル共有の場合は書き出しを使います。", true);
     return;

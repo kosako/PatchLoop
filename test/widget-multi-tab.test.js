@@ -410,6 +410,45 @@ test("a page given up at pagehide shows its deliveries as interrupted, and takes
   assert.deepEqual(comments(a), ["While away", "In flight"]);
 });
 
+test("a retry first takes in another tab's retry it had not heard of, and does not send in parallel", async () => {
+  const storage = new Map();
+  let complete;
+  const replies = [{ ok: false, status: 500 }, () => new Promise((resolve) => { complete = resolve; })];
+  const a = openTab(storage, { options: { persistFeedback: true }, harness: { replies } });
+  await add(a, "Failed once");
+  const b = openTab(storage, { options: { persistFeedback: true } });
+
+  const retrying = Promise.all(listOf(a).emit("click", { target: a.document.querySelector("[data-pl-retry]") }));
+  await Promise.all(listOf(b).emit("click", { target: b.document.querySelector("[data-pl-retry]") }));
+  assert.equal(b.requests.length, 0);
+  assert.match(listOf(b).innerHTML, /送信中…/);
+
+  complete({ ok: true, status: 201 });
+  await retrying;
+  assert.equal(saved(storage)[0].delivery.ok, true);
+});
+
+test("rereading the saved list applies the URL rule as loading does, so a trim that could not be written back stays (#163)", async () => {
+  const storage = new Map();
+  const key = `patchloop:feedback:${JSON.stringify(["local-demo", "plain-html", `${BASE}/page`])}`;
+  storage.set(key, JSON.stringify({
+    version: 1, projectId: "local-demo", demoId: "plain-html", pageUrl: `${BASE}/page`, savedAt: "2026-01-01T00:00:00.000Z",
+    feedback: [{ id: "pl_saved", comment: "Saved", createdAt: "2026-01-01T00:00:00.000Z", page: { url: `${BASE}/page?step=2&token=secret` }, target: { kind: "point", pageX: 10, pageY: 10 } }]
+  }));
+  const w = widgetHarness({ storage });
+  const setItem = w.window.localStorage.setItem;
+  w.window.localStorage.setItem = (name, value) => {
+    if (name === key) throw new Error("QuotaExceededError");
+    return setItem(name, value);
+  };
+  w.window.location.href = `${BASE}/page`;
+  w.init({ ...DOWNLOAD, keepQueryParams: ["step"] });
+  w.window.localStorage.setItem = setItem;
+
+  await add(w, "New");
+  assert.deepEqual(saved(storage).map((item) => item.page.url), [`${BASE}/page`, `${BASE}/page?step=2`]);
+});
+
 // --- mergeFeedbackLists --------------------------------------------------
 
 const item = (id, createdAt, extra = {}) => ({ id, createdAt, comment: id, reviewer: "R", ...extra });
