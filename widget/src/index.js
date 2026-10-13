@@ -7,7 +7,7 @@ import { DEFAULTS, state } from "./state.js";
 import { buildPayload } from "./payload.js";
 import { uncapturedTouching } from "./screenshot.js";
 import { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } from "./inbox-status.js";
-import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey } from "./persistence.js";
+import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } from "./persistence.js";
 import { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } from "../../shared/format.js";
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
@@ -15,7 +15,13 @@ const EXPORT_KIND = "patchloop-feedback-bundle";
 // payload; the receiver still accepts that shape for files exported before
 // the switch to batch download.
 const EXPORT_VERSION = 2;
+// The receiver's answer is awaited this long. A delivery another tab of the
+// page started is taken as cut off only once it and a margin are over (#139).
+const FETCH_TIMEOUT_MS = 15000;
+const STALE_PENDING_MS = FETCH_TIMEOUT_MS + 5000;
+const TAB_ID_KEY = "patchloop:tab";
 let pendingInit = null;
+let ownTabId;
 const captureEvents = typeof window.PointerEvent === "function"
   ? ["pointerdown", "pointermove", "pointerup"]
   : ["mousedown", "mousemove", "mouseup"];
@@ -78,6 +84,7 @@ function destroy() {
   window.removeEventListener("storage", handleStorageChange);
   window.clearTimeout(state.otherPagesTimer);
   window.clearTimeout(state.resizeTimer);
+  window.clearTimeout(state.pendingCheckTimer);
   resetInboxStatus();
   state.approximateIds.clear();
   document.querySelector("[data-patchloop-root]")?.remove();
@@ -635,9 +642,11 @@ async function submitComment(event) {
         delete target.exportedFileName;
       }
       saveReviewer(reviewer);
-      persistFeedbackList();
+      saveFeedbackList();
       renumberMarkers();
       renderFeedbackList();
+      // Deleted in another tab meanwhile: the deletion won, as the notice says.
+      if (!state.feedback.includes(target)) return;
     }
     state.editingId = null;
     closeCommentForm();
@@ -658,7 +667,10 @@ async function submitComment(event) {
   if (delivering) payload.delivery = pendingDelivery();
   state.feedback.unshift(payload);
   finalizePendingMarker(payload);
-  persistFeedbackList();
+  // A re-init replaces the set, as it drops this delivery's result.
+  const deliveringIds = state.deliveringIds;
+  if (delivering) deliveringIds.add(payload.id);
+  saveFeedbackList();
   renderFeedbackList();
   expandPanel();
   closeCommentForm();
@@ -676,9 +688,13 @@ async function submitComment(event) {
   }
 
   if (delivering) {
-    await deliverFeedback(payload);
+    try {
+      await deliverFeedback(payload);
+    } finally {
+      deliveringIds.delete(payload.id);
+    }
     if (getRoot() !== root) return;
-    persistFeedbackList();
+    saveFeedbackList();
     renderFeedbackList();
     showWidgetNotice(deliveryStatusText(payload.delivery), payload.delivery.ok === false);
   } else {
@@ -720,7 +736,7 @@ async function postFeedback(payload) {
 // is aborted as well.
 async function fetchWithTimeout(url, options, read = (response) => response) {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 15000);
+  const timer = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     return await read(await fetch(url, { ...options, signal: controller.signal }));
   } finally {
@@ -732,6 +748,8 @@ function restorePersistedFeedback() {
   removeCommittedMarkers();
   state.feedbackMarkers.clear();
   state.feedback = [];
+  // Deliveries of an earlier init no longer report back.
+  state.deliveringIds = new Set();
 
   if (!state.options.persistFeedback) return;
 
@@ -739,11 +757,40 @@ function restorePersistedFeedback() {
   if (!stored.length) return;
 
   state.feedback = stored;
-  state.feedback.forEach((item) => {
-    if (item.delivery?.pending) item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
-  });
+  settlePendingDeliveries();
   restoreFeedbackMarkers();
-  persistFeedbackList();
+  saveFeedbackList();
+}
+
+// A delivery left pending was cut off (the page closed or reloaded), unless
+// another tab of the page is still making it (#139): one another tab started
+// less than a fetch timeout ago stays pending and is checked again when it
+// would have ended, by which time that tab has saved the result. One saved
+// before deliveries carried startedAt and tab is taken as cut off. Returns
+// whether any changed.
+function settlePendingDeliveries() {
+  window.clearTimeout(state.pendingCheckTimer);
+  const now = Date.now();
+  let changed = false;
+  let recheckIn = Infinity;
+  state.feedback.forEach((item) => {
+    if (!item.delivery?.pending || state.deliveringIds.has(item.id)) return;
+    const age = now - item.delivery.startedAt;
+    if (item.delivery.tab !== tabId() && age >= 0 && age < STALE_PENDING_MS) {
+      recheckIn = Math.min(recheckIn, STALE_PENDING_MS - age);
+      return;
+    }
+    item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
+    changed = true;
+  });
+  if (recheckIn !== Infinity) state.pendingCheckTimer = window.setTimeout(recheckPendingDeliveries, recheckIn);
+  return changed;
+}
+
+function recheckPendingDeliveries() {
+  if (!getRoot() || !settlePendingDeliveries()) return;
+  saveFeedbackList();
+  renderFeedbackList();
 }
 
 function shouldDeliverFeedback() {
@@ -766,7 +813,25 @@ async function deliverFeedback(payload) {
 }
 
 function pendingDelivery() {
-  return { pending: true, target: state.options.deliveryMode === "slack-webhook" ? "slack-webhook" : "receiver" };
+  return { pending: true, target: state.options.deliveryMode === "slack-webhook" ? "slack-webhook" : "receiver", startedAt: Date.now(), tab: tabId() };
+}
+
+// This tab's id, kept in sessionStorage, which a reload keeps and other tabs do
+// not share: a pending delivery of this tab's is one a reload cut off. null
+// when sessionStorage is unavailable; a delivery then started without a tab id
+// counts as this tab's, as every pending delivery did before (#139).
+function tabId() {
+  if (ownTabId !== undefined) return ownTabId;
+  try {
+    ownTabId = window.sessionStorage.getItem(TAB_ID_KEY);
+    if (!ownTabId) {
+      ownTabId = `tab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+      window.sessionStorage.setItem(TAB_ID_KEY, ownTabId);
+    }
+  } catch (_) {
+    ownTabId = null;
+  }
+  return ownTabId;
 }
 
 // Demo-scoped batch export: write every still-unsent comment as one bundle,
@@ -819,7 +884,7 @@ function downloadFeedbackItems(items, pages = []) {
       item.exportedAt = exportedAt;
       item.exportedFileName = link.download;
     });
-    persistFeedbackList();
+    saveFeedbackList();
     const exported = new Set(items);
     pages.filter((page) => page.feedback.some((item) => exported.has(item))).forEach(saveOtherPageFeedback);
     state.otherPages = null;
@@ -887,6 +952,7 @@ function otherPagesSummary() {
 
 function handleStorageChange(event) {
   if (!isDemoFeedbackKey(event.key)) return;
+  if (isOwnFeedbackKey(event.key)) syncFeedbackFromOtherTab();
   state.otherPages = null;
   // An export in another tab writes one key per page: count once after them.
   window.clearTimeout(state.otherPagesTimer);
@@ -1007,16 +1073,54 @@ function restoreFeedbackMarkers() {
   removeCommittedMarkers();
   state.feedbackMarkers.clear();
 
-  state.feedback.slice().reverse().forEach((item, index) => {
-    const marker = markerFromFeedback(item);
-    if (!marker) return;
-    updateMarkerLabel(marker, item, index + 1);
-    marker.node.dataset.patchloopFeedbackId = item.id;
-    state.feedbackMarkers.set(item.id, marker);
-    bindMarkerHover(marker, item.id);
-    bindMarkerActivation(marker, item.id);
-    setMarkerApproximate(marker, state.approximateIds.has(item.id));
+  state.feedback.slice().reverse().forEach(addCommittedMarker);
+  renumberMarkers();
+}
+
+// Numbered by renumberMarkers.
+function addCommittedMarker(item) {
+  const marker = markerFromFeedback(item);
+  if (!marker) return;
+  marker.node.dataset.patchloopFeedbackId = item.id;
+  state.feedbackMarkers.set(item.id, marker);
+  bindMarkerHover(marker, item.id);
+  bindMarkerActivation(marker, item.id);
+  setMarkerApproximate(marker, state.approximateIds.has(item.id));
+}
+
+// --- Other tabs of the page (#139) ---------------------------------------
+// Every save merges what another tab saved meanwhile, and a save by another
+// tab is taken in as it happens, so no tab overwrites another tab's comments.
+
+function saveFeedbackList() {
+  applyStorageChanges(persistFeedbackList());
+  // The merge may have taken in another tab's edit of a comment.
+  renumberMarkers();
+}
+
+function syncFeedbackFromOtherTab() {
+  applyStorageChanges(syncPersistedFeedback());
+  // A delivery the other tab started, or one it has finished.
+  settlePendingDeliveries();
+  // Comments edited there change the marker labels too.
+  renumberMarkers();
+  renderFeedbackList();
+}
+
+function applyStorageChanges({ added, removed }) {
+  removed.forEach((id) => {
+    state.feedbackMarkers.get(id)?.node?.remove();
+    state.feedbackMarkers.delete(id);
+    state.approximateIds.delete(id);
   });
+  added.slice().reverse().forEach(addCommittedMarker);
+  if (added.length || removed.length) renumberMarkers();
+  if (state.editingId && removed.includes(state.editingId)) {
+    state.editingId = null;
+    closeCommentForm();
+    showWidgetNotice("このコメントは別のタブで削除されました。", true);
+  }
+  if (removed.length) hideTooltip();
 }
 
 function markerFromFeedback(item) {
@@ -1577,11 +1681,17 @@ async function retryFeedback(id) {
     return;
   }
   item.delivery = pendingDelivery();
-  persistFeedbackList();
+  const deliveringIds = state.deliveringIds;
+  deliveringIds.add(item.id);
+  saveFeedbackList();
   renderFeedbackList();
-  await deliverFeedback(item);
+  try {
+    await deliverFeedback(item);
+  } finally {
+    deliveringIds.delete(item.id);
+  }
   if (getRoot() !== root) return;
-  persistFeedbackList();
+  saveFeedbackList();
   renderFeedbackList();
   showWidgetNotice(deliveryStatusText(item.delivery), item.delivery.ok === false);
   getRoot()?.querySelector("[data-pl-collapse]")?.focus({ preventScroll: true });
@@ -1610,7 +1720,7 @@ function deleteFeedback(id) {
   }
   state.feedback = state.feedback.filter((f) => f.id !== id);
   state.approximateIds.delete(id);
-  persistFeedbackList();
+  saveFeedbackList();
   renumberMarkers();
   renderFeedbackList();
   if (state.editingId === id) {

@@ -137,7 +137,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 
 編集・削除はこの端末の一覧だけに反映され、受信箱や GitHub Issue は変更されません。送信済み（受信箱に同じ ID があった場合を含む）・書き出し済みコメントを変更すると「ローカル変更・送信先には未反映」と表示します。画像の非表示箇所の除外や機密情報の自動マスキングは保証しません。画像には画面外の内容が含まれる場合があるため、機密情報のあるページでは画像を外してください。
 
-投稿者名は送信後に `localStorage` へ保存され、次回以降の widget 起動時に復元されます。feedback list もデフォルトで `localStorage` に保存され、同じ project / demo / page URL の reload 後に パネルのコメント一覧と pin / area overlay が復元されます。パネルの「この端末のコメントを消す」は、表示中の marker と保存済み feedback の両方を削除します。永続化を使わず memory-only にしたい場合は `persistFeedback: false` を指定してください。
+投稿者名は送信後に `localStorage` へ保存され、次回以降の widget 起動時に復元されます。feedback list もデフォルトで `localStorage` に保存され、同じ project / demo / page URL の reload 後に パネルのコメント一覧と pin / area overlay が復元されます。パネルの「この端末のコメントを消す」は、表示中の marker と保存済み feedback の両方を削除します。同じページを複数のタブで開いても、保存データは 1 つです。あるタブで足した・直した・消したコメントは、ほかのタブの一覧と marker にもすぐ反映され、どのタブで保存してもほかのタブのコメントを上書きしません。同じコメントを 2 つのタブで直したときは後に保存した方が残り、消したコメント（「この端末のコメントを消す」を含む）は、ほかのタブで直しかけていても消えたままです。永続化を使わず memory-only にしたい場合は `persistFeedback: false` を指定してください。
 
 コメントのマーカーは Tab でフォーカスしても内容を確認でき、Escape で tooltip を閉じられます。Enter で一覧のそのコメントへ移ります。コメントフォームでは Escape で入力・編集を取り消し、元の操作位置へフォーカスを戻します。
 
@@ -194,7 +194,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 - `screenshot` — viewport snapshot。成功時は `status: "captured"`、`mimeType: "image/svg+xml"`、`dataUrl`、`targetOverlay` などを含む
 - `screenshot.uncaptured` — 画像に写らない要素のうち viewport にあるもの（open な shadow root を持つ要素・`canvas`・`iframe` / `frame`・`embed` / `object`・`video`）。`version`、`status`（`detected` / 検知に失敗した `failed`）、走査した要素数 `scannedElements` と 20,000 要素で打ち切ったか `scanTruncated`、種類ごとの件数 `counts`、最大 20 件の `regions`（`kind`、`tag`、viewport 上の矩形 `rects`、指摘箇所との関係 `relation`）を持ちます。`relation` は、指摘箇所でその要素が最前面にある `covers-target`、矩形が指摘箇所と重なる `overlaps-target`、どちらでもない `none` で、20 件を超えるときはこの順に残します。shadow root や frame の中身は含めません。画像を撮れたときだけ付き、この項目の無い payload（`schemaVersion` 2 以前の widget）は検知していないことを表します。receiver は `version` 1 の形を確かめ、崩れていれば feedback は保存したうえでこの項目を `{"version": 1, "status": "invalid"}`（`version` が整数でなければ `null`）に置き換えます。知らない `version` は送られたまま保存します
 - `createdAt`
-- `delivery` — 外部送信を行う場合は、通知イベントと `onSubmit` の呼び出し前に `{ pending: true, target: "receiver" | "slack-webhook" }` を付与します。送信後は `{ ok, status }` または `{ ok: false, error }` に置き換わります。Slack 直送の結果は `{ ok: null, status: "unknown", target: "slack-webhook" }` です。送信中断後の復元時は `{ ok: null, interrupted: true, target }` で結果未確認を表します。receiver 向けは編集後も再送できますが、受信済み ID は上書きされません。これらは端末内の配送状態で、receiver の受信済みデータには保存されません
+- `delivery` — 外部送信を行う場合は、通知イベントと `onSubmit` の呼び出し前に `{ pending: true, target: "receiver" | "slack-webhook" }` を付与します。送信後は `{ ok, status }` または `{ ok: false, error }` に置き換わります。Slack 直送の結果は `{ ok: null, status: "unknown", target: "slack-webhook" }` です。送信中断後の復元時は `{ ok: null, interrupted: true, target }` で結果未確認を表します。送信中の `delivery` には始めた時刻 `startedAt` とタブの id `tab` も入り、別のタブが送信中のコメントは、そのタブが結果を保存するか、送信の待ち時間（15 秒）に余裕を足した時間が過ぎるまで送信中のまま扱います（再送を出しません）。receiver 向けは編集後も再送できますが、受信済み ID は上書きされません。これらは端末内の配送状態で、receiver の受信済みデータには保存されません
 
 `target.kind` は `point` または `area` です。範囲選択の場合は `target.area` に viewport 上の percentage (`x` / `y` / `width` / `height`) に加えて、`clientX/Y/Width/Height`、`pageX/Y`、`documentX/Y/Width/Height` のピクセル値も入ります。
 
@@ -357,7 +357,7 @@ window.PatchLoop.init({
 });
 ```
 
-download mode では、コメントをパネルにため、「未送信を書き出す（N）」で **未書き出しのコメントを 1 ファイル**（`<project>-<demo>-<件数>-<timestamp>.patchloop-feedback.json`）へ出力します。「書き出し済み」はダウンロード開始の記録で、保存完了や受信箱への取込完了を保証しません。保存できなかった場合は「全件を再ダウンロード」を使えます。どちらも、この端末に保存した同じ `projectId` / `demoId` の全ページのコメントを対象にするので、ページごとに書き出す必要はありません（`persistFeedback: false` のときは、開いているページのコメントだけ）。ほかのページに未書き出しのコメントがあると、パネルにその件数を出します。書き出し済みの印は、それぞれのページの保存データに付けます。ほかのページを別のタブで開いたままだと、そのタブが保存し直したときにこの印が消えることがあります。その場合は次の書き出しにもう一度入り、受信箱では重複としてスキップされます。編集した項目は再び書き出せますが、同じ ID の再取込は重複としてスキップされ、受信済みの内容を上書きしません。bundle は単一 JSON ファイルで、形式は versioned、`feedback` は配列です。
+download mode では、コメントをパネルにため、「未送信を書き出す（N）」で **未書き出しのコメントを 1 ファイル**（`<project>-<demo>-<件数>-<timestamp>.patchloop-feedback.json`）へ出力します。「書き出し済み」はダウンロード開始の記録で、保存完了や受信箱への取込完了を保証しません。保存できなかった場合は「全件を再ダウンロード」を使えます。どちらも、この端末に保存した同じ `projectId` / `demoId` の全ページのコメントを対象にするので、ページごとに書き出す必要はありません（`persistFeedback: false` のときは、開いているページのコメントだけ）。ほかのページに未書き出しのコメントがあると、パネルにその件数を出します。書き出し済みの印は、それぞれのページの保存データに付けます。ほかのページを別のタブで開いていても、そのタブで直したコメントを除き、この印は消えません。編集した項目は再び書き出せますが、同じ ID の再取込は重複としてスキップされ、受信済みの内容を上書きしません。bundle は単一 JSON ファイルで、形式は versioned、`feedback` は配列です。
 
 ```json
 {

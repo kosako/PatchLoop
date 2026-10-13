@@ -568,7 +568,14 @@ const state = {
   otherPagesTimer: null,
   // { key, pageUrl } of the page whose saved list is in memory (#197), fixed by
   // init; see bindFeedbackScope.
-  feedbackScope: null
+  feedbackScope: null,
+  // The comments in storage when this tab last read or wrote it (id to
+  // fingerprint), and the ids this tab is delivering, for the merge with other
+  // tabs (#139).
+  storedFeedback: new Map(),
+  deliveringIds: new Set(),
+  // Re-checks a delivery another tab may still be making; see settlePendingDeliveries.
+  pendingCheckTimer: null
 };
 
 return { DEFAULTS, state };
@@ -1253,10 +1260,115 @@ function generateFeedbackId() {
 
 return { buildPayload };
 })();
+// --- widget/src/tab-sync.js ---
+const __pl_widget_src_tab_sync = (() => {
+// Merging the feedback list a tab holds with the one another tab of the same
+// page saved (#139). Each tab writes its whole list, so a tab used to overwrite
+// the comments another tab had added or changed since it loaded.
+//
+// stored: the list now in storage. known: a Map of the comments in storage
+// when this tab last read or wrote it, id to fingerprint. It tells a comment
+// deleted in another tab (known, no longer stored) from one this tab has not
+// saved yet (not known), and a comment this tab changed since (its fingerprint
+// differs) from one it only holds a copy of.
+// prefer: "ours" when this tab saves: its version of a comment it changed
+// wins (the last change saved wins), and another tab's version of one it did
+// not change is taken in. "stored" when another tab has saved: its versions win.
+// keepDelivery: ids this tab is delivering, whose delivery state stays ours.
+// Returns the merged list, the comments added by another tab and the ids
+// deleted by one. A comment kept from this tab stays the same object, so a
+// delivery in flight still updates the listed comment.
+function mergeFeedbackLists(ours, stored, known, { prefer, keepDelivery = new Set() }) {
+  const storedById = new Map(stored.map((item) => [item.id, item]));
+  const ourIds = new Set(ours.map((item) => item.id));
+  const removed = [];
+  const kept = new Map();
+  ours.forEach((item) => {
+    const other = storedById.get(item.id);
+    if (other) {
+      const oursWins = prefer === "ours" && known.get(item.id) !== feedbackFingerprint(item);
+      kept.set(item.id, reconcile(item, other, oursWins, keepDelivery.has(item.id)));
+    }
+    // Deleted in another tab: the deletion wins over this tab's copy.
+    else if (known.has(item.id)) removed.push(item.id);
+    // Not saved yet (just added here, or a save that failed).
+    else kept.set(item.id, item);
+  });
+  // Neither here nor known: added in another tab. Known but gone from here:
+  // this tab deleted it.
+  const added = stored.filter((item) => !ourIds.has(item.id) && !known.has(item.id));
+
+  let list;
+  if (prefer === "stored") {
+    list = stored.filter((item) => kept.has(item.id) || added.includes(item)).map((item) => kept.get(item.id) || item);
+    ours.filter((item) => kept.has(item.id) && !storedById.has(item.id)).forEach((item) => insertByDate(list, item));
+  } else {
+    list = ours.filter((item) => kept.has(item.id));
+    added.forEach((item) => insertByDate(list, item));
+  }
+  return { list, added, removed };
+}
+
+// What a save would write of a comment, in a fixed key order. The image data is
+// left out: it does not change, and a save that did not fit the storage drops
+// it (persistedWithoutDataUrl) while the tab still holds it.
+function feedbackFingerprint(item) {
+  return JSON.stringify(canonical(item));
+}
+
+const UNCOMPARED_KEYS = new Set(["dataUrl", "persistedWithoutDataUrl"]);
+
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (!value || typeof value !== "object") return value;
+  const copy = {};
+  Object.keys(value).sort().forEach((key) => {
+    if (!UNCOMPARED_KEYS.has(key)) copy[key] = canonical(value[key]);
+  });
+  return copy;
+}
+
+// Applies the winning version to ours in place. The export marks survive when
+// either side has them and the comment is the same, as an export in another
+// tab marks comments this tab may save again before it hears of it.
+function reconcile(ours, other, oursWins, keepOwnDelivery) {
+  const sameComment = ours.comment === other.comment && ours.reviewer === other.reviewer;
+  const marked = sameComment ? [ours, other].find((item) => item.exported) : undefined;
+  const marks = marked && { exported: marked.exported, exportedAt: marked.exportedAt, exportedFileName: marked.exportedFileName };
+  if (!oursWins) {
+    const delivery = ours.delivery;
+    const screenshot = other.screenshot?.persistedWithoutDataUrl && ours.screenshot?.dataUrl ? ours.screenshot : undefined;
+    Object.keys(ours).forEach((key) => {
+      if (!Object.hasOwn(other, key)) delete ours[key];
+    });
+    Object.assign(ours, other);
+    if (keepOwnDelivery) {
+      if (delivery === undefined) delete ours.delivery;
+      else ours.delivery = delivery;
+    }
+    if (screenshot) ours.screenshot = screenshot;
+  }
+  if (marks) Object.assign(ours, marks);
+  return ours;
+}
+
+// Newest first, as the list is kept: before the first comment made earlier,
+// or last when the dates cannot tell.
+function insertByDate(list, item) {
+  const index = typeof item.createdAt === "string"
+    ? list.findIndex((other) => typeof other.createdAt === "string" && other.createdAt < item.createdAt)
+    : -1;
+  if (index === -1) list.push(item);
+  else list.splice(index, 0, item);
+}
+
+return { mergeFeedbackLists, feedbackFingerprint };
+})();
 // --- widget/src/persistence.js ---
 const __pl_widget_src_persistence = (() => {
 const { state } = __pl_widget_src_state;
 const { applyPageUrlRule, normalizePageUrl, pageUrlForSharing, samePersistedPage } = __pl_widget_src_url;
+const { feedbackFingerprint, mergeFeedbackLists } = __pl_widget_src_tab_sync;
 
 const FEEDBACK_STORAGE_VERSION = 1;
 
@@ -1301,7 +1413,14 @@ function saveDisplayMode(mode) {
   }
 }
 
+// Also notes which comments were in storage, for the merge with other tabs.
 function loadPersistedFeedback() {
+  const list = readPersistedFeedback();
+  state.storedFeedback = fingerprintsOf(list);
+  return list;
+}
+
+function readPersistedFeedback() {
   if (!state.options.feedbackStorageKey) return [];
 
   try {
@@ -1361,22 +1480,80 @@ function rewriteStoredEnvelope(key, value) {
   }
 }
 
+// Saves the list after merging what another tab of the page saved since this
+// tab last read or wrote it (#139); this tab's version of a comment it changed
+// meanwhile wins. The merge can add or remove comments: the caller updates the
+// markers from the returned { added, removed }.
 function persistFeedbackList() {
-  if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return;
+  if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return noChanges();
 
+  const changes = mergeStoredFeedback("ours");
   const envelope = feedbackStorageEnvelope(state.feedback);
   const storageKey = feedbackScope().key;
   try {
     window.localStorage.setItem(storageKey, JSON.stringify(envelope));
+    state.storedFeedback = fingerprintsOf(envelope.feedback);
   } catch (error) {
     const compactEnvelope = feedbackStorageEnvelope(state.feedback, { omitScreenshotDataUrl: true });
     try {
       window.localStorage.setItem(storageKey, JSON.stringify(compactEnvelope));
+      state.storedFeedback = fingerprintsOf(compactEnvelope.feedback);
       console.warn("[PatchLoop] persisted feedback without screenshot dataUrl", error);
     } catch (retryError) {
       console.warn("[PatchLoop] unable to persist feedback", retryError);
     }
   }
+  return changes;
+}
+
+// Takes in what another tab of the page saved (#139); its version of a comment
+// wins, except the delivery state of one this tab is delivering.
+function syncPersistedFeedback() {
+  if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return noChanges();
+  return mergeStoredFeedback("stored");
+}
+
+// Whether a storage change is to this page's saved list; a null key is a clear().
+function isOwnFeedbackKey(key) {
+  return key === null || key === feedbackScope().key || key === state.options.feedbackStorageKey;
+}
+
+function mergeStoredFeedback(prefer) {
+  const stored = readStoredFeedback();
+  // Unreadable: nothing tells what another tab did, so the list stays as it is.
+  if (!stored) return noChanges();
+  const { list, added, removed } = mergeFeedbackLists(state.feedback, stored, state.storedFeedback, { prefer, keepDelivery: state.deliveringIds });
+  state.feedback = list;
+  state.storedFeedback = fingerprintsOf(stored);
+  return { added, removed };
+}
+
+// The page's saved comments as loading reads them, without the load's
+// rewrites; [] when none are saved, null when what is saved cannot be read.
+function readStoredFeedback() {
+  try {
+    const scoped = window.localStorage.getItem(feedbackScope().key);
+    const legacy = scoped === null ? window.localStorage.getItem(state.options.feedbackStorageKey) : null;
+    const raw = scoped ?? legacy;
+    if (raw === null) return [];
+    const parsed = JSON.parse(raw);
+    if (!isMatchingFeedbackEnvelope(parsed)) {
+      // The legacy key holds one page's list, maybe another page's.
+      return scoped === null && isDemoFeedbackEnvelope(parsed) ? [] : null;
+    }
+    return parsed.feedback.map(normalizePersistedFeedback).filter(Boolean);
+  } catch (error) {
+    console.warn("[PatchLoop] saved feedback unreadable; other tabs' changes not merged", error);
+    return null;
+  }
+}
+
+function fingerprintsOf(feedback) {
+  return new Map(feedback.filter(Boolean).map((item) => [item.id, feedbackFingerprint(item)]));
+}
+
+function noChanges() {
+  return { added: [], removed: [] };
 }
 
 function clearPersistedFeedback() {
@@ -1384,6 +1561,7 @@ function clearPersistedFeedback() {
 
   try {
     window.localStorage.removeItem(feedbackScope().key);
+    state.storedFeedback = new Map();
     const legacy = window.localStorage.getItem(state.options.feedbackStorageKey);
     if (legacy && isMatchingFeedbackEnvelope(JSON.parse(legacy))) {
       window.localStorage.removeItem(state.options.feedbackStorageKey);
@@ -1533,7 +1711,7 @@ function saveOtherPageFeedback(page) {
   }
 }
 
-return { FEEDBACK_STORAGE_VERSION, loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadPersistedFeedback, persistFeedbackList, clearPersistedFeedback, bindFeedbackScope, serializeFeedbackForStorage, normalizePersistedFeedback, isMatchingFeedbackEnvelope, loadOtherPagesFeedback, isDemoFeedbackKey, saveOtherPageFeedback };
+return { FEEDBACK_STORAGE_VERSION, loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadPersistedFeedback, persistFeedbackList, syncPersistedFeedback, isOwnFeedbackKey, clearPersistedFeedback, bindFeedbackScope, serializeFeedbackForStorage, normalizePersistedFeedback, isMatchingFeedbackEnvelope, loadOtherPagesFeedback, isDemoFeedbackKey, saveOtherPageFeedback };
 })();
 const { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarget, rectFromStoredArea, round, numberOrNull } = __pl_widget_src_geometry;
 const { pointAnchorOffsets, areaAnchorOffsets, geometryFromAnchor, viewportDiffersFromCreation } = __pl_widget_src_anchoring;
@@ -1544,7 +1722,7 @@ const { DEFAULTS, state } = __pl_widget_src_state;
 const { buildPayload } = __pl_widget_src_payload;
 const { uncapturedTouching } = __pl_widget_src_screenshot;
 const { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } = __pl_widget_src_inbox_status;
-const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey } = __pl_widget_src_persistence;
+const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } = __pl_widget_src_persistence;
 const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } = __pl_shared_format;
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
@@ -1552,7 +1730,13 @@ const EXPORT_KIND = "patchloop-feedback-bundle";
 // payload; the receiver still accepts that shape for files exported before
 // the switch to batch download.
 const EXPORT_VERSION = 2;
+// The receiver's answer is awaited this long. A delivery another tab of the
+// page started is taken as cut off only once it and a margin are over (#139).
+const FETCH_TIMEOUT_MS = 15000;
+const STALE_PENDING_MS = FETCH_TIMEOUT_MS + 5000;
+const TAB_ID_KEY = "patchloop:tab";
 let pendingInit = null;
+let ownTabId;
 const captureEvents = typeof window.PointerEvent === "function"
   ? ["pointerdown", "pointermove", "pointerup"]
   : ["mousedown", "mousemove", "mouseup"];
@@ -1615,6 +1799,7 @@ function destroy() {
   window.removeEventListener("storage", handleStorageChange);
   window.clearTimeout(state.otherPagesTimer);
   window.clearTimeout(state.resizeTimer);
+  window.clearTimeout(state.pendingCheckTimer);
   resetInboxStatus();
   state.approximateIds.clear();
   document.querySelector("[data-patchloop-root]")?.remove();
@@ -2172,9 +2357,11 @@ async function submitComment(event) {
         delete target.exportedFileName;
       }
       saveReviewer(reviewer);
-      persistFeedbackList();
+      saveFeedbackList();
       renumberMarkers();
       renderFeedbackList();
+      // Deleted in another tab meanwhile: the deletion won, as the notice says.
+      if (!state.feedback.includes(target)) return;
     }
     state.editingId = null;
     closeCommentForm();
@@ -2195,7 +2382,10 @@ async function submitComment(event) {
   if (delivering) payload.delivery = pendingDelivery();
   state.feedback.unshift(payload);
   finalizePendingMarker(payload);
-  persistFeedbackList();
+  // A re-init replaces the set, as it drops this delivery's result.
+  const deliveringIds = state.deliveringIds;
+  if (delivering) deliveringIds.add(payload.id);
+  saveFeedbackList();
   renderFeedbackList();
   expandPanel();
   closeCommentForm();
@@ -2213,9 +2403,13 @@ async function submitComment(event) {
   }
 
   if (delivering) {
-    await deliverFeedback(payload);
+    try {
+      await deliverFeedback(payload);
+    } finally {
+      deliveringIds.delete(payload.id);
+    }
     if (getRoot() !== root) return;
-    persistFeedbackList();
+    saveFeedbackList();
     renderFeedbackList();
     showWidgetNotice(deliveryStatusText(payload.delivery), payload.delivery.ok === false);
   } else {
@@ -2257,7 +2451,7 @@ async function postFeedback(payload) {
 // is aborted as well.
 async function fetchWithTimeout(url, options, read = (response) => response) {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 15000);
+  const timer = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     return await read(await fetch(url, { ...options, signal: controller.signal }));
   } finally {
@@ -2269,6 +2463,8 @@ function restorePersistedFeedback() {
   removeCommittedMarkers();
   state.feedbackMarkers.clear();
   state.feedback = [];
+  // Deliveries of an earlier init no longer report back.
+  state.deliveringIds = new Set();
 
   if (!state.options.persistFeedback) return;
 
@@ -2276,11 +2472,40 @@ function restorePersistedFeedback() {
   if (!stored.length) return;
 
   state.feedback = stored;
-  state.feedback.forEach((item) => {
-    if (item.delivery?.pending) item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
-  });
+  settlePendingDeliveries();
   restoreFeedbackMarkers();
-  persistFeedbackList();
+  saveFeedbackList();
+}
+
+// A delivery left pending was cut off (the page closed or reloaded), unless
+// another tab of the page is still making it (#139): one another tab started
+// less than a fetch timeout ago stays pending and is checked again when it
+// would have ended, by which time that tab has saved the result. One saved
+// before deliveries carried startedAt and tab is taken as cut off. Returns
+// whether any changed.
+function settlePendingDeliveries() {
+  window.clearTimeout(state.pendingCheckTimer);
+  const now = Date.now();
+  let changed = false;
+  let recheckIn = Infinity;
+  state.feedback.forEach((item) => {
+    if (!item.delivery?.pending || state.deliveringIds.has(item.id)) return;
+    const age = now - item.delivery.startedAt;
+    if (item.delivery.tab !== tabId() && age >= 0 && age < STALE_PENDING_MS) {
+      recheckIn = Math.min(recheckIn, STALE_PENDING_MS - age);
+      return;
+    }
+    item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
+    changed = true;
+  });
+  if (recheckIn !== Infinity) state.pendingCheckTimer = window.setTimeout(recheckPendingDeliveries, recheckIn);
+  return changed;
+}
+
+function recheckPendingDeliveries() {
+  if (!getRoot() || !settlePendingDeliveries()) return;
+  saveFeedbackList();
+  renderFeedbackList();
 }
 
 function shouldDeliverFeedback() {
@@ -2303,7 +2528,25 @@ async function deliverFeedback(payload) {
 }
 
 function pendingDelivery() {
-  return { pending: true, target: state.options.deliveryMode === "slack-webhook" ? "slack-webhook" : "receiver" };
+  return { pending: true, target: state.options.deliveryMode === "slack-webhook" ? "slack-webhook" : "receiver", startedAt: Date.now(), tab: tabId() };
+}
+
+// This tab's id, kept in sessionStorage, which a reload keeps and other tabs do
+// not share: a pending delivery of this tab's is one a reload cut off. null
+// when sessionStorage is unavailable; a delivery then started without a tab id
+// counts as this tab's, as every pending delivery did before (#139).
+function tabId() {
+  if (ownTabId !== undefined) return ownTabId;
+  try {
+    ownTabId = window.sessionStorage.getItem(TAB_ID_KEY);
+    if (!ownTabId) {
+      ownTabId = `tab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+      window.sessionStorage.setItem(TAB_ID_KEY, ownTabId);
+    }
+  } catch (_) {
+    ownTabId = null;
+  }
+  return ownTabId;
 }
 
 // Demo-scoped batch export: write every still-unsent comment as one bundle,
@@ -2356,7 +2599,7 @@ function downloadFeedbackItems(items, pages = []) {
       item.exportedAt = exportedAt;
       item.exportedFileName = link.download;
     });
-    persistFeedbackList();
+    saveFeedbackList();
     const exported = new Set(items);
     pages.filter((page) => page.feedback.some((item) => exported.has(item))).forEach(saveOtherPageFeedback);
     state.otherPages = null;
@@ -2424,6 +2667,7 @@ function otherPagesSummary() {
 
 function handleStorageChange(event) {
   if (!isDemoFeedbackKey(event.key)) return;
+  if (isOwnFeedbackKey(event.key)) syncFeedbackFromOtherTab();
   state.otherPages = null;
   // An export in another tab writes one key per page: count once after them.
   window.clearTimeout(state.otherPagesTimer);
@@ -2544,16 +2788,54 @@ function restoreFeedbackMarkers() {
   removeCommittedMarkers();
   state.feedbackMarkers.clear();
 
-  state.feedback.slice().reverse().forEach((item, index) => {
-    const marker = markerFromFeedback(item);
-    if (!marker) return;
-    updateMarkerLabel(marker, item, index + 1);
-    marker.node.dataset.patchloopFeedbackId = item.id;
-    state.feedbackMarkers.set(item.id, marker);
-    bindMarkerHover(marker, item.id);
-    bindMarkerActivation(marker, item.id);
-    setMarkerApproximate(marker, state.approximateIds.has(item.id));
+  state.feedback.slice().reverse().forEach(addCommittedMarker);
+  renumberMarkers();
+}
+
+// Numbered by renumberMarkers.
+function addCommittedMarker(item) {
+  const marker = markerFromFeedback(item);
+  if (!marker) return;
+  marker.node.dataset.patchloopFeedbackId = item.id;
+  state.feedbackMarkers.set(item.id, marker);
+  bindMarkerHover(marker, item.id);
+  bindMarkerActivation(marker, item.id);
+  setMarkerApproximate(marker, state.approximateIds.has(item.id));
+}
+
+// --- Other tabs of the page (#139) ---------------------------------------
+// Every save merges what another tab saved meanwhile, and a save by another
+// tab is taken in as it happens, so no tab overwrites another tab's comments.
+
+function saveFeedbackList() {
+  applyStorageChanges(persistFeedbackList());
+  // The merge may have taken in another tab's edit of a comment.
+  renumberMarkers();
+}
+
+function syncFeedbackFromOtherTab() {
+  applyStorageChanges(syncPersistedFeedback());
+  // A delivery the other tab started, or one it has finished.
+  settlePendingDeliveries();
+  // Comments edited there change the marker labels too.
+  renumberMarkers();
+  renderFeedbackList();
+}
+
+function applyStorageChanges({ added, removed }) {
+  removed.forEach((id) => {
+    state.feedbackMarkers.get(id)?.node?.remove();
+    state.feedbackMarkers.delete(id);
+    state.approximateIds.delete(id);
   });
+  added.slice().reverse().forEach(addCommittedMarker);
+  if (added.length || removed.length) renumberMarkers();
+  if (state.editingId && removed.includes(state.editingId)) {
+    state.editingId = null;
+    closeCommentForm();
+    showWidgetNotice("このコメントは別のタブで削除されました。", true);
+  }
+  if (removed.length) hideTooltip();
 }
 
 function markerFromFeedback(item) {
@@ -3114,11 +3396,17 @@ async function retryFeedback(id) {
     return;
   }
   item.delivery = pendingDelivery();
-  persistFeedbackList();
+  const deliveringIds = state.deliveringIds;
+  deliveringIds.add(item.id);
+  saveFeedbackList();
   renderFeedbackList();
-  await deliverFeedback(item);
+  try {
+    await deliverFeedback(item);
+  } finally {
+    deliveringIds.delete(item.id);
+  }
   if (getRoot() !== root) return;
-  persistFeedbackList();
+  saveFeedbackList();
   renderFeedbackList();
   showWidgetNotice(deliveryStatusText(item.delivery), item.delivery.ok === false);
   getRoot()?.querySelector("[data-pl-collapse]")?.focus({ preventScroll: true });
@@ -3147,7 +3435,7 @@ function deleteFeedback(id) {
   }
   state.feedback = state.feedback.filter((f) => f.id !== id);
   state.approximateIds.delete(id);
-  persistFeedbackList();
+  saveFeedbackList();
   renumberMarkers();
   renderFeedbackList();
   if (state.editingId === id) {
