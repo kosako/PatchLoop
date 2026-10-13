@@ -570,8 +570,8 @@ const state = {
   // init; see bindFeedbackScope.
   feedbackScope: null,
   // The comments in storage when this tab last read or wrote it (id to
-  // fingerprint), and the ids this tab is delivering, for the merge with other
-  // tabs (#139).
+  // fingerprints), and the ids this tab is delivering, for the merge with
+  // other tabs (#139).
   storedFeedback: new Map(),
   deliveringIds: new Set(),
   // Re-checks a delivery another tab may still be making; see settlePendingDeliveries.
@@ -1267,13 +1267,13 @@ const __pl_widget_src_tab_sync = (() => {
 // the comments another tab had added or changed since it loaded.
 //
 // stored: the list now in storage. known: a Map of the comments in storage
-// when this tab last read or wrote it, id to fingerprint. It tells a comment
+// when this tab last read or wrote it, id to fingerprints. It tells a comment
 // deleted in another tab (known, no longer stored) from one this tab has not
-// saved yet (not known), and a comment this tab changed since (its fingerprint
-// differs) from one it only holds a copy of.
-// prefer: "ours" when this tab saves: its version of a comment it changed
-// wins (the last change saved wins), and another tab's version of one it did
-// not change is taken in. "stored" when another tab has saved: its versions win.
+// saved yet (not known), and what of a comment this tab changed since.
+// prefer: "ours" when this tab saves: of a comment both hold, the parts this
+// tab changed (the comment itself, its delivery state, its export marks) keep
+// this tab's version, the others take the stored one, so the last change saved
+// wins part by part. "stored" when another tab has saved: its version wins.
 // keepDelivery: ids this tab is delivering, whose delivery state stays ours.
 // Returns the merged list, the comments added by another tab and the ids
 // deleted by one. A comment kept from this tab stays the same object, so a
@@ -1285,10 +1285,7 @@ function mergeFeedbackLists(ours, stored, known, { prefer, keepDelivery = new Se
   const kept = new Map();
   ours.forEach((item) => {
     const other = storedById.get(item.id);
-    if (other) {
-      const oursWins = prefer === "ours" && known.get(item.id) !== feedbackFingerprint(item);
-      kept.set(item.id, reconcile(item, other, oursWins, keepDelivery.has(item.id)));
-    }
+    if (other) kept.set(item.id, reconcile(item, other, changedParts(item, known.get(item.id), prefer), keepDelivery.has(item.id)));
     // Deleted in another tab: the deletion wins over this tab's copy.
     else if (known.has(item.id)) removed.push(item.id);
     // Not saved yet (just added here, or a save that failed).
@@ -1309,14 +1306,33 @@ function mergeFeedbackLists(ours, stored, known, { prefer, keepDelivery = new Se
   return { list, added, removed };
 }
 
-// What a save would write of a comment, in a fixed key order. The image data is
-// left out: it does not change, and a save that did not fit the storage drops
-// it (persistedWithoutDataUrl) while the tab still holds it.
-function feedbackFingerprint(item) {
-  return JSON.stringify(canonical(item));
+const MARK_KEYS = ["exported", "exportedAt", "exportedFileName"];
+const PART_KEYS = new Set(["delivery", ...MARK_KEYS]);
+// Left out of the fingerprints: the image data does not change, and a save
+// that did not fit the storage drops it while the tab still holds it.
+const UNCOMPARED_KEYS = new Set(["dataUrl", "persistedWithoutDataUrl"]);
+
+// What a save would write of a comment, part by part, in a fixed key order:
+// the comment itself, its delivery state and its export marks.
+function feedbackFingerprints(item) {
+  const content = {};
+  Object.keys(item).forEach((key) => {
+    if (!PART_KEYS.has(key)) content[key] = item[key];
+  });
+  return {
+    content: JSON.stringify(canonical(content)),
+    delivery: JSON.stringify(canonical(item.delivery ?? null)),
+    marks: JSON.stringify(MARK_KEYS.map((key) => item[key] ?? null))
+  };
 }
 
-const UNCOMPARED_KEYS = new Set(["dataUrl", "persistedWithoutDataUrl"]);
+function changedParts(item, known, prefer) {
+  if (prefer === "stored") return { content: false, delivery: false, marks: false };
+  // Not known while stored: both sides hold an id this tab never read; keep it.
+  if (!known) return { content: true, delivery: true, marks: true };
+  const now = feedbackFingerprints(item);
+  return { content: now.content !== known.content, delivery: now.delivery !== known.delivery, marks: now.marks !== known.marks };
+}
 
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -1328,28 +1344,27 @@ function canonical(value) {
   return copy;
 }
 
-// Applies the winning version to ours in place. The export marks survive when
-// either side has them and the comment is the same, as an export in another
-// tab marks comments this tab may save again before it hears of it.
-function reconcile(ours, other, oursWins, keepOwnDelivery) {
-  const sameComment = ours.comment === other.comment && ours.reviewer === other.reviewer;
-  const marked = sameComment ? [ours, other].find((item) => item.exported) : undefined;
-  const marks = marked && { exported: marked.exported, exportedAt: marked.exportedAt, exportedFileName: marked.exportedFileName };
-  if (!oursWins) {
-    const delivery = ours.delivery;
-    const screenshot = other.screenshot?.persistedWithoutDataUrl && ours.screenshot?.dataUrl ? ours.screenshot : undefined;
-    Object.keys(ours).forEach((key) => {
-      if (!Object.hasOwn(other, key)) delete ours[key];
-    });
-    Object.assign(ours, other);
-    if (keepOwnDelivery) {
-      if (delivery === undefined) delete ours.delivery;
-      else ours.delivery = delivery;
-    }
-    if (screenshot) ours.screenshot = screenshot;
-  }
-  if (marks) Object.assign(ours, marks);
-  return ours;
+// Writes the merged version into ours, in place. Export marks tell that a text
+// was exported, so they stay only on the same text: preferably the marks of
+// the side whose marks won, else those of the other side (an export in another
+// tab marks comments this tab may save again before it hears of it).
+function reconcile(ours, other, changed, keepOwnDelivery) {
+  const merged = changed.content ? { ...ours } : { ...other };
+  // A save that did not fit the storage drops the image data; this tab may
+  // still hold it.
+  if (!changed.content && other.screenshot?.persistedWithoutDataUrl && ours.screenshot?.dataUrl) merged.screenshot = ours.screenshot;
+  PART_KEYS.forEach((key) => delete merged[key]);
+  const delivery = keepOwnDelivery || changed.delivery ? ours.delivery : other.delivery;
+  if (delivery !== undefined) merged.delivery = delivery;
+  const marked = (changed.marks ? [ours, other] : [other, ours])
+    .find((side) => side.exported && side.comment === merged.comment && side.reviewer === merged.reviewer);
+  if (marked) MARK_KEYS.forEach((key) => {
+    if (marked[key] !== undefined) merged[key] = marked[key];
+  });
+  Object.keys(ours).forEach((key) => {
+    if (!Object.hasOwn(merged, key)) delete ours[key];
+  });
+  return Object.assign(ours, merged);
 }
 
 // Newest first, as the list is kept: before the first comment made earlier,
@@ -1362,13 +1377,13 @@ function insertByDate(list, item) {
   else list.splice(index, 0, item);
 }
 
-return { mergeFeedbackLists, feedbackFingerprint };
+return { mergeFeedbackLists, feedbackFingerprints };
 })();
 // --- widget/src/persistence.js ---
 const __pl_widget_src_persistence = (() => {
 const { state } = __pl_widget_src_state;
 const { applyPageUrlRule, normalizePageUrl, pageUrlForSharing, samePersistedPage } = __pl_widget_src_url;
-const { feedbackFingerprint, mergeFeedbackLists } = __pl_widget_src_tab_sync;
+const { feedbackFingerprints, mergeFeedbackLists } = __pl_widget_src_tab_sync;
 
 const FEEDBACK_STORAGE_VERSION = 1;
 
@@ -1481,7 +1496,7 @@ function rewriteStoredEnvelope(key, value) {
 }
 
 // Saves the list after merging what another tab of the page saved since this
-// tab last read or wrote it (#139); this tab's version of a comment it changed
+// tab last read or wrote it (#139); what this tab changed of a comment
 // meanwhile wins. The merge can add or remove comments: the caller updates the
 // markers from the returned { added, removed }.
 function persistFeedbackList() {
@@ -1549,7 +1564,7 @@ function readStoredFeedback() {
 }
 
 function fingerprintsOf(feedback) {
-  return new Map(feedback.filter(Boolean).map((item) => [item.id, feedbackFingerprint(item)]));
+  return new Map(feedback.filter(Boolean).map((item) => [item.id, feedbackFingerprints(item)]));
 }
 
 function noChanges() {
@@ -1734,9 +1749,7 @@ const EXPORT_VERSION = 2;
 // page started is taken as cut off only once it and a margin are over (#139).
 const FETCH_TIMEOUT_MS = 15000;
 const STALE_PENDING_MS = FETCH_TIMEOUT_MS + 5000;
-const TAB_ID_KEY = "patchloop:tab";
 let pendingInit = null;
-let ownTabId;
 const captureEvents = typeof window.PointerEvent === "function"
   ? ["pointerdown", "pointermove", "pointerup"]
   : ["mousedown", "mousemove", "mouseup"];
@@ -1761,6 +1774,8 @@ function init(options = {}) {
   state.editingId = null;
   state.commentReturnFocus = null;
   removeSelectionBox();
+  // Before the options change: saved under the scope they were made in.
+  abandonDeliveries();
   state.options = { ...DEFAULTS, ...options };
   state.options.reviewer = initialReviewer(state.options);
   // Resolved once here (option first, meta tags as fallback) so every payload
@@ -1784,6 +1799,7 @@ function init(options = {}) {
 
 function destroy() {
   cancelPendingInit();
+  abandonDeliveries();
   document.documentElement.classList.remove("pl-feedback-active");
   document.querySelector("[data-patchloop-style]")?.remove();
   document.removeEventListener(captureEvents[0], handleDocumentMouseDown, true);
@@ -1797,6 +1813,7 @@ function destroy() {
   window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   window.removeEventListener("storage", handleStorageChange);
+  window.removeEventListener("pagehide", abandonDeliveries);
   window.clearTimeout(state.otherPagesTimer);
   window.clearTimeout(state.resizeTimer);
   window.clearTimeout(state.pendingCheckTimer);
@@ -1966,6 +1983,8 @@ function bindGlobalCapture() {
   document.addEventListener("visibilitychange", handleVisibilityChange);
   window.removeEventListener("storage", handleStorageChange);
   window.addEventListener("storage", handleStorageChange);
+  window.removeEventListener("pagehide", abandonDeliveries);
+  window.addEventListener("pagehide", abandonDeliveries);
 }
 
 function cancelCaptureDrag() {
@@ -2463,8 +2482,6 @@ function restorePersistedFeedback() {
   removeCommittedMarkers();
   state.feedbackMarkers.clear();
   state.feedback = [];
-  // Deliveries of an earlier init no longer report back.
-  state.deliveringIds = new Set();
 
   if (!state.options.persistFeedback) return;
 
@@ -2477,12 +2494,12 @@ function restorePersistedFeedback() {
   saveFeedbackList();
 }
 
-// A delivery left pending was cut off (the page closed or reloaded), unless
-// another tab of the page is still making it (#139): one another tab started
+// A delivery saved as pending is another tab's (#139): a tab saves its own as
+// interrupted when it stops waiting for them (abandonDeliveries). One started
 // less than a fetch timeout ago stays pending and is checked again when it
-// would have ended, by which time that tab has saved the result. One saved
-// before deliveries carried startedAt and tab is taken as cut off. Returns
-// whether any changed.
+// would have ended, by which time that tab has saved the result; an older one
+// was cut off (the tab crashed), as is one saved before deliveries carried
+// startedAt. Returns whether any changed.
 function settlePendingDeliveries() {
   window.clearTimeout(state.pendingCheckTimer);
   const now = Date.now();
@@ -2491,7 +2508,7 @@ function settlePendingDeliveries() {
   state.feedback.forEach((item) => {
     if (!item.delivery?.pending || state.deliveringIds.has(item.id)) return;
     const age = now - item.delivery.startedAt;
-    if (item.delivery.tab !== tabId() && age >= 0 && age < STALE_PENDING_MS) {
+    if (age >= 0 && age < STALE_PENDING_MS) {
       recheckIn = Math.min(recheckIn, STALE_PENDING_MS - age);
       return;
     }
@@ -2506,6 +2523,20 @@ function recheckPendingDeliveries() {
   if (!getRoot() || !settlePendingDeliveries()) return;
   saveFeedbackList();
   renderFeedbackList();
+}
+
+// The deliveries in flight no longer report back once the page goes away
+// (pagehide: closed, reloaded or left) or the widget is destroyed or
+// re-initialized, so they are saved as interrupted, and other tabs and the
+// next load show them so at once (#139).
+function abandonDeliveries() {
+  const abandoned = state.feedback.filter((item) => state.deliveringIds.has(item.id) && item.delivery?.pending);
+  state.deliveringIds = new Set();
+  if (abandoned.length === 0) return;
+  abandoned.forEach((item) => {
+    item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
+  });
+  saveFeedbackList();
 }
 
 function shouldDeliverFeedback() {
@@ -2528,25 +2559,7 @@ async function deliverFeedback(payload) {
 }
 
 function pendingDelivery() {
-  return { pending: true, target: state.options.deliveryMode === "slack-webhook" ? "slack-webhook" : "receiver", startedAt: Date.now(), tab: tabId() };
-}
-
-// This tab's id, kept in sessionStorage, which a reload keeps and other tabs do
-// not share: a pending delivery of this tab's is one a reload cut off. null
-// when sessionStorage is unavailable; a delivery then started without a tab id
-// counts as this tab's, as every pending delivery did before (#139).
-function tabId() {
-  if (ownTabId !== undefined) return ownTabId;
-  try {
-    ownTabId = window.sessionStorage.getItem(TAB_ID_KEY);
-    if (!ownTabId) {
-      ownTabId = `tab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-      window.sessionStorage.setItem(TAB_ID_KEY, ownTabId);
-    }
-  } catch (_) {
-    ownTabId = null;
-  }
-  return ownTabId;
+  return { pending: true, target: state.options.deliveryMode === "slack-webhook" ? "slack-webhook" : "receiver", startedAt: Date.now() };
 }
 
 // Demo-scoped batch export: write every still-unsent comment as one bundle,
@@ -2555,12 +2568,15 @@ function tabId() {
 // a file per click. The bundle takes the comments saved on this device by the
 // other pages of the demo too (#197), so a page left unexported loses nothing.
 function downloadUnsentFeedback() {
+  // What another tab saved and this one has not heard of yet goes in too (#139).
+  syncFeedbackFromOtherTab();
   const pages = loadOtherPagesFeedback();
   const unsent = [...state.feedback, ...pages.flatMap((page) => page.feedback)].filter((item) => !item.exported);
   downloadFeedbackItems(unsent, pages);
 }
 
 function downloadAllFeedback() {
+  syncFeedbackFromOtherTab();
   const pages = loadOtherPagesFeedback();
   downloadFeedbackItems([...state.feedback, ...pages.flatMap((page) => page.feedback)], pages);
 }
@@ -2811,14 +2827,16 @@ function saveFeedbackList() {
   applyStorageChanges(persistFeedbackList());
   // The merge may have taken in another tab's edit of a comment.
   renumberMarkers();
+  refreshTooltip();
 }
 
 function syncFeedbackFromOtherTab() {
   applyStorageChanges(syncPersistedFeedback());
   // A delivery the other tab started, or one it has finished.
   settlePendingDeliveries();
-  // Comments edited there change the marker labels too.
+  // Comments edited there change the marker labels and the tooltip too.
   renumberMarkers();
+  refreshTooltip();
   renderFeedbackList();
 }
 
@@ -2835,7 +2853,6 @@ function applyStorageChanges({ added, removed }) {
     closeCommentForm();
     showWidgetNotice("このコメントは別のタブで削除されました。", true);
   }
-  if (removed.length) hideTooltip();
 }
 
 function markerFromFeedback(item) {
@@ -3497,10 +3514,24 @@ function bindMarkerActivation(marker, feedbackId) {
 function showTooltip(event, item) {
   const tooltip = getTooltip();
   if (!tooltip) return;
-  const reviewer = item.reviewer || "(no name)";
-  tooltip.textContent = `${reviewer}\n${item.comment || ""}`;
+  tooltip.dataset.feedbackId = item.id;
+  tooltip.textContent = tooltipText(item);
   tooltip.hidden = false;
   positionTooltip(event);
+}
+
+function tooltipText(item) {
+  return `${item.reviewer || "(no name)"}\n${item.comment || ""}`;
+}
+
+// After another tab's change (#139): the shown comment's current text, or no
+// tooltip once the comment is gone.
+function refreshTooltip() {
+  const tooltip = getTooltip();
+  if (!tooltip || tooltip.hidden) return;
+  const item = state.feedback.find((entry) => entry.id === tooltip.dataset.feedbackId);
+  if (item) tooltip.textContent = tooltipText(item);
+  else hideTooltip();
 }
 
 function positionTooltip(event) {

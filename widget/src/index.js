@@ -19,9 +19,7 @@ const EXPORT_VERSION = 2;
 // page started is taken as cut off only once it and a margin are over (#139).
 const FETCH_TIMEOUT_MS = 15000;
 const STALE_PENDING_MS = FETCH_TIMEOUT_MS + 5000;
-const TAB_ID_KEY = "patchloop:tab";
 let pendingInit = null;
-let ownTabId;
 const captureEvents = typeof window.PointerEvent === "function"
   ? ["pointerdown", "pointermove", "pointerup"]
   : ["mousedown", "mousemove", "mouseup"];
@@ -46,6 +44,8 @@ function init(options = {}) {
   state.editingId = null;
   state.commentReturnFocus = null;
   removeSelectionBox();
+  // Before the options change: saved under the scope they were made in.
+  abandonDeliveries();
   state.options = { ...DEFAULTS, ...options };
   state.options.reviewer = initialReviewer(state.options);
   // Resolved once here (option first, meta tags as fallback) so every payload
@@ -69,6 +69,7 @@ function init(options = {}) {
 
 function destroy() {
   cancelPendingInit();
+  abandonDeliveries();
   document.documentElement.classList.remove("pl-feedback-active");
   document.querySelector("[data-patchloop-style]")?.remove();
   document.removeEventListener(captureEvents[0], handleDocumentMouseDown, true);
@@ -82,6 +83,7 @@ function destroy() {
   window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   window.removeEventListener("storage", handleStorageChange);
+  window.removeEventListener("pagehide", abandonDeliveries);
   window.clearTimeout(state.otherPagesTimer);
   window.clearTimeout(state.resizeTimer);
   window.clearTimeout(state.pendingCheckTimer);
@@ -251,6 +253,8 @@ function bindGlobalCapture() {
   document.addEventListener("visibilitychange", handleVisibilityChange);
   window.removeEventListener("storage", handleStorageChange);
   window.addEventListener("storage", handleStorageChange);
+  window.removeEventListener("pagehide", abandonDeliveries);
+  window.addEventListener("pagehide", abandonDeliveries);
 }
 
 function cancelCaptureDrag() {
@@ -748,8 +752,6 @@ function restorePersistedFeedback() {
   removeCommittedMarkers();
   state.feedbackMarkers.clear();
   state.feedback = [];
-  // Deliveries of an earlier init no longer report back.
-  state.deliveringIds = new Set();
 
   if (!state.options.persistFeedback) return;
 
@@ -762,12 +764,12 @@ function restorePersistedFeedback() {
   saveFeedbackList();
 }
 
-// A delivery left pending was cut off (the page closed or reloaded), unless
-// another tab of the page is still making it (#139): one another tab started
+// A delivery saved as pending is another tab's (#139): a tab saves its own as
+// interrupted when it stops waiting for them (abandonDeliveries). One started
 // less than a fetch timeout ago stays pending and is checked again when it
-// would have ended, by which time that tab has saved the result. One saved
-// before deliveries carried startedAt and tab is taken as cut off. Returns
-// whether any changed.
+// would have ended, by which time that tab has saved the result; an older one
+// was cut off (the tab crashed), as is one saved before deliveries carried
+// startedAt. Returns whether any changed.
 function settlePendingDeliveries() {
   window.clearTimeout(state.pendingCheckTimer);
   const now = Date.now();
@@ -776,7 +778,7 @@ function settlePendingDeliveries() {
   state.feedback.forEach((item) => {
     if (!item.delivery?.pending || state.deliveringIds.has(item.id)) return;
     const age = now - item.delivery.startedAt;
-    if (item.delivery.tab !== tabId() && age >= 0 && age < STALE_PENDING_MS) {
+    if (age >= 0 && age < STALE_PENDING_MS) {
       recheckIn = Math.min(recheckIn, STALE_PENDING_MS - age);
       return;
     }
@@ -791,6 +793,20 @@ function recheckPendingDeliveries() {
   if (!getRoot() || !settlePendingDeliveries()) return;
   saveFeedbackList();
   renderFeedbackList();
+}
+
+// The deliveries in flight no longer report back once the page goes away
+// (pagehide: closed, reloaded or left) or the widget is destroyed or
+// re-initialized, so they are saved as interrupted, and other tabs and the
+// next load show them so at once (#139).
+function abandonDeliveries() {
+  const abandoned = state.feedback.filter((item) => state.deliveringIds.has(item.id) && item.delivery?.pending);
+  state.deliveringIds = new Set();
+  if (abandoned.length === 0) return;
+  abandoned.forEach((item) => {
+    item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
+  });
+  saveFeedbackList();
 }
 
 function shouldDeliverFeedback() {
@@ -813,25 +829,7 @@ async function deliverFeedback(payload) {
 }
 
 function pendingDelivery() {
-  return { pending: true, target: state.options.deliveryMode === "slack-webhook" ? "slack-webhook" : "receiver", startedAt: Date.now(), tab: tabId() };
-}
-
-// This tab's id, kept in sessionStorage, which a reload keeps and other tabs do
-// not share: a pending delivery of this tab's is one a reload cut off. null
-// when sessionStorage is unavailable; a delivery then started without a tab id
-// counts as this tab's, as every pending delivery did before (#139).
-function tabId() {
-  if (ownTabId !== undefined) return ownTabId;
-  try {
-    ownTabId = window.sessionStorage.getItem(TAB_ID_KEY);
-    if (!ownTabId) {
-      ownTabId = `tab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-      window.sessionStorage.setItem(TAB_ID_KEY, ownTabId);
-    }
-  } catch (_) {
-    ownTabId = null;
-  }
-  return ownTabId;
+  return { pending: true, target: state.options.deliveryMode === "slack-webhook" ? "slack-webhook" : "receiver", startedAt: Date.now() };
 }
 
 // Demo-scoped batch export: write every still-unsent comment as one bundle,
@@ -840,12 +838,15 @@ function tabId() {
 // a file per click. The bundle takes the comments saved on this device by the
 // other pages of the demo too (#197), so a page left unexported loses nothing.
 function downloadUnsentFeedback() {
+  // What another tab saved and this one has not heard of yet goes in too (#139).
+  syncFeedbackFromOtherTab();
   const pages = loadOtherPagesFeedback();
   const unsent = [...state.feedback, ...pages.flatMap((page) => page.feedback)].filter((item) => !item.exported);
   downloadFeedbackItems(unsent, pages);
 }
 
 function downloadAllFeedback() {
+  syncFeedbackFromOtherTab();
   const pages = loadOtherPagesFeedback();
   downloadFeedbackItems([...state.feedback, ...pages.flatMap((page) => page.feedback)], pages);
 }
@@ -1096,14 +1097,16 @@ function saveFeedbackList() {
   applyStorageChanges(persistFeedbackList());
   // The merge may have taken in another tab's edit of a comment.
   renumberMarkers();
+  refreshTooltip();
 }
 
 function syncFeedbackFromOtherTab() {
   applyStorageChanges(syncPersistedFeedback());
   // A delivery the other tab started, or one it has finished.
   settlePendingDeliveries();
-  // Comments edited there change the marker labels too.
+  // Comments edited there change the marker labels and the tooltip too.
   renumberMarkers();
+  refreshTooltip();
   renderFeedbackList();
 }
 
@@ -1120,7 +1123,6 @@ function applyStorageChanges({ added, removed }) {
     closeCommentForm();
     showWidgetNotice("このコメントは別のタブで削除されました。", true);
   }
-  if (removed.length) hideTooltip();
 }
 
 function markerFromFeedback(item) {
@@ -1782,10 +1784,24 @@ function bindMarkerActivation(marker, feedbackId) {
 function showTooltip(event, item) {
   const tooltip = getTooltip();
   if (!tooltip) return;
-  const reviewer = item.reviewer || "(no name)";
-  tooltip.textContent = `${reviewer}\n${item.comment || ""}`;
+  tooltip.dataset.feedbackId = item.id;
+  tooltip.textContent = tooltipText(item);
   tooltip.hidden = false;
   positionTooltip(event);
+}
+
+function tooltipText(item) {
+  return `${item.reviewer || "(no name)"}\n${item.comment || ""}`;
+}
+
+// After another tab's change (#139): the shown comment's current text, or no
+// tooltip once the comment is gone.
+function refreshTooltip() {
+  const tooltip = getTooltip();
+  if (!tooltip || tooltip.hidden) return;
+  const item = state.feedback.find((entry) => entry.id === tooltip.dataset.feedbackId);
+  if (item) tooltip.textContent = tooltipText(item);
+  else hideTooltip();
 }
 
 function positionTooltip(event) {

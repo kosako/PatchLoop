@@ -61,8 +61,8 @@ export const state = {
   // init; see bindFeedbackScope.
   feedbackScope: null,
   // The comments in storage when this tab last read or wrote it (id to
-  // fingerprint), and the ids this tab is delivering, for the merge with other
-  // tabs (#139).
+  // fingerprints), and the ids this tab is delivering, for the merge with
+  // other tabs (#139).
   storedFeedback: new Map(),
   deliveringIds: new Set(),
   // Re-checks a delivery another tab may still be making; see settlePendingDeliveries.

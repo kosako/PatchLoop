@@ -8,7 +8,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const { setTimeout: sleep } = require("node:timers/promises");
 const { widgetHarness } = require("../test-support/widget-dom.js");
-const { feedbackFingerprint, mergeFeedbackLists } = require("../widget/src/tab-sync.js");
+const { feedbackFingerprints, mergeFeedbackLists } = require("../widget/src/tab-sync.js");
 
 const BASE = "https://demo.example";
 const DOWNLOAD = { persistFeedback: true, deliveryMode: "download" };
@@ -182,6 +182,20 @@ test("an edit after the export is not marked again by another tab's older copy",
   assert.deepEqual(saved(storage).map((item) => [item.comment, Boolean(item.exported)]), [["B1", false], ["Draft, corrected", false]]);
 });
 
+test("an export takes in an edit another tab saved and this tab had not heard of, and marks that text", async () => {
+  const storage = new Map();
+  const a = openTab(storage);
+  await add(a, "Draft");
+  const b = openTab(storage);
+  listItem(b, "Draft").querySelector("[data-pl-edit]").click();
+  await b.submit("Draft, edited in B", { captureTarget: false });
+
+  a.document.querySelector("[data-pl-download-all]").click();
+  const bundle = JSON.parse(await a.downloads[0].blob.text());
+  assert.deepEqual(Array.from(bundle.feedback, (item) => item.comment), ["Draft, edited in B"]);
+  assert.deepEqual(saved(storage).map((item) => [item.comment, Boolean(item.exported)]), [["Draft, edited in B", true]]);
+});
+
 test("a delivery another tab is making shows as in progress and its result reaches both tabs", async () => {
   const storage = new Map();
   let complete;
@@ -206,11 +220,10 @@ test("a delivery another tab is making shows as in progress and its result reach
   assert.equal(b.api.getFeedback().find((item) => item.comment === "Sending").delivery.ok, true);
 });
 
-test("a delivery another tab left unfinished becomes interrupted once it would have timed out", async () => {
+test("a delivery of a tab that stopped without a word (crashed) becomes interrupted once it would have timed out", async () => {
   const storage = new Map();
   const a = openTab(storage, { options: { persistFeedback: true }, harness: { replies: [() => new Promise(() => {})] } });
   a.submit("Cut off");
-  a.api.destroy();
 
   const scheduled = [];
   const timers = { setTimeout: (callback, ms) => scheduled.push({ callback, ms }), clearTimeout() {} };
@@ -239,11 +252,48 @@ test("a pending delivery saved without its start time is taken as cut off, as be
   assert.equal(b.api.getFeedback()[0].delivery.interrupted, true);
 });
 
+test("a tab closed or reloaded mid-delivery saves it as interrupted, so other tabs and the next load offer the retry at once", async () => {
+  const storage = new Map();
+  const a = openTab(storage, { options: { persistFeedback: true }, harness: { replies: [() => new Promise(() => {})] } });
+  a.submit("Sending at reload");
+  const b = openTab(storage, { options: { persistFeedback: true } });
+  assert.equal(b.api.getFeedback()[0].delivery.pending, true);
+
+  a.window.emit("pagehide");
+  assert.equal(saved(storage)[0].delivery.interrupted, true);
+  hear(b, keyOf(storage));
+  assert.equal(b.api.getFeedback()[0].delivery.interrupted, true);
+  assert.ok(b.document.querySelector("[data-pl-retry]"));
+  const reloaded = openTab(storage, { options: { persistFeedback: true } });
+  assert.equal(reloaded.api.getFeedback()[0].delivery.interrupted, true);
+});
+
+test("the tooltip of a focused marker follows another tab's edit and closes when the comment is deleted there", async () => {
+  const storage = new Map();
+  const a = openTab(storage);
+  await add(a, "Before");
+  const b = openTab(storage);
+  a.document.querySelector("[data-patchloop-pin]").focus();
+  const tooltip = a.document.querySelector("[data-pl-tooltip]");
+  assert.equal(tooltip.hidden, false);
+  assert.match(tooltip.textContent, /Before/);
+
+  listItem(b, "Before").querySelector("[data-pl-edit]").click();
+  await b.submit("After", { captureTarget: false });
+  hear(a, keyOf(storage));
+  assert.equal(tooltip.hidden, false);
+  assert.match(tooltip.textContent, /After/);
+
+  listItem(b, "After").querySelector("[data-pl-delete]").click();
+  hear(a, keyOf(storage));
+  assert.equal(tooltip.hidden, true);
+});
+
 // --- mergeFeedbackLists --------------------------------------------------
 
 const item = (id, createdAt, extra = {}) => ({ id, createdAt, comment: id, reviewer: "R", ...extra });
 // What this tab last read or wrote.
-const knownAs = (...items) => new Map(items.map((entry) => [entry.id, feedbackFingerprint(entry)]));
+const knownAs = (...items) => new Map(items.map((entry) => [entry.id, feedbackFingerprints(entry)]));
 
 test("merge on save: a comment changed here keeps this tab's version, one not changed here takes the stored one", () => {
   const changedHere = item("changed-here", "2026-01-04", { comment: "ours" });
@@ -259,6 +309,21 @@ test("merge on save: a comment changed here keeps this tab's version, one not ch
   assert.equal(copyOnly.comment, "edited there");
   assert.deepEqual(added.map((entry) => entry.id), ["theirs"]);
   assert.deepEqual(removed, ["gone"]);
+});
+
+test("merge on save takes part by part: this tab's marks or delivery do not carry its old text over another tab's edit", () => {
+  const before = item("a", "2026-01-01", { comment: "old" });
+  const exportedHere = { ...before, exported: true, exportedAt: "t", exportedFileName: "f.json" };
+  const deliveredHere = { ...before, delivery: { ok: true, status: 201 } };
+  for (const ours of [exportedHere, deliveredHere]) {
+    const stored = [{ ...before, comment: "edited there", localEdited: true }];
+    const { list } = mergeFeedbackLists([ours], stored, knownAs(before), { prefer: "ours" });
+    assert.equal(list[0].comment, "edited there");
+    assert.equal(list[0].localEdited, true);
+    // The export was of the old text, so the edit is not marked as exported.
+    assert.equal(list[0].exported, undefined);
+    assert.deepEqual(list[0].delivery, ours.delivery);
+  }
 });
 
 test("merge on hearing another tab: its version wins in place, except a delivery this tab is making", () => {
@@ -280,14 +345,20 @@ test("merge keeps the export marks of either side while the comment is the same"
   for (const prefer of ["ours", "stored"]) {
     const ours = [item("a", "2026-01-01")];
     const stored = [item("a", "2026-01-01", { exported: true, exportedAt: "t", exportedFileName: "f.json" })];
-    const { list } = mergeFeedbackLists(ours, stored, new Map(), { prefer });
+    const { list } = mergeFeedbackLists(ours, stored, knownAs(ours[0]), { prefer });
     assert.deepEqual([list[0].exported, list[0].exportedAt, list[0].exportedFileName], [true, "t", "f.json"]);
   }
 });
 
-test("the fingerprint ignores key order and the image data a full storage drops", () => {
+test("the fingerprints ignore key order and the image data a full storage drops, and tell the parts apart", () => {
   const full = { id: "a", comment: "c", screenshot: { status: "captured", dataUrl: "data:image/svg+xml;base64,AAAA" } };
   const compact = { screenshot: { persistedWithoutDataUrl: true, status: "captured" }, comment: "c", id: "a" };
-  assert.equal(feedbackFingerprint(full), feedbackFingerprint(compact));
-  assert.notEqual(feedbackFingerprint(full), feedbackFingerprint({ ...full, comment: "d" }));
+  assert.deepEqual(feedbackFingerprints(full), feedbackFingerprints(compact));
+  const edited = feedbackFingerprints({ ...full, comment: "d" });
+  const delivered = feedbackFingerprints({ ...full, delivery: { ok: true } });
+  const exported = feedbackFingerprints({ ...full, exported: true });
+  const base = feedbackFingerprints(full);
+  assert.deepEqual([edited.content !== base.content, edited.delivery === base.delivery, edited.marks === base.marks], [true, true, true]);
+  assert.deepEqual([delivered.content === base.content, delivered.delivery !== base.delivery], [true, true]);
+  assert.deepEqual([exported.content === base.content, exported.marks !== base.marks], [true, true]);
 });

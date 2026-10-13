@@ -1,6 +1,6 @@
 import { state } from "./state.js";
 import { applyPageUrlRule, normalizePageUrl, pageUrlForSharing, samePersistedPage } from "./url.js";
-import { feedbackFingerprint, mergeFeedbackLists } from "./tab-sync.js";
+import { feedbackFingerprints, mergeFeedbackLists } from "./tab-sync.js";
 
 export const FEEDBACK_STORAGE_VERSION = 1;
 
@@ -113,7 +113,7 @@ function rewriteStoredEnvelope(key, value) {
 }
 
 // Saves the list after merging what another tab of the page saved since this
-// tab last read or wrote it (#139); this tab's version of a comment it changed
+// tab last read or wrote it (#139); what this tab changed of a comment
 // meanwhile wins. The merge can add or remove comments: the caller updates the
 // markers from the returned { added, removed }.
 export function persistFeedbackList() {
@@ -181,7 +181,7 @@ function readStoredFeedback() {
 }
 
 function fingerprintsOf(feedback) {
-  return new Map(feedback.filter(Boolean).map((item) => [item.id, feedbackFingerprint(item)]));
+  return new Map(feedback.filter(Boolean).map((item) => [item.id, feedbackFingerprints(item)]));
 }
 
 function noChanges() {

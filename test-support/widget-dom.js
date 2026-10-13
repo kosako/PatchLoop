@@ -61,8 +61,7 @@ const NO_STATUS_LOOKUP = () => ({ ok: false, status: 404, json: async () => ({ o
 
 // timers replaces the page's setTimeout / clearTimeout, for tests that fire a
 // timeout themselves. storage is the localStorage content: harnesses given the
-// same Map are tabs of one browser (#139). Each harness has its own
-// sessionStorage, which a re-init keeps, as a reload of the tab does.
+// same Map are tabs of one browser (#139).
 function widgetHarness({ ready = true, pointerEvents = false, replies = [], statusReply = NO_STATUS_LOOKUP, timers = { setTimeout, clearTimeout }, storage = new Map() } = {}) {
   const mountedRoots = [];
   const downloads = [];
@@ -249,7 +248,6 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [], stat
   const statusRequests = [];
   const warnings = [];
   const infos = [];
-  const session = new Map();
   const window = {
     ...eventTarget(), innerWidth: 800, innerHeight: 600, scrollX: 0, scrollY: 0,
     location: { href: "https://demo.example/page" }, clearTimeout: timers.clearTimeout, setTimeout: timers.setTimeout,
@@ -258,8 +256,7 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [], stat
     localStorage: {
       getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key),
       get length() { return storage.size; }, key: (index) => [...storage.keys()][index] ?? null
-    },
-    sessionStorage: { getItem: (key) => session.get(key) ?? null, setItem: (key, value) => session.set(key, value) }
+    }
   };
   vm.runInNewContext(bundle, {
     window, document, Blob, AbortController, URLSearchParams,
