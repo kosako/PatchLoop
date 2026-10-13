@@ -7,7 +7,8 @@ import { DEFAULTS, state } from "./state.js";
 import { buildPayload } from "./payload.js";
 import { uncapturedTouching } from "./screenshot.js";
 import { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } from "./inbox-status.js";
-import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey } from "./persistence.js";
+import { isLocallyEdited, pendingAge, receiverHasCopy } from "./delivery-state.js";
+import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } from "./persistence.js";
 import { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } from "../../shared/format.js";
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
@@ -15,6 +16,10 @@ const EXPORT_KIND = "patchloop-feedback-bundle";
 // payload; the receiver still accepts that shape for files exported before
 // the switch to batch download.
 const EXPORT_VERSION = 2;
+// The receiver's answer is awaited this long. A delivery another tab of the
+// page started is taken as cut off only once it and a margin are over (#139).
+const FETCH_TIMEOUT_MS = 15000;
+const STALE_PENDING_MS = FETCH_TIMEOUT_MS + 5000;
 let pendingInit = null;
 const captureEvents = typeof window.PointerEvent === "function"
   ? ["pointerdown", "pointermove", "pointerup"]
@@ -40,6 +45,8 @@ function init(options = {}) {
   state.editingId = null;
   state.commentReturnFocus = null;
   removeSelectionBox();
+  // Before the options change: saved under the scope they were made in.
+  abandonDeliveries();
   state.options = { ...DEFAULTS, ...options };
   state.options.reviewer = initialReviewer(state.options);
   // Resolved once here (option first, meta tags as fallback) so every payload
@@ -63,6 +70,7 @@ function init(options = {}) {
 
 function destroy() {
   cancelPendingInit();
+  abandonDeliveries();
   document.documentElement.classList.remove("pl-feedback-active");
   document.querySelector("[data-patchloop-style]")?.remove();
   document.removeEventListener(captureEvents[0], handleDocumentMouseDown, true);
@@ -76,8 +84,11 @@ function destroy() {
   window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   window.removeEventListener("storage", handleStorageChange);
+  window.removeEventListener("pagehide", abandonDeliveries);
+  window.removeEventListener("pageshow", handlePageShow);
   window.clearTimeout(state.otherPagesTimer);
   window.clearTimeout(state.resizeTimer);
+  window.clearTimeout(state.pendingCheckTimer);
   resetInboxStatus();
   state.approximateIds.clear();
   document.querySelector("[data-patchloop-root]")?.remove();
@@ -244,6 +255,10 @@ function bindGlobalCapture() {
   document.addEventListener("visibilitychange", handleVisibilityChange);
   window.removeEventListener("storage", handleStorageChange);
   window.addEventListener("storage", handleStorageChange);
+  window.removeEventListener("pagehide", abandonDeliveries);
+  window.addEventListener("pagehide", abandonDeliveries);
+  window.removeEventListener("pageshow", handlePageShow);
+  window.addEventListener("pageshow", handlePageShow);
 }
 
 function cancelCaptureDrag() {
@@ -626,8 +641,7 @@ async function submitComment(event) {
       target.reviewer = reviewer;
       // The receiver holds the comment when it took the post or answered 409
       // (it already had that id), so an edit no longer matches the inbox (#187).
-      const submitted = target.delivery?.ok === true || target.delivery?.status === 409 || (target.delivery?.target === "slack-webhook" && target.delivery.ok === null);
-      if (changed && (submitted || target.exported)) target.localEdited = true;
+      if (changed && (receiverHasCopy(target.delivery) || target.exported)) target.localEdited = true;
       // Re-export the local change; receivers still deduplicate the original ID.
       if (changed && target.exported) {
         delete target.exported;
@@ -635,9 +649,11 @@ async function submitComment(event) {
         delete target.exportedFileName;
       }
       saveReviewer(reviewer);
-      persistFeedbackList();
+      saveFeedbackList();
       renumberMarkers();
       renderFeedbackList();
+      // Deleted in another tab meanwhile: the deletion won, as the notice says.
+      if (!state.feedback.includes(target)) return;
     }
     state.editingId = null;
     closeCommentForm();
@@ -658,7 +674,8 @@ async function submitComment(event) {
   if (delivering) payload.delivery = pendingDelivery();
   state.feedback.unshift(payload);
   finalizePendingMarker(payload);
-  persistFeedbackList();
+  if (delivering) state.deliveringIds.add(payload.id);
+  saveFeedbackList();
   renderFeedbackList();
   expandPanel();
   closeCommentForm();
@@ -676,9 +693,8 @@ async function submitComment(event) {
   }
 
   if (delivering) {
-    await deliverFeedback(payload);
-    if (getRoot() !== root) return;
-    persistFeedbackList();
+    if (!(await deliverFeedback(payload)) || getRoot() !== root) return;
+    saveFeedbackList();
     renderFeedbackList();
     showWidgetNotice(deliveryStatusText(payload.delivery), payload.delivery.ok === false);
   } else {
@@ -709,18 +725,22 @@ async function postFeedback(payload) {
       headers,
       body: JSON.stringify(payload)
     });
-    payload.delivery = { ok: response.ok, status: response.status };
+    return logDelivery(payload, { ok: response.ok, status: response.status });
   } catch (error) {
-    payload.delivery = { ok: false, error: error.message };
+    return logDelivery(payload, { ok: false, error: error.message });
   }
-  console.info("[PatchLoop] delivery", payload.id, payload.delivery);
+}
+
+function logDelivery(payload, delivery) {
+  console.info("[PatchLoop] delivery", payload.id, delivery);
+  return delivery;
 }
 
 // read runs within the timeout too, so a body that stalls after the headers
 // is aborted as well.
 async function fetchWithTimeout(url, options, read = (response) => response) {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 15000);
+  const timer = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     return await read(await fetch(url, { ...options, signal: controller.signal }));
   } finally {
@@ -739,11 +759,69 @@ function restorePersistedFeedback() {
   if (!stored.length) return;
 
   state.feedback = stored;
-  state.feedback.forEach((item) => {
-    if (item.delivery?.pending) item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
-  });
+  settlePendingDeliveries();
   restoreFeedbackMarkers();
-  persistFeedbackList();
+  saveFeedbackList();
+}
+
+// A delivery saved as pending is another tab's (#139): a tab saves its own as
+// interrupted when it stops waiting for them (abandonDeliveries). One started
+// less than a fetch timeout ago stays pending and is checked again when it
+// would have ended, by which time that tab has saved the result; an older one
+// was cut off (the tab crashed), as is one saved before deliveries carried
+// startedAt. A start ahead of this clock (the clock was set back) counts from
+// when this tab first saw the delivery. Returns whether any changed.
+function settlePendingDeliveries() {
+  window.clearTimeout(state.pendingCheckTimer);
+  const now = Date.now();
+  // A clock set back later does not move this one.
+  const monotonicNow = window.performance?.now?.() ?? now;
+  const seenAt = new Map();
+  let changed = false;
+  let recheckIn = Infinity;
+  state.feedback.forEach((item) => {
+    if (!item.delivery?.pending || state.deliveringIds.has(item.id)) return;
+    seenAt.set(item.id, state.pendingSeenAt.get(item.id) ?? monotonicNow);
+    const age = pendingAge(item.delivery.startedAt, now, seenAt.get(item.id), monotonicNow);
+    if (age < STALE_PENDING_MS) {
+      recheckIn = Math.min(recheckIn, STALE_PENDING_MS - age);
+      return;
+    }
+    item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
+    changed = true;
+  });
+  state.pendingSeenAt = seenAt;
+  if (recheckIn !== Infinity) state.pendingCheckTimer = window.setTimeout(recheckPendingDeliveries, recheckIn);
+  return changed;
+}
+
+// Reads the saved list first: the other tab's result may be saved already,
+// its storage event still on the way.
+function recheckPendingDeliveries() {
+  if (!getRoot() || !syncFeedbackFromOtherTab()) return;
+  saveFeedbackList();
+  renderFeedbackList();
+}
+
+// The deliveries in flight no longer report back once the page goes away
+// (pagehide: closed, reloaded or left) or the widget is destroyed or
+// re-initialized, so they are saved as interrupted, and other tabs and the
+// next load show them so at once (#139).
+function abandonDeliveries() {
+  const abandoned = state.feedback.filter((item) => state.deliveringIds.has(item.id) && item.delivery?.pending);
+  state.deliveringIds = new Set();
+  if (abandoned.length === 0) return;
+  abandoned.forEach((item) => {
+    item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
+  });
+  saveFeedbackList();
+  // Shown so when the page comes back from the back/forward cache.
+  renderFeedbackList();
+}
+
+// Back from the back/forward cache: what other tabs saved meanwhile.
+function handlePageShow(event) {
+  if (event.persisted) syncFeedbackFromOtherTab();
 }
 
 function shouldDeliverFeedback() {
@@ -755,18 +833,30 @@ function shouldDeliverFeedback() {
   return Boolean(state.options.endpoint);
 }
 
+// Sends the comment and settles its delivery state, unless this tab gave the
+// delivery up meanwhile (abandonDeliveries: the page went away, or the widget
+// was destroyed or re-initialized): it was saved as interrupted then, and
+// another tab may have retried it since (#139). Returns whether it settled.
 async function deliverFeedback(payload) {
+  const deliveringIds = state.deliveringIds;
+  deliveringIds.add(payload.id);
   applyPageUrlRule(payload, state.options.keepQueryParams);
-  if (state.options.deliveryMode === "slack-webhook") {
-    await postSlackWebhook(payload);
-    return;
+  const sent = { comment: payload.comment, reviewer: payload.reviewer };
+  let delivery;
+  try {
+    delivery = await (state.options.deliveryMode === "slack-webhook" ? postSlackWebhook(payload) : postFeedback(payload));
+  } finally {
+    deliveringIds.delete(payload.id);
   }
-
-  await postFeedback(payload);
+  if (deliveringIds !== state.deliveringIds) return false;
+  // The text that went out stays with the result: an edit another tab saved
+  // meanwhile then shows as a local change, whichever text the merge keeps.
+  payload.delivery = receiverHasCopy(delivery) ? { ...delivery, sent } : delivery;
+  return true;
 }
 
 function pendingDelivery() {
-  return { pending: true, target: state.options.deliveryMode === "slack-webhook" ? "slack-webhook" : "receiver" };
+  return { pending: true, target: state.options.deliveryMode === "slack-webhook" ? "slack-webhook" : "receiver", startedAt: Date.now() };
 }
 
 // Demo-scoped batch export: write every still-unsent comment as one bundle,
@@ -775,12 +865,15 @@ function pendingDelivery() {
 // a file per click. The bundle takes the comments saved on this device by the
 // other pages of the demo too (#197), so a page left unexported loses nothing.
 function downloadUnsentFeedback() {
+  // What another tab saved and this one has not heard of yet goes in too (#139).
+  syncFeedbackFromOtherTab();
   const pages = loadOtherPagesFeedback();
   const unsent = [...state.feedback, ...pages.flatMap((page) => page.feedback)].filter((item) => !item.exported);
   downloadFeedbackItems(unsent, pages);
 }
 
 function downloadAllFeedback() {
+  syncFeedbackFromOtherTab();
   const pages = loadOtherPagesFeedback();
   downloadFeedbackItems([...state.feedback, ...pages.flatMap((page) => page.feedback)], pages);
 }
@@ -819,7 +912,7 @@ function downloadFeedbackItems(items, pages = []) {
       item.exportedAt = exportedAt;
       item.exportedFileName = link.download;
     });
-    persistFeedbackList();
+    saveFeedbackList();
     const exported = new Set(items);
     pages.filter((page) => page.feedback.some((item) => exported.has(item))).forEach(saveOtherPageFeedback);
     state.otherPages = null;
@@ -887,6 +980,7 @@ function otherPagesSummary() {
 
 function handleStorageChange(event) {
   if (!isDemoFeedbackKey(event.key)) return;
+  if (isOwnFeedbackKey(event.key)) syncFeedbackFromOtherTab();
   state.otherPages = null;
   // An export in another tab writes one key per page: count once after them.
   window.clearTimeout(state.otherPagesTimer);
@@ -903,11 +997,10 @@ async function postSlackWebhook(payload) {
     });
     // no-cors gives an opaque response: we know nothing about the outcome,
     // so report "unknown" instead of pretending it succeeded.
-    payload.delivery = { ok: null, status: "unknown", target: "slack-webhook" };
+    return logDelivery(payload, { ok: null, status: "unknown", target: "slack-webhook" });
   } catch (error) {
-    payload.delivery = { ok: false, target: "slack-webhook", error: error.message };
+    return logDelivery(payload, { ok: false, target: "slack-webhook", error: error.message });
   }
-  console.info("[PatchLoop] delivery", payload.id, payload.delivery);
 }
 
 function buildSlackWebhookPayload(payload) {
@@ -1007,16 +1100,57 @@ function restoreFeedbackMarkers() {
   removeCommittedMarkers();
   state.feedbackMarkers.clear();
 
-  state.feedback.slice().reverse().forEach((item, index) => {
-    const marker = markerFromFeedback(item);
-    if (!marker) return;
-    updateMarkerLabel(marker, item, index + 1);
-    marker.node.dataset.patchloopFeedbackId = item.id;
-    state.feedbackMarkers.set(item.id, marker);
-    bindMarkerHover(marker, item.id);
-    bindMarkerActivation(marker, item.id);
-    setMarkerApproximate(marker, state.approximateIds.has(item.id));
+  state.feedback.slice().reverse().forEach(addCommittedMarker);
+  renumberMarkers();
+}
+
+// Numbered by renumberMarkers.
+function addCommittedMarker(item) {
+  const marker = markerFromFeedback(item);
+  if (!marker) return;
+  marker.node.dataset.patchloopFeedbackId = item.id;
+  state.feedbackMarkers.set(item.id, marker);
+  bindMarkerHover(marker, item.id);
+  bindMarkerActivation(marker, item.id);
+  setMarkerApproximate(marker, state.approximateIds.has(item.id));
+}
+
+// --- Other tabs of the page (#139) ---------------------------------------
+// Every save merges what another tab saved meanwhile, and a save by another
+// tab is taken in as it happens, so no tab overwrites another tab's comments.
+
+function saveFeedbackList() {
+  applyStorageChanges(persistFeedbackList());
+  // The merge may have taken in another tab's edit of a comment.
+  renumberMarkers();
+  refreshTooltip();
+}
+
+// Returns whether a delivery left pending was taken as cut off.
+function syncFeedbackFromOtherTab() {
+  applyStorageChanges(syncPersistedFeedback());
+  // A delivery the other tab started, or one it has finished.
+  const settled = settlePendingDeliveries();
+  // Comments edited there change the marker labels and the tooltip too.
+  renumberMarkers();
+  refreshTooltip();
+  renderFeedbackList();
+  return settled;
+}
+
+function applyStorageChanges({ added, removed }) {
+  removed.forEach((id) => {
+    state.feedbackMarkers.get(id)?.node?.remove();
+    state.feedbackMarkers.delete(id);
+    state.approximateIds.delete(id);
   });
+  added.slice().reverse().forEach(addCommittedMarker);
+  if (added.length || removed.length) renumberMarkers();
+  if (state.editingId && removed.includes(state.editingId)) {
+    state.editingId = null;
+    closeCommentForm();
+    showWidgetNotice("このコメントは別のタブで削除されました。", true);
+  }
 }
 
 function markerFromFeedback(item) {
@@ -1397,7 +1531,7 @@ function renderFeedbackList() {
     .map((item, i) => {
       const num = state.feedback.length - i;
       const kind = (item.target && item.target.kind) || "point";
-      const delivery = item.localEdited
+      const delivery = isLocallyEdited(item)
         ? '<span class="pl-feedback-status pl-feedback-status-unknown">ローカル変更・送信先には未反映</span>'
         : item.delivery?.pending
           ? '<span class="pl-feedback-status pl-feedback-status-unknown">送信中…</span>'
@@ -1422,7 +1556,7 @@ function renderFeedbackList() {
             <div class="pl-feedback-text">${escapeHtml(item.comment || "")}</div>
           </div>
           <div class="pl-feedback-actions">
-            ${(item.delivery?.ok === false || (item.delivery?.interrupted && item.delivery.target !== "slack-webhook")) && !item.localEdited && item.delivery.status !== 409 ? '<button type="button" data-pl-retry>再送</button>' : ""}
+            ${canRetry(item) ? '<button type="button" data-pl-retry>再送</button>' : ""}
             <button type="button" data-pl-edit title="この端末のコメントを編集"${item.delivery?.pending ? " disabled" : ""}>編集</button>
             <button type="button" data-pl-delete title="この端末のコメントを削除"${item.delivery?.pending ? " disabled" : ""}>削除</button>
           </div>
@@ -1516,6 +1650,12 @@ function handleVisibilityChange() {
   if (document.visibilityState === "visible") refreshInboxStatuses();
 }
 
+// A failed delivery, or an interrupted one to the receiver (Slack may have it
+// already), of a comment the receiver does not hold in another text.
+function canRetry(item) {
+  return (item.delivery?.ok === false || (item.delivery?.interrupted && item.delivery.target !== "slack-webhook")) && !isLocallyEdited(item) && item.delivery.status !== 409;
+}
+
 function deliveryStatusText(delivery) {
   if (!delivery) return "";
   if (delivery.pending) return "送信しています…";
@@ -1570,18 +1710,21 @@ function handleListClick(event) {
 
 async function retryFeedback(id) {
   const root = getRoot();
+  // Another tab may have retried it, or deleted or edited it, without this
+  // tab having heard of it yet (#139).
+  syncFeedbackFromOtherTab();
   const item = state.feedback.find((entry) => entry.id === id);
-  if (!item || item.delivery?.pending || item.localEdited) return;
+  if (!item || !canRetry(item)) return;
   if (!shouldDeliverFeedback()) {
     showWidgetNotice("送信先・設定を確認してください。ファイル共有の場合は書き出しを使います。", true);
     return;
   }
   item.delivery = pendingDelivery();
-  persistFeedbackList();
+  state.deliveringIds.add(item.id);
+  saveFeedbackList();
   renderFeedbackList();
-  await deliverFeedback(item);
-  if (getRoot() !== root) return;
-  persistFeedbackList();
+  if (!(await deliverFeedback(item)) || getRoot() !== root) return;
+  saveFeedbackList();
   renderFeedbackList();
   showWidgetNotice(deliveryStatusText(item.delivery), item.delivery.ok === false);
   getRoot()?.querySelector("[data-pl-collapse]")?.focus({ preventScroll: true });
@@ -1610,7 +1753,7 @@ function deleteFeedback(id) {
   }
   state.feedback = state.feedback.filter((f) => f.id !== id);
   state.approximateIds.delete(id);
-  persistFeedbackList();
+  saveFeedbackList();
   renumberMarkers();
   renderFeedbackList();
   if (state.editingId === id) {
@@ -1672,10 +1815,24 @@ function bindMarkerActivation(marker, feedbackId) {
 function showTooltip(event, item) {
   const tooltip = getTooltip();
   if (!tooltip) return;
-  const reviewer = item.reviewer || "(no name)";
-  tooltip.textContent = `${reviewer}\n${item.comment || ""}`;
+  tooltip.dataset.feedbackId = item.id;
+  tooltip.textContent = tooltipText(item);
   tooltip.hidden = false;
   positionTooltip(event);
+}
+
+function tooltipText(item) {
+  return `${item.reviewer || "(no name)"}\n${item.comment || ""}`;
+}
+
+// After another tab's change (#139): the shown comment's current text, or no
+// tooltip once the comment is gone.
+function refreshTooltip() {
+  const tooltip = getTooltip();
+  if (!tooltip || tooltip.hidden) return;
+  const item = state.feedback.find((entry) => entry.id === tooltip.dataset.feedbackId);
+  if (item) tooltip.textContent = tooltipText(item);
+  else hideTooltip();
 }
 
 function positionTooltip(event) {

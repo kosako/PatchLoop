@@ -59,5 +59,14 @@ export const state = {
   otherPagesTimer: null,
   // { key, pageUrl } of the page whose saved list is in memory (#197), fixed by
   // init; see bindFeedbackScope.
-  feedbackScope: null
+  feedbackScope: null,
+  // The comments in storage when this tab last read or wrote it (id to
+  // fingerprints), and the ids this tab is delivering, for the merge with
+  // other tabs (#139).
+  storedFeedback: new Map(),
+  deliveringIds: new Set(),
+  // Re-checks a delivery another tab may still be making, and when this tab
+  // first saw each such delivery (monotonic); see settlePendingDeliveries.
+  pendingCheckTimer: null,
+  pendingSeenAt: new Map()
 };

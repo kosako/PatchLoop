@@ -1,5 +1,6 @@
 import { state } from "./state.js";
 import { applyPageUrlRule, normalizePageUrl, pageUrlForSharing, samePersistedPage } from "./url.js";
+import { feedbackFingerprints, mergeFeedbackLists } from "./tab-sync.js";
 
 export const FEEDBACK_STORAGE_VERSION = 1;
 
@@ -44,7 +45,14 @@ export function saveDisplayMode(mode) {
   }
 }
 
+// Also notes which comments were in storage, for the merge with other tabs.
 export function loadPersistedFeedback() {
+  const list = readPersistedFeedback();
+  state.storedFeedback = fingerprintsOf(list);
+  return list;
+}
+
+function readPersistedFeedback() {
   if (!state.options.feedbackStorageKey) return [];
 
   try {
@@ -104,22 +112,83 @@ function rewriteStoredEnvelope(key, value) {
   }
 }
 
+// Saves the list after merging what another tab of the page saved since this
+// tab last read or wrote it (#139); what this tab changed of a comment
+// meanwhile wins. The merge can add or remove comments: the caller updates the
+// markers from the returned { added, removed }.
 export function persistFeedbackList() {
-  if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return;
+  if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return noChanges();
 
+  const changes = mergeStoredFeedback("ours");
   const envelope = feedbackStorageEnvelope(state.feedback);
   const storageKey = feedbackScope().key;
   try {
     window.localStorage.setItem(storageKey, JSON.stringify(envelope));
+    state.storedFeedback = fingerprintsOf(envelope.feedback);
   } catch (error) {
     const compactEnvelope = feedbackStorageEnvelope(state.feedback, { omitScreenshotDataUrl: true });
     try {
       window.localStorage.setItem(storageKey, JSON.stringify(compactEnvelope));
+      state.storedFeedback = fingerprintsOf(compactEnvelope.feedback);
       console.warn("[PatchLoop] persisted feedback without screenshot dataUrl", error);
     } catch (retryError) {
       console.warn("[PatchLoop] unable to persist feedback", retryError);
     }
   }
+  return changes;
+}
+
+// Takes in what another tab of the page saved (#139); its version of a comment
+// wins, except the delivery state of one this tab is delivering.
+export function syncPersistedFeedback() {
+  if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return noChanges();
+  return mergeStoredFeedback("stored");
+}
+
+// Whether a storage change is to this page's saved list; a null key is a clear().
+export function isOwnFeedbackKey(key) {
+  return key === null || key === feedbackScope().key || key === state.options.feedbackStorageKey;
+}
+
+function mergeStoredFeedback(prefer) {
+  const stored = readStoredFeedback();
+  // Unreadable: nothing tells what another tab did, so the list stays as it is.
+  if (!stored) return noChanges();
+  const { list, added, removed } = mergeFeedbackLists(state.feedback, stored, state.storedFeedback, { prefer, keepDelivery: state.deliveringIds });
+  state.feedback = list;
+  state.storedFeedback = fingerprintsOf(stored);
+  return { added, removed };
+}
+
+// The page's saved comments as loading reads them, without the load's
+// rewrites; [] when none are saved, null when what is saved cannot be read.
+function readStoredFeedback() {
+  try {
+    const scoped = window.localStorage.getItem(feedbackScope().key);
+    const legacy = scoped === null ? window.localStorage.getItem(state.options.feedbackStorageKey) : null;
+    const raw = scoped ?? legacy;
+    if (raw === null) return [];
+    const parsed = JSON.parse(raw);
+    if (!isMatchingFeedbackEnvelope(parsed)) {
+      // The legacy key holds one page's list, maybe another page's.
+      return scoped === null && isDemoFeedbackEnvelope(parsed) ? [] : null;
+    }
+    // As loading reads it (#163), so a trim whose write-back failed does not
+    // look like another tab's change.
+    trimEnvelopeUrls(parsed);
+    return parsed.feedback.map(normalizePersistedFeedback).filter(Boolean);
+  } catch (error) {
+    console.warn("[PatchLoop] saved feedback unreadable; other tabs' changes not merged", error);
+    return null;
+  }
+}
+
+function fingerprintsOf(feedback) {
+  return new Map(feedback.filter(Boolean).map((item) => [item.id, feedbackFingerprints(item)]));
+}
+
+function noChanges() {
+  return { added: [], removed: [] };
 }
 
 export function clearPersistedFeedback() {
@@ -127,6 +196,7 @@ export function clearPersistedFeedback() {
 
   try {
     window.localStorage.removeItem(feedbackScope().key);
+    state.storedFeedback = new Map();
     const legacy = window.localStorage.getItem(state.options.feedbackStorageKey);
     if (legacy && isMatchingFeedbackEnvelope(JSON.parse(legacy))) {
       window.localStorage.removeItem(state.options.feedbackStorageKey);

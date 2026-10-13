@@ -60,8 +60,9 @@ function matchesSelector(node, selector) {
 const NO_STATUS_LOOKUP = () => ({ ok: false, status: 404, json: async () => ({ ok: false, error: "Not Found" }) });
 
 // timers replaces the page's setTimeout / clearTimeout, for tests that fire a
-// timeout themselves.
-function widgetHarness({ ready = true, pointerEvents = false, replies = [], statusReply = NO_STATUS_LOOKUP, timers = { setTimeout, clearTimeout } } = {}) {
+// timeout themselves. storage is the localStorage content: harnesses given the
+// same Map are tabs of one browser (#139).
+function widgetHarness({ ready = true, pointerEvents = false, replies = [], statusReply = NO_STATUS_LOOKUP, timers = { setTimeout, clearTimeout }, storage = new Map() } = {}) {
   const mountedRoots = [];
   const downloads = [];
   const blobs = new Map();
@@ -247,7 +248,6 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [], stat
   const statusRequests = [];
   const warnings = [];
   const infos = [];
-  const storage = new Map();
   const window = {
     ...eventTarget(), innerWidth: 800, innerHeight: 600, scrollX: 0, scrollY: 0,
     location: { href: "https://demo.example/page" }, clearTimeout: timers.clearTimeout, setTimeout: timers.setTimeout,
