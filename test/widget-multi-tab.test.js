@@ -242,6 +242,19 @@ test("a delivery of a tab that stopped without a word (crashed) becomes interrup
   assert.ok(b.document.querySelector("[data-pl-retry]"));
 });
 
+test("a delivery started ahead of this clock (set back since) waits from when this tab first saw it", () => {
+  const storage = new Map();
+  storage.set(`patchloop:feedback:${JSON.stringify(["local-demo", "plain-html", `${BASE}/page`])}`, JSON.stringify({
+    version: 1, projectId: "local-demo", demoId: "plain-html", pageUrl: `${BASE}/page`, savedAt: "2026-01-01T00:00:00.000Z",
+    feedback: [{ id: "pl_ahead", comment: "Ahead", target: { kind: "point", pageX: 10, pageY: 10 }, delivery: { pending: true, target: "receiver", startedAt: Date.now() + 3600000 } }]
+  }));
+  const scheduled = [];
+  const timers = { setTimeout: (callback, ms) => scheduled.push({ callback, ms }), clearTimeout() {} };
+  const b = openTab(storage, { options: { persistFeedback: true }, harness: { timers } });
+  assert.equal(b.api.getFeedback()[0].delivery.pending, true);
+  assert.ok(scheduled.some((timer) => timer.ms > 15000 && timer.ms <= 20000));
+});
+
 test("a pending delivery saved without its start time is taken as cut off, as before", () => {
   const storage = new Map();
   storage.set(`patchloop:feedback:${JSON.stringify(["local-demo", "plain-html", `${BASE}/page`])}`, JSON.stringify({

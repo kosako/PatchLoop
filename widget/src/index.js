@@ -769,22 +769,27 @@ function restorePersistedFeedback() {
 // less than a fetch timeout ago stays pending and is checked again when it
 // would have ended, by which time that tab has saved the result; an older one
 // was cut off (the tab crashed), as is one saved before deliveries carried
-// startedAt. Returns whether any changed.
+// startedAt. A start ahead of this clock (the clock was set back) counts from
+// when this tab first saw the delivery. Returns whether any changed.
 function settlePendingDeliveries() {
   window.clearTimeout(state.pendingCheckTimer);
   const now = Date.now();
+  const seenAt = new Map();
   let changed = false;
   let recheckIn = Infinity;
   state.feedback.forEach((item) => {
     if (!item.delivery?.pending || state.deliveringIds.has(item.id)) return;
-    const age = now - item.delivery.startedAt;
-    if (age >= 0 && age < STALE_PENDING_MS) {
+    const startedAt = item.delivery.startedAt;
+    seenAt.set(item.id, state.pendingSeenAt.get(item.id) ?? now);
+    const age = typeof startedAt !== "number" ? Infinity : now - (startedAt <= now ? startedAt : seenAt.get(item.id));
+    if (age < STALE_PENDING_MS) {
       recheckIn = Math.min(recheckIn, STALE_PENDING_MS - age);
       return;
     }
     item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
     changed = true;
   });
+  state.pendingSeenAt = seenAt;
   if (recheckIn !== Infinity) state.pendingCheckTimer = window.setTimeout(recheckPendingDeliveries, recheckIn);
   return changed;
 }
