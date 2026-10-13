@@ -18,6 +18,126 @@ async function inboxRequest(url, options) {
   return { response, result };
 }
 
+function positiveInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
+const byteLength = (text) => new TextEncoder().encode(text).length;
+
+// The import requests for a file (#140): the file as it is when it fits the
+// receiver's request limit or cannot be split, otherwise parts of its
+// feedback array, each a copy of the file's object, holding as many comments
+// as fit in maxBytes and maxItems. Comments sharing an id go in one part, in
+// file order, so the receiver checks each of them and keeps the first, as one
+// request does. The receiver inserts each request's comments oldest first
+// (#156), so parts are cut from the comments in that order, oldest part
+// first, and each part lists its comments in the file's order as the receiver
+// expects: the inbox ends up as one request would leave it. A part the
+// receiver refuses (an invalid comment) leaves the other parts imported.
+// Returns [{ body, count, oversized, sameId }]: count is the number of
+// comments in the part (null when unknown), oversized whether it is still
+// over maxBytes, as a single comment (or the comments of one id) that large
+// is, and sameId whether all of them share one id.
+function importParts(text, maxBytes, maxItems) {
+  const oversized = Boolean(maxBytes) && byteLength(text) > maxBytes;
+  const whole = [{ body: text, count: null, oversized }];
+  if (!oversized) return whole;
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (_) {
+    return whole;
+  }
+  // The receiver takes an object; an array file gets its answer as it is.
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !Array.isArray(parsed.feedback)) return whole;
+  // Serializing again would turn a number JSON cannot hold (1e400 parses to
+  // Infinity) into null, a value the receiver accepts.
+  if (hasNonFiniteNumber(parsed)) return whole;
+  // The parts are ordered by createdAt as read here; a date without a time
+  // zone could read otherwise on the receiver and change the order.
+  if (!parsed.feedback.every((item) => item?.createdAt == null || UNAMBIGUOUS_DATE.test(item.createdAt))) return whole;
+
+  // Each unit: the first comment with an id, and the later ones with that id.
+  const byId = new Map();
+  const units = [];
+  for (const item of parsed.feedback) {
+    const id = typeof item?.id === "string" ? item.id : null;
+    if (id !== null && byId.has(id)) {
+      byId.get(id).push(item);
+      continue;
+    }
+    const unit = [item];
+    if (id !== null) byId.set(id, unit);
+    units.push(unit);
+  }
+  if (units.length < 2) return [{ body: text, count: parsed.feedback.length, oversized, sameId: units.length === 1 }];
+  const wrap = (items) => ({ ...parsed, feedback: items });
+
+  const created = (unit) => Date.parse(unit[0]?.createdAt);
+  const ordered = units.slice().reverse().sort((a, b) => {
+    const aUnknown = Number.isNaN(created(a));
+    const bUnknown = Number.isNaN(created(b));
+    if (aUnknown !== bUnknown) return aUnknown ? -1 : 1;
+    return aUnknown ? 0 : created(a) - created(b);
+  });
+  // Serialized without spaces, a part is the wrapper plus its comments joined by commas.
+  const overhead = byteLength(JSON.stringify(wrap([])));
+  const groups = [];
+  let current = [];
+  let size = overhead;
+  let count = 0;
+  for (const unit of ordered) {
+    const unitSize = unit.reduce((total, item) => total + byteLength(JSON.stringify(item)), unit.length - 1);
+    const grown = size + unitSize + (current.length ? 1 : 0);
+    if (current.length && (grown > maxBytes || (maxItems && count + unit.length > maxItems))) {
+      groups.push(current);
+      current = [];
+      size = overhead;
+      count = 0;
+    }
+    size += unitSize + (current.length ? 1 : 0);
+    count += unit.length;
+    current.push(unit);
+  }
+  groups.push(current);
+  return groups.map((group) => {
+    const items = group.slice().reverse().flat();
+    const body = JSON.stringify(wrap(items));
+    return { body, count: items.length, oversized: byteLength(body) > maxBytes, sameId: group.length === 1 };
+  });
+}
+
+// An ISO 8601 date, or date and time with a time zone, which every browser
+// and the receiver read the same.
+const UNAMBIGUOUS_DATE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/;
+
+function hasNonFiniteNumber(value) {
+  const pending = [value];
+  while (pending.length) {
+    const current = pending.pop();
+    if (typeof current === "number" && !Number.isFinite(current)) return true;
+    if (current && typeof current === "object") for (const child of Object.values(current)) pending.push(child);
+  }
+  return false;
+}
+
+function importOutcome(skipped, failed) {
+  return (skipped ? "重複 " + skipped + " 件はスキップしました。" : "")
+    + (failed.length ? "失敗 " + failed.length + " 件。" + importFailureMessage(failed) : "");
+}
+
+function importFailureMessage(failed) {
+  // Comments the receiver answered for (#157), then each reason a whole part
+  // was refused, so the size limit guidance shows whatever came before it.
+  const saved = failed.filter((item) => item.message === undefined);
+  const refused = [...new Set(failed.filter((item) => item.message !== undefined).map((item) => item.message))];
+  const savedMessage = saved.length === 0 ? ""
+    : saved.every((item) => item.status === 507) ? "受信側の保存容量の上限に達しました。receiver の設定で上限を変更できます。"
+      : "受信側で保存に失敗しました。" + saved[0].error;
+  return savedMessage + refused.join("");
+}
+
 (() => {
   const form = document.querySelector("[data-import-form]");
   if (!form) return;
@@ -26,6 +146,10 @@ async function inboxRequest(url, options) {
   const submit = form.querySelector('button[type="submit"]');
   const reload = form.querySelector("[data-import-reload]");
   let importing = false;
+  // Where an import sent in parts stopped: { text, next, imported, skipped, failed }.
+  // The same file imported again goes on from there instead of sending the
+  // parts the receiver already has (which still count against its rate limit).
+  let resume = null;
   reload?.addEventListener("click", () => window.location.reload());
 
   form.addEventListener("submit", async (event) => {
@@ -44,29 +168,58 @@ async function inboxRequest(url, options) {
     if (submit) submit.disabled = true;
     input.disabled = true;
     status.textContent = "ファイルを読み込んでいます…";
+    let text = null;
+    let parts = [];
+    let next = 0;
+    let imported = 0;
+    let skipped = 0;
+    let failed = [];
     try {
-      const text = await file.text();
-      const { response, result } = await inboxRequest("/import", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: text
-      });
-      // A 409 all-duplicates response still contains a batch summary.
-      if (!response.ok && result.imported === undefined) throw new Error(result.error || "ファイルを読み込めませんでした。");
-      const imported = result.imported || 0;
-      const skipped = result.duplicates?.length || 0;
-      const failed = result.failed?.length || 0;
-      const failureMessage = failed ? (result.failed.every((item) => item.status === 507)
-        ? "受信側の保存容量の上限に達しました。receiver の設定で上限を変更できます。"
-        : "受信側で保存に失敗しました。" + result.failed[0].error) : "";
-      status.dataset.state = failed ? "error" : "success";
-      status.textContent = imported + " 件を追加しました。"
-        + (skipped ? "重複 " + skipped + " 件はスキップしました。" : "")
-        + (failed ? "失敗 " + failed + " 件。" + failureMessage : "")
+      text = await file.text();
+      const maxBytes = positiveInteger(form.dataset.maxBodyBytes);
+      parts = importParts(text, maxBytes, positiveInteger(form.dataset.maxImportItems));
+      if (resume && resume.text === text) {
+        ({ next, imported, skipped } = resume);
+        failed = resume.failed.slice();
+      }
+      resume = null;
+      for (; next < parts.length; next += 1) {
+        const part = parts[next];
+        if (parts.length > 1) status.textContent = "ファイルを分けて読み込んでいます…（" + (next + 1) + " / " + parts.length + "）";
+        const { response, result } = await inboxRequest("/import", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: part.body
+        });
+        // A 409 all-duplicates response still contains a batch summary.
+        if (result.imported !== undefined) {
+          imported += result.imported || 0;
+          skipped += result.duplicates?.length || 0;
+          failed.push(...(result.failed || []));
+        } else if (!response.ok) {
+          const error = response.status === 413 && part.oversized
+            ? (part.count === 1 ? "コメント 1 件で" : part.sameId ? "同じ id のコメント " + part.count + " 件で" : "ファイルが分けられず、")
+              + "受信側の上限（" + maxBytes + " byte）を超えています。"
+              + "receiver の MAX_BODY_BYTES（設定の maxBodyBytes）を上げると読み込めます。"
+            : result.error || "ファイルを読み込めませんでした。";
+          // A file sent whole keeps its error as the message, as before #140.
+          if (parts.length === 1) throw new Error(error);
+          // The receiver took none of the part: count each comment, with the reason as said.
+          for (let item = 0; item < part.count; item += 1) failed.push({ status: response.status, message: error });
+        }
+      }
+      status.dataset.state = failed.length ? "error" : "success";
+      status.textContent = imported + " 件を追加しました。" + importOutcome(skipped, failed)
         + (imported ? "「受信箱を更新」で一覧に反映します。" : "");
-      if (reload && imported) reload.hidden = false;
     } catch (error) {
       status.dataset.state = "error";
-      status.textContent = error.message;
+      if (parts.length > 1) {
+        resume = { text, next, imported, skipped, failed };
+        status.textContent = imported + " 件を追加したところで止まりました。" + importOutcome(skipped, failed) + error.message
+          + "同じファイルをもう一度読み込むと、続きから送ります（ページを読み込み直した後は、追加済みのものを重複としてスキップします）。";
+      } else {
+        status.textContent = error.message;
+      }
     } finally {
+      if (reload && imported) reload.hidden = false;
       importing = false;
       if (submit) submit.disabled = false;
       input.disabled = false;

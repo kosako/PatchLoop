@@ -16,7 +16,7 @@ function displayDate(value) {
 }
 
 function createInboxView(deps) {
-  const { formatScreenshotStatus, safeLinkUrl, GITHUB_CONFIGURED, RECEIVER_TOKEN } = deps;
+  const { formatScreenshotStatus, safeLinkUrl, GITHUB_CONFIGURED, RECEIVER_TOKEN, MAX_BODY_BYTES, MAX_IMPORT_ITEMS } = deps;
   function feedbackStatusOf(item) {
     return FEEDBACK_STATUSES.includes(item.status) ? item.status : "new";
   }
@@ -163,9 +163,9 @@ function createInboxView(deps) {
   <details class="import-panel"${empty ? " open" : ""}>
     <summary>ファイルを読み込む<span>ダウンロードしたフィードバックを受信箱に追加</span></summary>
     <div>
-      <p>PatchLoop で保存した .patchloop-feedback.json ファイルを選んでください。既存のフィードバックは重複して追加されません。</p>
+      <p>PatchLoop で保存した .patchloop-feedback.json ファイルを選んでください。既存のフィードバックは重複して追加されません。受信側の上限を超える大きなファイルは、分けて送ります。</p>
     </div>
-    <form class="import-form" data-import-form>
+    <form class="import-form" data-import-form data-max-body-bytes="${MAX_BODY_BYTES}" data-max-import-items="${MAX_IMPORT_ITEMS}">
       <input type="file" accept=".json,application/json" data-import-file aria-label="インポートするフィードバックのJSONファイル" />
       <button type="submit">読み込む</button>
       <span class="import-status" data-import-status role="status" aria-live="polite" aria-atomic="true"></span>

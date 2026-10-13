@@ -1489,7 +1489,10 @@ const { renderInbox, renderLoginPage } = createInboxView({
   formatScreenshotStatus,
   safeLinkUrl,
   GITHUB_CONFIGURED,
-  RECEIVER_TOKEN
+  RECEIVER_TOKEN,
+  // The inbox splits an import file to fit these (#140).
+  MAX_BODY_BYTES,
+  MAX_IMPORT_ITEMS
 });
 
 async function handleGetInbox(req, res) {
