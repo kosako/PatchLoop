@@ -422,9 +422,34 @@ function formatTarget(target) {
 
 return { FEEDBACK_STATUS_LABELS, safeFilePart, truncateText, present, escapeHtml, escapeXml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget };
 })();
+// --- widget/src/delivery-state.js ---
+const __pl_widget_src_delivery_state = (() => {
+// What a comment's delivery state says about the copy the receiver (or Slack)
+// holds.
+
+// Whether the receiver may hold the comment: it took the post, or answered 409
+// (it already had that id), or Slack was posted to blind.
+function receiverHasCopy(delivery) {
+  return delivery?.ok === true || delivery?.status === 409 || (delivery?.target === "slack-webhook" && delivery.ok === null);
+}
+
+// Whether the comment here differs from what the receiver may hold: edited
+// here after it went out or was exported (#187), or edited in another tab
+// while it was on its way, as delivery.sent keeps the text that went out
+// (#139). The merge with other tabs keeps the result and the text apart, so
+// this is decided on what the merge leaves.
+function isLocallyEdited(item) {
+  if (item.localEdited) return true;
+  const sent = item.delivery?.sent;
+  return Boolean(sent) && receiverHasCopy(item.delivery) && (sent.comment !== item.comment || sent.reviewer !== item.reviewer);
+}
+
+return { receiverHasCopy, isLocallyEdited };
+})();
 // --- widget/src/inbox-status.js ---
 const __pl_widget_src_inbox_status = (() => {
 const { FEEDBACK_STATUS_LABELS } = __pl_shared_format;
+const { isLocallyEdited } = __pl_widget_src_delivery_state;
 // The inbox triage status of the comments this page sent (#147), asked from
 // the receiver's POST /feedback-status. The statuses only live in memory: they
 // are never written to the stored items, localStorage or exports, and when they
@@ -482,7 +507,7 @@ function statusesFromAnswer(body) {
 // Handled in the inbox, unless the comment was edited here since: that edit
 // has not reached the inbox.
 function isFinished(item, statuses) {
-  return Boolean(statuses) && FINISHED_STATUSES.includes(statuses.get(item.id)) && !item.localEdited;
+  return Boolean(statuses) && FINISHED_STATUSES.includes(statuses.get(item.id)) && !isLocallyEdited(item);
 }
 
 function initialLookupState() {
@@ -1744,6 +1769,7 @@ const { DEFAULTS, state } = __pl_widget_src_state;
 const { buildPayload } = __pl_widget_src_payload;
 const { uncapturedTouching } = __pl_widget_src_screenshot;
 const { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } = __pl_widget_src_inbox_status;
+const { isLocallyEdited, receiverHasCopy } = __pl_widget_src_delivery_state;
 const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } = __pl_widget_src_persistence;
 const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } = __pl_shared_format;
 
@@ -1821,6 +1847,7 @@ function destroy() {
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   window.removeEventListener("storage", handleStorageChange);
   window.removeEventListener("pagehide", abandonDeliveries);
+  window.removeEventListener("pageshow", handlePageShow);
   window.clearTimeout(state.otherPagesTimer);
   window.clearTimeout(state.resizeTimer);
   window.clearTimeout(state.pendingCheckTimer);
@@ -1992,6 +2019,8 @@ function bindGlobalCapture() {
   window.addEventListener("storage", handleStorageChange);
   window.removeEventListener("pagehide", abandonDeliveries);
   window.addEventListener("pagehide", abandonDeliveries);
+  window.removeEventListener("pageshow", handlePageShow);
+  window.addEventListener("pageshow", handlePageShow);
 }
 
 function cancelCaptureDrag() {
@@ -2542,6 +2571,13 @@ function abandonDeliveries() {
     item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
   });
   saveFeedbackList();
+  // Shown so when the page comes back from the back/forward cache.
+  renderFeedbackList();
+}
+
+// Back from the back/forward cache: what other tabs saved meanwhile.
+function handlePageShow(event) {
+  if (event.persisted) syncFeedbackFromOtherTab();
 }
 
 function shouldDeliverFeedback() {
@@ -2569,17 +2605,10 @@ async function deliverFeedback(payload) {
     deliveringIds.delete(payload.id);
   }
   if (deliveringIds !== state.deliveringIds) return false;
-  payload.delivery = delivery;
-  // Another tab may have saved an edit while it was on its way: the receiver
-  // got the text as sent.
-  if ((payload.comment !== sent.comment || payload.reviewer !== sent.reviewer) && receiverHasCopy(delivery)) payload.localEdited = true;
+  // The text that went out stays with the result: an edit another tab saved
+  // meanwhile then shows as a local change, whichever text the merge keeps.
+  payload.delivery = receiverHasCopy(delivery) ? { ...delivery, sent } : delivery;
   return true;
-}
-
-// Whether the receiver (or Slack) may hold the comment: it took the post, or
-// answered 409 (it already had that id), or Slack was posted to blind.
-function receiverHasCopy(delivery) {
-  return delivery?.ok === true || delivery?.status === 409 || (delivery?.target === "slack-webhook" && delivery.ok === null);
 }
 
 function pendingDelivery() {
@@ -3258,7 +3287,7 @@ function renderFeedbackList() {
     .map((item, i) => {
       const num = state.feedback.length - i;
       const kind = (item.target && item.target.kind) || "point";
-      const delivery = item.localEdited
+      const delivery = isLocallyEdited(item)
         ? '<span class="pl-feedback-status pl-feedback-status-unknown">ローカル変更・送信先には未反映</span>'
         : item.delivery?.pending
           ? '<span class="pl-feedback-status pl-feedback-status-unknown">送信中…</span>'
@@ -3283,7 +3312,7 @@ function renderFeedbackList() {
             <div class="pl-feedback-text">${escapeHtml(item.comment || "")}</div>
           </div>
           <div class="pl-feedback-actions">
-            ${(item.delivery?.ok === false || (item.delivery?.interrupted && item.delivery.target !== "slack-webhook")) && !item.localEdited && item.delivery.status !== 409 ? '<button type="button" data-pl-retry>再送</button>' : ""}
+            ${(item.delivery?.ok === false || (item.delivery?.interrupted && item.delivery.target !== "slack-webhook")) && !isLocallyEdited(item) && item.delivery.status !== 409 ? '<button type="button" data-pl-retry>再送</button>' : ""}
             <button type="button" data-pl-edit title="この端末のコメントを編集"${item.delivery?.pending ? " disabled" : ""}>編集</button>
             <button type="button" data-pl-delete title="この端末のコメントを削除"${item.delivery?.pending ? " disabled" : ""}>削除</button>
           </div>
@@ -3432,7 +3461,7 @@ function handleListClick(event) {
 async function retryFeedback(id) {
   const root = getRoot();
   const item = state.feedback.find((entry) => entry.id === id);
-  if (!item || item.delivery?.pending || item.localEdited) return;
+  if (!item || item.delivery?.pending || isLocallyEdited(item)) return;
   if (!shouldDeliverFeedback()) {
     showWidgetNotice("送信先・設定を確認してください。ファイル共有の場合は書き出しを使います。", true);
     return;

@@ -7,6 +7,7 @@ import { DEFAULTS, state } from "./state.js";
 import { buildPayload } from "./payload.js";
 import { uncapturedTouching } from "./screenshot.js";
 import { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } from "./inbox-status.js";
+import { isLocallyEdited, receiverHasCopy } from "./delivery-state.js";
 import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } from "./persistence.js";
 import { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } from "../../shared/format.js";
 
@@ -84,6 +85,7 @@ function destroy() {
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   window.removeEventListener("storage", handleStorageChange);
   window.removeEventListener("pagehide", abandonDeliveries);
+  window.removeEventListener("pageshow", handlePageShow);
   window.clearTimeout(state.otherPagesTimer);
   window.clearTimeout(state.resizeTimer);
   window.clearTimeout(state.pendingCheckTimer);
@@ -255,6 +257,8 @@ function bindGlobalCapture() {
   window.addEventListener("storage", handleStorageChange);
   window.removeEventListener("pagehide", abandonDeliveries);
   window.addEventListener("pagehide", abandonDeliveries);
+  window.removeEventListener("pageshow", handlePageShow);
+  window.addEventListener("pageshow", handlePageShow);
 }
 
 function cancelCaptureDrag() {
@@ -805,6 +809,13 @@ function abandonDeliveries() {
     item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
   });
   saveFeedbackList();
+  // Shown so when the page comes back from the back/forward cache.
+  renderFeedbackList();
+}
+
+// Back from the back/forward cache: what other tabs saved meanwhile.
+function handlePageShow(event) {
+  if (event.persisted) syncFeedbackFromOtherTab();
 }
 
 function shouldDeliverFeedback() {
@@ -832,17 +843,10 @@ async function deliverFeedback(payload) {
     deliveringIds.delete(payload.id);
   }
   if (deliveringIds !== state.deliveringIds) return false;
-  payload.delivery = delivery;
-  // Another tab may have saved an edit while it was on its way: the receiver
-  // got the text as sent.
-  if ((payload.comment !== sent.comment || payload.reviewer !== sent.reviewer) && receiverHasCopy(delivery)) payload.localEdited = true;
+  // The text that went out stays with the result: an edit another tab saved
+  // meanwhile then shows as a local change, whichever text the merge keeps.
+  payload.delivery = receiverHasCopy(delivery) ? { ...delivery, sent } : delivery;
   return true;
-}
-
-// Whether the receiver (or Slack) may hold the comment: it took the post, or
-// answered 409 (it already had that id), or Slack was posted to blind.
-function receiverHasCopy(delivery) {
-  return delivery?.ok === true || delivery?.status === 409 || (delivery?.target === "slack-webhook" && delivery.ok === null);
 }
 
 function pendingDelivery() {
@@ -1521,7 +1525,7 @@ function renderFeedbackList() {
     .map((item, i) => {
       const num = state.feedback.length - i;
       const kind = (item.target && item.target.kind) || "point";
-      const delivery = item.localEdited
+      const delivery = isLocallyEdited(item)
         ? '<span class="pl-feedback-status pl-feedback-status-unknown">ローカル変更・送信先には未反映</span>'
         : item.delivery?.pending
           ? '<span class="pl-feedback-status pl-feedback-status-unknown">送信中…</span>'
@@ -1546,7 +1550,7 @@ function renderFeedbackList() {
             <div class="pl-feedback-text">${escapeHtml(item.comment || "")}</div>
           </div>
           <div class="pl-feedback-actions">
-            ${(item.delivery?.ok === false || (item.delivery?.interrupted && item.delivery.target !== "slack-webhook")) && !item.localEdited && item.delivery.status !== 409 ? '<button type="button" data-pl-retry>再送</button>' : ""}
+            ${(item.delivery?.ok === false || (item.delivery?.interrupted && item.delivery.target !== "slack-webhook")) && !isLocallyEdited(item) && item.delivery.status !== 409 ? '<button type="button" data-pl-retry>再送</button>' : ""}
             <button type="button" data-pl-edit title="この端末のコメントを編集"${item.delivery?.pending ? " disabled" : ""}>編集</button>
             <button type="button" data-pl-delete title="この端末のコメントを削除"${item.delivery?.pending ? " disabled" : ""}>削除</button>
           </div>
@@ -1695,7 +1699,7 @@ function handleListClick(event) {
 async function retryFeedback(id) {
   const root = getRoot();
   const item = state.feedback.find((entry) => entry.id === id);
-  if (!item || item.delivery?.pending || item.localEdited) return;
+  if (!item || item.delivery?.pending || isLocallyEdited(item)) return;
   if (!shouldDeliverFeedback()) {
     showWidgetNotice("送信先・設定を確認してください。ファイル共有の場合は書き出しを使います。", true);
     return;

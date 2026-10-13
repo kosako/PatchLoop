@@ -5,6 +5,7 @@
 // index.js does the request and the drawing.
 
 import { FEEDBACK_STATUS_LABELS } from "../../shared/format.js";
+import { isLocallyEdited } from "./delivery-state.js";
 
 export const FINISHED_STATUSES = ["fixed", "ignored"];
 // The receiver answers at most 200 ids per query; the newest comments go first.
@@ -56,7 +57,7 @@ export function statusesFromAnswer(body) {
 // Handled in the inbox, unless the comment was edited here since: that edit
 // has not reached the inbox.
 export function isFinished(item, statuses) {
-  return Boolean(statuses) && FINISHED_STATUSES.includes(statuses.get(item.id)) && !item.localEdited;
+  return Boolean(statuses) && FINISHED_STATUSES.includes(statuses.get(item.id)) && !isLocallyEdited(item);
 }
 
 export function initialLookupState() {

@@ -310,26 +310,56 @@ test("an edit this tab could not save survives taking in other tabs' saves, and 
   assert.deepEqual(savedComments(storage), ["After, not saved"]);
 });
 
-test("an edit another tab saves while this tab's delivery is on its way is a local change once it is delivered", async () => {
+test("an edit another tab saves while this tab's delivery is on its way is a local change once it is delivered, heard or not", async () => {
+  for (const heardBeforeResult of [true, false]) {
+    const storage = new Map();
+    let complete;
+    const replies = [{ ok: false, status: 500 }, () => new Promise((resolve) => { complete = resolve; })];
+    const a = openTab(storage, { options: { persistFeedback: true }, harness: { replies } });
+    await add(a, "As sent");
+    const b = openTab(storage, { options: { persistFeedback: true } });
+    listItem(b, "As sent").querySelector("[data-pl-edit]").click();
+
+    const retrying = Promise.all(listOf(a).emit("click", { target: a.document.querySelector("[data-pl-retry]") }));
+    hear(b, keyOf(storage));
+    await b.submit("Edited in B", { captureTarget: false });
+    if (heardBeforeResult) hear(a, keyOf(storage));
+    complete({ ok: true, status: 201 });
+    await retrying;
+
+    assert.equal(JSON.parse(a.requests[1].body).comment, "As sent");
+    const [stored] = saved(storage);
+    assert.deepEqual([stored.comment, stored.delivery.ok, stored.delivery.sent.comment], ["Edited in B", true, "As sent"]);
+    assert.match(listOf(a).innerHTML, /ローカル変更・送信先には未反映/);
+    hear(b, keyOf(storage));
+    assert.match(listOf(b).innerHTML, /ローカル変更・送信先には未反映/);
+    assert.equal(b.document.querySelector("[data-pl-retry]"), null);
+  }
+});
+
+test("the text a third tab saved last is kept when the delivery's result arrives, and shows as a local change", async () => {
   const storage = new Map();
   let complete;
   const replies = [{ ok: false, status: 500 }, () => new Promise((resolve) => { complete = resolve; })];
   const a = openTab(storage, { options: { persistFeedback: true }, harness: { replies } });
-  await add(a, "As sent");
+  await add(a, "v0");
   const b = openTab(storage, { options: { persistFeedback: true } });
-  listItem(b, "As sent").querySelector("[data-pl-edit]").click();
+  const c = openTab(storage, { options: { persistFeedback: true } });
+  listItem(b, "v0").querySelector("[data-pl-edit]").click();
+  listItem(c, "v0").querySelector("[data-pl-edit]").click();
 
-  const retry = a.document.querySelector("[data-pl-retry]");
-  const retrying = Promise.all(listOf(a).emit("click", { target: retry }));
+  const retrying = Promise.all(listOf(a).emit("click", { target: a.document.querySelector("[data-pl-retry]") }));
   hear(b, keyOf(storage));
-  await b.submit("Edited in B", { captureTarget: false });
+  hear(c, keyOf(storage));
+  await b.submit("v1", { captureTarget: false });
   hear(a, keyOf(storage));
+  hear(c, keyOf(storage));
+  await c.submit("v2", { captureTarget: false });
   complete({ ok: true, status: 201 });
   await retrying;
 
-  assert.equal(JSON.parse(a.requests[1].body).comment, "As sent");
   const [stored] = saved(storage);
-  assert.deepEqual([stored.comment, stored.delivery.ok, stored.localEdited], ["Edited in B", true, true]);
+  assert.deepEqual([stored.comment, stored.delivery.ok, stored.delivery.sent.comment], ["v2", true, "v0"]);
   assert.match(listOf(a).innerHTML, /ローカル変更・送信先には未反映/);
 });
 
@@ -365,6 +395,19 @@ test("the timed-out check reads the saved list first, so a result whose storage 
   scheduled.find((timer) => timer.ms > 15000 && timer.ms <= 20000).callback();
   assert.equal(b.api.getFeedback()[0].delivery.ok, true);
   assert.equal(saved(storage)[0].delivery.ok, true);
+});
+
+test("a page given up at pagehide shows its deliveries as interrupted, and takes in other tabs' saves when it comes back", async () => {
+  const storage = new Map();
+  const a = openTab(storage, { options: { persistFeedback: true }, harness: { replies: [() => new Promise(() => {})] } });
+  a.submit("In flight");
+  a.window.emit("pagehide");
+  assert.match(listOf(a).innerHTML, /結果未確認/);
+
+  const b = openTab(storage, { options: { persistFeedback: true } });
+  await add(b, "While away");
+  a.window.emit("pageshow", { persisted: true });
+  assert.deepEqual(comments(a), ["While away", "In flight"]);
 });
 
 // --- mergeFeedbackLists --------------------------------------------------
