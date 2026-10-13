@@ -66,7 +66,7 @@ export const state = {
   storedFeedback: new Map(),
   deliveringIds: new Set(),
   // Re-checks a delivery another tab may still be making, and when this tab
-  // first saw each such delivery; see settlePendingDeliveries.
+  // first saw each such delivery (monotonic); see settlePendingDeliveries.
   pendingCheckTimer: null,
   pendingSeenAt: new Map()
 };

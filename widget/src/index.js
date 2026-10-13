@@ -7,7 +7,7 @@ import { DEFAULTS, state } from "./state.js";
 import { buildPayload } from "./payload.js";
 import { uncapturedTouching } from "./screenshot.js";
 import { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } from "./inbox-status.js";
-import { isLocallyEdited, receiverHasCopy } from "./delivery-state.js";
+import { isLocallyEdited, pendingAge, receiverHasCopy } from "./delivery-state.js";
 import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } from "./persistence.js";
 import { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } from "../../shared/format.js";
 
@@ -774,14 +774,15 @@ function restorePersistedFeedback() {
 function settlePendingDeliveries() {
   window.clearTimeout(state.pendingCheckTimer);
   const now = Date.now();
+  // A clock set back later does not move this one.
+  const monotonicNow = window.performance?.now?.() ?? now;
   const seenAt = new Map();
   let changed = false;
   let recheckIn = Infinity;
   state.feedback.forEach((item) => {
     if (!item.delivery?.pending || state.deliveringIds.has(item.id)) return;
-    const startedAt = item.delivery.startedAt;
-    seenAt.set(item.id, state.pendingSeenAt.get(item.id) ?? now);
-    const age = typeof startedAt !== "number" ? Infinity : now - (startedAt <= now ? startedAt : seenAt.get(item.id));
+    seenAt.set(item.id, state.pendingSeenAt.get(item.id) ?? monotonicNow);
+    const age = pendingAge(item.delivery.startedAt, now, seenAt.get(item.id), monotonicNow);
     if (age < STALE_PENDING_MS) {
       recheckIn = Math.min(recheckIn, STALE_PENDING_MS - age);
       return;

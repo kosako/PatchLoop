@@ -9,6 +9,7 @@ const test = require("node:test");
 const { setTimeout: sleep } = require("node:timers/promises");
 const { widgetHarness } = require("../test-support/widget-dom.js");
 const { feedbackFingerprints, mergeFeedbackLists } = require("../widget/src/tab-sync.js");
+const { pendingAge } = require("../widget/src/delivery-state.js");
 
 const BASE = "https://demo.example";
 const DOWNLOAD = { persistFeedback: true, deliveryMode: "download" };
@@ -542,4 +543,12 @@ test("the fingerprints ignore key order and the image data a full storage drops,
   assert.deepEqual([edited.content !== base.content, edited.delivery === base.delivery, edited.marks === base.marks], [true, true, true]);
   assert.deepEqual([delivered.content === base.content, delivered.delivery !== base.delivery], [true, true]);
   assert.deepEqual([exported.content === base.content, exported.marks !== base.marks], [true, true]);
+});
+
+test("the age of another tab's delivery: from its start on this clock, else from when it was first seen, on the monotonic clock", () => {
+  assert.equal(pendingAge(1000, 4000, 50, 90), 3000);
+  // Started ahead of this clock (set back before it was seen, or after).
+  assert.equal(pendingAge(9000, 4000, 50, 90), 40);
+  assert.equal(pendingAge(4000, 4000, 50, 90), 0);
+  assert.equal(pendingAge(undefined, 4000, 50, 90), Infinity);
 });

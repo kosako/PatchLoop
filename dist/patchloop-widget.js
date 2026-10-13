@@ -444,7 +444,16 @@ function isLocallyEdited(item) {
   return Boolean(sent) && receiverHasCopy(item.delivery) && (sent.comment !== item.comment || sent.reviewer !== item.reviewer);
 }
 
-return { receiverHasCopy, isLocallyEdited };
+// How long ago another tab's delivery started, as far as this tab can tell
+// (#139): from its start time when that is not ahead of this clock (now), else
+// (the clock was set back) from when this tab first saw it (seen), both on a
+// monotonic clock (monotonicNow). Infinity for one saved without a start time.
+function pendingAge(startedAt, now, seen, monotonicNow) {
+  if (typeof startedAt !== "number") return Infinity;
+  return startedAt <= now ? now - startedAt : monotonicNow - seen;
+}
+
+return { receiverHasCopy, isLocallyEdited, pendingAge };
 })();
 // --- widget/src/inbox-status.js ---
 const __pl_widget_src_inbox_status = (() => {
@@ -600,7 +609,7 @@ const state = {
   storedFeedback: new Map(),
   deliveringIds: new Set(),
   // Re-checks a delivery another tab may still be making, and when this tab
-  // first saw each such delivery; see settlePendingDeliveries.
+  // first saw each such delivery (monotonic); see settlePendingDeliveries.
   pendingCheckTimer: null,
   pendingSeenAt: new Map()
 };
@@ -1774,7 +1783,7 @@ const { DEFAULTS, state } = __pl_widget_src_state;
 const { buildPayload } = __pl_widget_src_payload;
 const { uncapturedTouching } = __pl_widget_src_screenshot;
 const { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } = __pl_widget_src_inbox_status;
-const { isLocallyEdited, receiverHasCopy } = __pl_widget_src_delivery_state;
+const { isLocallyEdited, pendingAge, receiverHasCopy } = __pl_widget_src_delivery_state;
 const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } = __pl_widget_src_persistence;
 const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } = __pl_shared_format;
 
@@ -2541,14 +2550,15 @@ function restorePersistedFeedback() {
 function settlePendingDeliveries() {
   window.clearTimeout(state.pendingCheckTimer);
   const now = Date.now();
+  // A clock set back later does not move this one.
+  const monotonicNow = window.performance?.now?.() ?? now;
   const seenAt = new Map();
   let changed = false;
   let recheckIn = Infinity;
   state.feedback.forEach((item) => {
     if (!item.delivery?.pending || state.deliveringIds.has(item.id)) return;
-    const startedAt = item.delivery.startedAt;
-    seenAt.set(item.id, state.pendingSeenAt.get(item.id) ?? now);
-    const age = typeof startedAt !== "number" ? Infinity : now - (startedAt <= now ? startedAt : seenAt.get(item.id));
+    seenAt.set(item.id, state.pendingSeenAt.get(item.id) ?? monotonicNow);
+    const age = pendingAge(item.delivery.startedAt, now, seenAt.get(item.id), monotonicNow);
     if (age < STALE_PENDING_MS) {
       recheckIn = Math.min(recheckIn, STALE_PENDING_MS - age);
       return;

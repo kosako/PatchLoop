@@ -17,3 +17,12 @@ export function isLocallyEdited(item) {
   const sent = item.delivery?.sent;
   return Boolean(sent) && receiverHasCopy(item.delivery) && (sent.comment !== item.comment || sent.reviewer !== item.reviewer);
 }
+
+// How long ago another tab's delivery started, as far as this tab can tell
+// (#139): from its start time when that is not ahead of this clock (now), else
+// (the clock was set back) from when this tab first saw it (seen), both on a
+// monotonic clock (monotonicNow). Infinity for one saved without a start time.
+export function pendingAge(startedAt, now, seen, monotonicNow) {
+  if (typeof startedAt !== "number") return Infinity;
+  return startedAt <= now ? now - startedAt : monotonicNow - seen;
+}
