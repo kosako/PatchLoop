@@ -5,11 +5,12 @@
 // stored: the list now in storage. known: a Map of the comments in storage
 // when this tab last read or wrote it, id to fingerprints. It tells a comment
 // deleted in another tab (known, no longer stored) from one this tab has not
-// saved yet (not known), and what of a comment this tab changed since.
-// prefer: "ours" when this tab saves: of a comment both hold, the parts this
-// tab changed (the comment itself, its delivery state, its export marks) keep
-// this tab's version, the others take the stored one, so the last change saved
-// wins part by part. "stored" when another tab has saved: its version wins.
+// saved yet (not known), and which side changed what of a comment since.
+// A comment both hold is merged part by part (the comment itself, its delivery
+// state, its export marks): a part only one side changed takes that side's
+// version, so a change this tab could not save yet survives taking in another
+// tab's; a part both changed follows prefer, "ours" when this tab saves (the
+// last change saved wins) and "stored" when another tab has saved since.
 // keepDelivery: ids this tab is delivering, whose delivery state stays ours.
 // Returns the merged list, the comments added by another tab and the ids
 // deleted by one. A comment kept from this tab stays the same object, so a
@@ -21,7 +22,7 @@ export function mergeFeedbackLists(ours, stored, known, { prefer, keepDelivery =
   const kept = new Map();
   ours.forEach((item) => {
     const other = storedById.get(item.id);
-    if (other) kept.set(item.id, reconcile(item, other, changedParts(item, known.get(item.id), prefer), keepDelivery.has(item.id)));
+    if (other) kept.set(item.id, reconcile(item, other, oursParts(item, other, known.get(item.id), prefer), keepDelivery.has(item.id)));
     // Deleted in another tab: the deletion wins over this tab's copy.
     else if (known.has(item.id)) removed.push(item.id);
     // Not saved yet (just added here, or a save that failed).
@@ -62,12 +63,18 @@ export function feedbackFingerprints(item) {
   };
 }
 
-function changedParts(item, known, prefer) {
-  if (prefer === "stored") return { content: false, delivery: false, marks: false };
-  // Not known while stored: both sides hold an id this tab never read; keep it.
-  if (!known) return { content: true, delivery: true, marks: true };
-  const now = feedbackFingerprints(item);
-  return { content: now.content !== known.content, delivery: now.delivery !== known.delivery, marks: now.marks !== known.marks };
+// Which parts of a comment take this tab's version.
+function oursParts(item, other, known, prefer) {
+  const ours = feedbackFingerprints(item);
+  const theirs = feedbackFingerprints(other);
+  const parts = {};
+  ["content", "delivery", "marks"].forEach((part) => {
+    // Not known while stored: an id this tab never read; both count as changed.
+    const oursChanged = !known || ours[part] !== known[part];
+    const theirsChanged = !known || theirs[part] !== known[part];
+    parts[part] = oursChanged && (!theirsChanged || prefer === "ours");
+  });
+  return parts;
 }
 
 function canonical(value) {
@@ -84,15 +91,15 @@ function canonical(value) {
 // was exported, so they stay only on the same text: preferably the marks of
 // the side whose marks won, else those of the other side (an export in another
 // tab marks comments this tab may save again before it hears of it).
-function reconcile(ours, other, changed, keepOwnDelivery) {
-  const merged = changed.content ? { ...ours } : { ...other };
+function reconcile(ours, other, useOurs, keepOwnDelivery) {
+  const merged = useOurs.content ? { ...ours } : { ...other };
   // A save that did not fit the storage drops the image data; this tab may
   // still hold it.
-  if (!changed.content && other.screenshot?.persistedWithoutDataUrl && ours.screenshot?.dataUrl) merged.screenshot = ours.screenshot;
+  if (!useOurs.content && other.screenshot?.persistedWithoutDataUrl && ours.screenshot?.dataUrl) merged.screenshot = ours.screenshot;
   PART_KEYS.forEach((key) => delete merged[key]);
-  const delivery = keepOwnDelivery || changed.delivery ? ours.delivery : other.delivery;
+  const delivery = keepOwnDelivery || useOurs.delivery ? ours.delivery : other.delivery;
   if (delivery !== undefined) merged.delivery = delivery;
-  const marked = (changed.marks ? [ours, other] : [other, ours])
+  const marked = (useOurs.marks ? [ours, other] : [other, ours])
     .find((side) => side.exported && side.comment === merged.comment && side.reviewer === merged.reviewer);
   if (marked) MARK_KEYS.forEach((key) => {
     if (marked[key] !== undefined) merged[key] = marked[key];

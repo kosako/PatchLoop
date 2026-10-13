@@ -289,6 +289,84 @@ test("the tooltip of a focused marker follows another tab's edit and closes when
   assert.equal(tooltip.hidden, true);
 });
 
+test("an edit this tab could not save survives taking in other tabs' saves, and goes into the export", async () => {
+  const storage = new Map();
+  const a = openTab(storage);
+  await add(a, "Before");
+  const key = keyOf(storage);
+  const setItem = a.window.localStorage.setItem;
+  a.window.localStorage.setItem = (name, value) => {
+    if (name === key) throw new Error("QuotaExceededError");
+    return setItem(name, value);
+  };
+  listItem(a, "Before").querySelector("[data-pl-edit]").click();
+  await a.submit("After, not saved", { captureTarget: false });
+  assert.deepEqual(savedComments(storage), ["Before"]);
+  a.window.localStorage.setItem = setItem;
+
+  a.document.querySelector("[data-pl-download-all]").click();
+  const bundle = JSON.parse(await a.downloads[0].blob.text());
+  assert.deepEqual(Array.from(bundle.feedback, (item) => item.comment), ["After, not saved"]);
+  assert.deepEqual(savedComments(storage), ["After, not saved"]);
+});
+
+test("an edit another tab saves while this tab's delivery is on its way is a local change once it is delivered", async () => {
+  const storage = new Map();
+  let complete;
+  const replies = [{ ok: false, status: 500 }, () => new Promise((resolve) => { complete = resolve; })];
+  const a = openTab(storage, { options: { persistFeedback: true }, harness: { replies } });
+  await add(a, "As sent");
+  const b = openTab(storage, { options: { persistFeedback: true } });
+  listItem(b, "As sent").querySelector("[data-pl-edit]").click();
+
+  const retry = a.document.querySelector("[data-pl-retry]");
+  const retrying = Promise.all(listOf(a).emit("click", { target: retry }));
+  hear(b, keyOf(storage));
+  await b.submit("Edited in B", { captureTarget: false });
+  hear(a, keyOf(storage));
+  complete({ ok: true, status: 201 });
+  await retrying;
+
+  assert.equal(JSON.parse(a.requests[1].body).comment, "As sent");
+  const [stored] = saved(storage);
+  assert.deepEqual([stored.comment, stored.delivery.ok, stored.localEdited], ["Edited in B", true, true]);
+  assert.match(listOf(a).innerHTML, /ローカル変更・送信先には未反映/);
+});
+
+test("a delivery given up at pagehide does not report back later over another tab's retry", async () => {
+  const storage = new Map();
+  let fail;
+  const a = openTab(storage, { options: { persistFeedback: true }, harness: { replies: [() => new Promise((resolve) => { fail = resolve; })] } });
+  const submission = a.submit("Sent before pagehide");
+  a.window.emit("pagehide");
+  const b = openTab(storage, { options: { persistFeedback: true } });
+  await Promise.all(listOf(b).emit("click", { target: b.document.querySelector("[data-pl-retry]") }));
+  assert.equal(saved(storage)[0].delivery.ok, true);
+
+  // The page comes back (back/forward cache) and its first request fails late.
+  fail({ ok: false, status: 500 });
+  await submission;
+  assert.equal(saved(storage)[0].delivery.ok, true);
+});
+
+test("the timed-out check reads the saved list first, so a result whose storage event is late is not undone", async () => {
+  const storage = new Map();
+  let complete;
+  const a = openTab(storage, { options: { persistFeedback: true }, harness: { replies: [() => new Promise((resolve) => { complete = resolve; })] } });
+  const submission = a.submit("Slow");
+  const scheduled = [];
+  const timers = { setTimeout: (callback, ms) => scheduled.push({ callback, ms }), clearTimeout() {} };
+  const b = openTab(storage, { options: { persistFeedback: true }, harness: { timers } });
+  complete({ ok: true, status: 201 });
+  await submission;
+
+  // B has not heard of the result when its check runs.
+  b.api.getFeedback()[0].delivery.startedAt -= 20000;
+  scheduled.find((timer) => timer.ms > 15000 && timer.ms <= 20000).callback();
+  assert.equal(b.api.getFeedback()[0].delivery.ok, true);
+  assert.equal(saved(storage)[0].delivery.ok, true);
+});
+
 // --- mergeFeedbackLists --------------------------------------------------
 
 const item = (id, createdAt, extra = {}) => ({ id, createdAt, comment: id, reviewer: "R", ...extra });
@@ -339,6 +417,14 @@ test("merge on hearing another tab: its version wins in place, except a delivery
   assert.equal(edited.comment, "changed there");
   // The comment changed, so the export of the old text does not carry over.
   assert.equal(edited.exported, undefined);
+});
+
+test("merge on hearing another tab keeps a part only this tab changed (a change it could not save yet)", () => {
+  const before = item("a", "2026-01-01");
+  const ours = [{ ...before, comment: "unsaved edit", localEdited: true }];
+  const stored = [{ ...before, delivery: { ok: true, status: 201 } }];
+  const { list } = mergeFeedbackLists(ours, stored, knownAs(before), { prefer: "stored" });
+  assert.deepEqual([list[0].comment, list[0].localEdited, list[0].delivery.ok], ["unsaved edit", true, true]);
 });
 
 test("merge keeps the export marks of either side while the comment is the same", () => {

@@ -1269,11 +1269,12 @@ const __pl_widget_src_tab_sync = (() => {
 // stored: the list now in storage. known: a Map of the comments in storage
 // when this tab last read or wrote it, id to fingerprints. It tells a comment
 // deleted in another tab (known, no longer stored) from one this tab has not
-// saved yet (not known), and what of a comment this tab changed since.
-// prefer: "ours" when this tab saves: of a comment both hold, the parts this
-// tab changed (the comment itself, its delivery state, its export marks) keep
-// this tab's version, the others take the stored one, so the last change saved
-// wins part by part. "stored" when another tab has saved: its version wins.
+// saved yet (not known), and which side changed what of a comment since.
+// A comment both hold is merged part by part (the comment itself, its delivery
+// state, its export marks): a part only one side changed takes that side's
+// version, so a change this tab could not save yet survives taking in another
+// tab's; a part both changed follows prefer, "ours" when this tab saves (the
+// last change saved wins) and "stored" when another tab has saved since.
 // keepDelivery: ids this tab is delivering, whose delivery state stays ours.
 // Returns the merged list, the comments added by another tab and the ids
 // deleted by one. A comment kept from this tab stays the same object, so a
@@ -1285,7 +1286,7 @@ function mergeFeedbackLists(ours, stored, known, { prefer, keepDelivery = new Se
   const kept = new Map();
   ours.forEach((item) => {
     const other = storedById.get(item.id);
-    if (other) kept.set(item.id, reconcile(item, other, changedParts(item, known.get(item.id), prefer), keepDelivery.has(item.id)));
+    if (other) kept.set(item.id, reconcile(item, other, oursParts(item, other, known.get(item.id), prefer), keepDelivery.has(item.id)));
     // Deleted in another tab: the deletion wins over this tab's copy.
     else if (known.has(item.id)) removed.push(item.id);
     // Not saved yet (just added here, or a save that failed).
@@ -1326,12 +1327,18 @@ function feedbackFingerprints(item) {
   };
 }
 
-function changedParts(item, known, prefer) {
-  if (prefer === "stored") return { content: false, delivery: false, marks: false };
-  // Not known while stored: both sides hold an id this tab never read; keep it.
-  if (!known) return { content: true, delivery: true, marks: true };
-  const now = feedbackFingerprints(item);
-  return { content: now.content !== known.content, delivery: now.delivery !== known.delivery, marks: now.marks !== known.marks };
+// Which parts of a comment take this tab's version.
+function oursParts(item, other, known, prefer) {
+  const ours = feedbackFingerprints(item);
+  const theirs = feedbackFingerprints(other);
+  const parts = {};
+  ["content", "delivery", "marks"].forEach((part) => {
+    // Not known while stored: an id this tab never read; both count as changed.
+    const oursChanged = !known || ours[part] !== known[part];
+    const theirsChanged = !known || theirs[part] !== known[part];
+    parts[part] = oursChanged && (!theirsChanged || prefer === "ours");
+  });
+  return parts;
 }
 
 function canonical(value) {
@@ -1348,15 +1355,15 @@ function canonical(value) {
 // was exported, so they stay only on the same text: preferably the marks of
 // the side whose marks won, else those of the other side (an export in another
 // tab marks comments this tab may save again before it hears of it).
-function reconcile(ours, other, changed, keepOwnDelivery) {
-  const merged = changed.content ? { ...ours } : { ...other };
+function reconcile(ours, other, useOurs, keepOwnDelivery) {
+  const merged = useOurs.content ? { ...ours } : { ...other };
   // A save that did not fit the storage drops the image data; this tab may
   // still hold it.
-  if (!changed.content && other.screenshot?.persistedWithoutDataUrl && ours.screenshot?.dataUrl) merged.screenshot = ours.screenshot;
+  if (!useOurs.content && other.screenshot?.persistedWithoutDataUrl && ours.screenshot?.dataUrl) merged.screenshot = ours.screenshot;
   PART_KEYS.forEach((key) => delete merged[key]);
-  const delivery = keepOwnDelivery || changed.delivery ? ours.delivery : other.delivery;
+  const delivery = keepOwnDelivery || useOurs.delivery ? ours.delivery : other.delivery;
   if (delivery !== undefined) merged.delivery = delivery;
-  const marked = (changed.marks ? [ours, other] : [other, ours])
+  const marked = (useOurs.marks ? [ours, other] : [other, ours])
     .find((side) => side.exported && side.comment === merged.comment && side.reviewer === merged.reviewer);
   if (marked) MARK_KEYS.forEach((key) => {
     if (marked[key] !== undefined) merged[key] = marked[key];
@@ -2367,8 +2374,7 @@ async function submitComment(event) {
       target.reviewer = reviewer;
       // The receiver holds the comment when it took the post or answered 409
       // (it already had that id), so an edit no longer matches the inbox (#187).
-      const submitted = target.delivery?.ok === true || target.delivery?.status === 409 || (target.delivery?.target === "slack-webhook" && target.delivery.ok === null);
-      if (changed && (submitted || target.exported)) target.localEdited = true;
+      if (changed && (receiverHasCopy(target.delivery) || target.exported)) target.localEdited = true;
       // Re-export the local change; receivers still deduplicate the original ID.
       if (changed && target.exported) {
         delete target.exported;
@@ -2401,9 +2407,7 @@ async function submitComment(event) {
   if (delivering) payload.delivery = pendingDelivery();
   state.feedback.unshift(payload);
   finalizePendingMarker(payload);
-  // A re-init replaces the set, as it drops this delivery's result.
-  const deliveringIds = state.deliveringIds;
-  if (delivering) deliveringIds.add(payload.id);
+  if (delivering) state.deliveringIds.add(payload.id);
   saveFeedbackList();
   renderFeedbackList();
   expandPanel();
@@ -2422,12 +2426,7 @@ async function submitComment(event) {
   }
 
   if (delivering) {
-    try {
-      await deliverFeedback(payload);
-    } finally {
-      deliveringIds.delete(payload.id);
-    }
-    if (getRoot() !== root) return;
+    if (!(await deliverFeedback(payload)) || getRoot() !== root) return;
     saveFeedbackList();
     renderFeedbackList();
     showWidgetNotice(deliveryStatusText(payload.delivery), payload.delivery.ok === false);
@@ -2459,11 +2458,15 @@ async function postFeedback(payload) {
       headers,
       body: JSON.stringify(payload)
     });
-    payload.delivery = { ok: response.ok, status: response.status };
+    return logDelivery(payload, { ok: response.ok, status: response.status });
   } catch (error) {
-    payload.delivery = { ok: false, error: error.message };
+    return logDelivery(payload, { ok: false, error: error.message });
   }
-  console.info("[PatchLoop] delivery", payload.id, payload.delivery);
+}
+
+function logDelivery(payload, delivery) {
+  console.info("[PatchLoop] delivery", payload.id, delivery);
+  return delivery;
 }
 
 // read runs within the timeout too, so a body that stalls after the headers
@@ -2519,8 +2522,10 @@ function settlePendingDeliveries() {
   return changed;
 }
 
+// Reads the saved list first: the other tab's result may be saved already,
+// its storage event still on the way.
 function recheckPendingDeliveries() {
-  if (!getRoot() || !settlePendingDeliveries()) return;
+  if (!getRoot() || !syncFeedbackFromOtherTab()) return;
   saveFeedbackList();
   renderFeedbackList();
 }
@@ -2548,14 +2553,33 @@ function shouldDeliverFeedback() {
   return Boolean(state.options.endpoint);
 }
 
+// Sends the comment and settles its delivery state, unless this tab gave the
+// delivery up meanwhile (abandonDeliveries: the page went away, or the widget
+// was destroyed or re-initialized): it was saved as interrupted then, and
+// another tab may have retried it since (#139). Returns whether it settled.
 async function deliverFeedback(payload) {
+  const deliveringIds = state.deliveringIds;
+  deliveringIds.add(payload.id);
   applyPageUrlRule(payload, state.options.keepQueryParams);
-  if (state.options.deliveryMode === "slack-webhook") {
-    await postSlackWebhook(payload);
-    return;
+  const sent = { comment: payload.comment, reviewer: payload.reviewer };
+  let delivery;
+  try {
+    delivery = await (state.options.deliveryMode === "slack-webhook" ? postSlackWebhook(payload) : postFeedback(payload));
+  } finally {
+    deliveringIds.delete(payload.id);
   }
+  if (deliveringIds !== state.deliveringIds) return false;
+  payload.delivery = delivery;
+  // Another tab may have saved an edit while it was on its way: the receiver
+  // got the text as sent.
+  if ((payload.comment !== sent.comment || payload.reviewer !== sent.reviewer) && receiverHasCopy(delivery)) payload.localEdited = true;
+  return true;
+}
 
-  await postFeedback(payload);
+// Whether the receiver (or Slack) may hold the comment: it took the post, or
+// answered 409 (it already had that id), or Slack was posted to blind.
+function receiverHasCopy(delivery) {
+  return delivery?.ok === true || delivery?.status === 409 || (delivery?.target === "slack-webhook" && delivery.ok === null);
 }
 
 function pendingDelivery() {
@@ -2700,11 +2724,10 @@ async function postSlackWebhook(payload) {
     });
     // no-cors gives an opaque response: we know nothing about the outcome,
     // so report "unknown" instead of pretending it succeeded.
-    payload.delivery = { ok: null, status: "unknown", target: "slack-webhook" };
+    return logDelivery(payload, { ok: null, status: "unknown", target: "slack-webhook" });
   } catch (error) {
-    payload.delivery = { ok: false, target: "slack-webhook", error: error.message };
+    return logDelivery(payload, { ok: false, target: "slack-webhook", error: error.message });
   }
-  console.info("[PatchLoop] delivery", payload.id, payload.delivery);
 }
 
 function buildSlackWebhookPayload(payload) {
@@ -2830,14 +2853,16 @@ function saveFeedbackList() {
   refreshTooltip();
 }
 
+// Returns whether a delivery left pending was taken as cut off.
 function syncFeedbackFromOtherTab() {
   applyStorageChanges(syncPersistedFeedback());
   // A delivery the other tab started, or one it has finished.
-  settlePendingDeliveries();
+  const settled = settlePendingDeliveries();
   // Comments edited there change the marker labels and the tooltip too.
   renumberMarkers();
   refreshTooltip();
   renderFeedbackList();
+  return settled;
 }
 
 function applyStorageChanges({ added, removed }) {
@@ -3413,16 +3438,10 @@ async function retryFeedback(id) {
     return;
   }
   item.delivery = pendingDelivery();
-  const deliveringIds = state.deliveringIds;
-  deliveringIds.add(item.id);
+  state.deliveringIds.add(item.id);
   saveFeedbackList();
   renderFeedbackList();
-  try {
-    await deliverFeedback(item);
-  } finally {
-    deliveringIds.delete(item.id);
-  }
-  if (getRoot() !== root) return;
+  if (!(await deliverFeedback(item)) || getRoot() !== root) return;
   saveFeedbackList();
   renderFeedbackList();
   showWidgetNotice(deliveryStatusText(item.delivery), item.delivery.ok === false);
