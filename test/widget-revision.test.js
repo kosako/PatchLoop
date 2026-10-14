@@ -158,3 +158,37 @@ test("an edit of a comment another tab deleted does not bring it back as a revis
   assert.deepEqual(savedFeedback(storage), []);
   assert.equal(b.api.getFeedback().length, 0);
 });
+
+test("an edit another tab began follows to the latest revision when the comment was revised twice before it heard", async () => {
+  const storage = new Map();
+  const a = widgetHarness({ storage });
+  a.init({ persistFeedback: true });
+  await a.submit("O");
+  const b = widgetHarness({ storage });
+  b.init({ persistFeedback: true });
+  listItem(b, "O").querySelector("[data-pl-edit]").click();
+
+  await edit(a, "O", "R1");
+  await edit(a, "R1", "R2");
+  const r2 = a.api.getFeedback()[0].id;
+  await b.submit("From B", { captureTarget: false });
+
+  assert.equal(b.requests.length, 1);
+  const sent = JSON.parse(b.requests[0].body);
+  assert.deepEqual([sent.comment, sent.replaces], ["From B", r2]);
+  assert.deepEqual(savedFeedback(storage).map((item) => [item.comment, item.replaces]), [["From B", r2]]);
+  // The chain of earlier versions stays on this device.
+  assert.equal(savedFeedback(storage)[0].previousIds.length, 3);
+  for (const request of [...a.requests, ...b.requests]) assert.equal("previousIds" in JSON.parse(request.body), false);
+});
+
+test("an export leaves out the chain of earlier versions", async () => {
+  const w = widgetHarness();
+  w.init(DOWNLOAD);
+  await w.submit("v1");
+  exportAll(w);
+  await edit(w, "v1", "v2");
+  exportAll(w);
+  const [revision] = (await bundleAt(w, 1)).feedback;
+  assert.deepEqual([revision.comment, "previousIds" in revision, typeof revision.replaces], ["v2", false, "string"]);
+});

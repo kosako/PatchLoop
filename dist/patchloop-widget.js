@@ -1290,11 +1290,31 @@ function buildPayload(comment, reviewer, target, includeScreenshot = state.optio
 // The revision of a comment edited after it left this device (#121): a new
 // comment with the same place, page, image and creation time, pointing at the
 // one it replaces, so what the receiver holds is never rewritten and an import
-// does not skip the edit as a duplicate.
+// does not skip the edit as a duplicate. previousIds, kept on this device only
+// (LOCAL_ONLY_KEYS), lists every earlier version, so an edit another tab began
+// on any of them follows to the latest revision.
 function buildRevision(original, comment, reviewer) {
   const revision = JSON.parse(JSON.stringify(original));
   ["delivery", "exported", "exportedAt", "exportedFileName", "localEdited"].forEach((key) => delete revision[key]);
-  return { ...revision, schemaVersion: PAYLOAD_SCHEMA_VERSION, id: generateFeedbackId(), replaces: original.id, comment, reviewer };
+  return {
+    ...revision,
+    schemaVersion: PAYLOAD_SCHEMA_VERSION,
+    id: generateFeedbackId(),
+    replaces: original.id,
+    previousIds: [...(Array.isArray(original.previousIds) ? original.previousIds : []), original.id],
+    comment,
+    reviewer
+  };
+}
+
+// Kept with a comment on this device, never sent or exported.
+const LOCAL_ONLY_KEYS = ["previousIds"];
+
+// The payload as it leaves this device.
+function outgoingPayload(item) {
+  const copy = { ...item };
+  LOCAL_ONLY_KEYS.forEach((key) => delete copy[key]);
+  return copy;
 }
 
 // Date.now() alone collides across tabs/reviewers within the same
@@ -1306,7 +1326,7 @@ function generateFeedbackId() {
   return `pl_${Date.now()}_${random}`;
 }
 
-return { buildPayload, buildRevision };
+return { buildPayload, buildRevision, LOCAL_ONLY_KEYS, outgoingPayload };
 })();
 // --- widget/src/tab-sync.js ---
 const __pl_widget_src_tab_sync = (() => {
@@ -1799,7 +1819,7 @@ const { selectorFor, textFor } = __pl_widget_src_selector;
 const { resolveSourceContext } = __pl_widget_src_source_context;
 const { applyPageUrlRule, normalizeKeepQueryParams } = __pl_widget_src_url;
 const { DEFAULTS, state } = __pl_widget_src_state;
-const { buildPayload, buildRevision } = __pl_widget_src_payload;
+const { buildPayload, buildRevision, outgoingPayload } = __pl_widget_src_payload;
 const { uncapturedTouching } = __pl_widget_src_screenshot;
 const { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } = __pl_widget_src_inbox_status;
 const { isLocallyEdited, pendingAge, receiverHasCopy } = __pl_widget_src_delivery_state;
@@ -2565,7 +2585,7 @@ async function postFeedback(payload) {
     const response = await fetchWithTimeout(state.options.endpoint, {
       method: "POST",
       headers,
-      body: JSON.stringify(payload)
+      body: JSON.stringify(outgoingPayload(payload))
     });
     return logDelivery(payload, { ok: response.ok, status: response.status });
   } catch (error) {
@@ -2729,7 +2749,7 @@ function downloadFeedbackItems(items, pages = []) {
   const exportedAt = new Date().toISOString();
   try {
     const bundle = buildFeedbackBundle(items.map((item) => {
-      const copy = { ...item };
+      const copy = outgoingPayload(item);
       delete copy.exported;
       delete copy.exportedAt;
       delete copy.exportedFileName;
@@ -2993,8 +3013,9 @@ function applyStorageChanges({ added, removed }) {
   added.slice().reverse().forEach(addCommittedMarker);
   if (added.length || removed.length) renumberMarkers();
   if (state.editingId && removed.includes(state.editingId)) {
-    // Replaced by a revision there (#121): the edit goes on with the revision.
-    const revision = state.feedback.find((item) => item.replaces === state.editingId);
+    // Replaced by a revision there (#121), maybe more than once since this tab
+    // last heard: the edit goes on with the latest revision.
+    const revision = state.feedback.find((item) => item.replaces === state.editingId || (Array.isArray(item.previousIds) && item.previousIds.includes(state.editingId)));
     if (revision) {
       state.editingId = revision.id;
       showWidgetNotice("このコメントは別のタブで修正版になりました。保存すると、その修正版を直します。");

@@ -4,7 +4,7 @@ import { selectorFor, textFor } from "./selector.js";
 import { resolveSourceContext } from "./source-context.js";
 import { applyPageUrlRule, normalizeKeepQueryParams } from "./url.js";
 import { DEFAULTS, state } from "./state.js";
-import { buildPayload, buildRevision } from "./payload.js";
+import { buildPayload, buildRevision, outgoingPayload } from "./payload.js";
 import { uncapturedTouching } from "./screenshot.js";
 import { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } from "./inbox-status.js";
 import { isLocallyEdited, pendingAge, receiverHasCopy } from "./delivery-state.js";
@@ -770,7 +770,7 @@ async function postFeedback(payload) {
     const response = await fetchWithTimeout(state.options.endpoint, {
       method: "POST",
       headers,
-      body: JSON.stringify(payload)
+      body: JSON.stringify(outgoingPayload(payload))
     });
     return logDelivery(payload, { ok: response.ok, status: response.status });
   } catch (error) {
@@ -934,7 +934,7 @@ function downloadFeedbackItems(items, pages = []) {
   const exportedAt = new Date().toISOString();
   try {
     const bundle = buildFeedbackBundle(items.map((item) => {
-      const copy = { ...item };
+      const copy = outgoingPayload(item);
       delete copy.exported;
       delete copy.exportedAt;
       delete copy.exportedFileName;
@@ -1198,8 +1198,9 @@ function applyStorageChanges({ added, removed }) {
   added.slice().reverse().forEach(addCommittedMarker);
   if (added.length || removed.length) renumberMarkers();
   if (state.editingId && removed.includes(state.editingId)) {
-    // Replaced by a revision there (#121): the edit goes on with the revision.
-    const revision = state.feedback.find((item) => item.replaces === state.editingId);
+    // Replaced by a revision there (#121), maybe more than once since this tab
+    // last heard: the edit goes on with the latest revision.
+    const revision = state.feedback.find((item) => item.replaces === state.editingId || (Array.isArray(item.previousIds) && item.previousIds.includes(state.editingId)));
     if (revision) {
       state.editingId = revision.id;
       showWidgetNotice("このコメントは別のタブで修正版になりました。保存すると、その修正版を直します。");
