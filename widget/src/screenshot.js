@@ -281,10 +281,19 @@ export function removeComments(node) {
 // "element" when the page does not render the element (display:none),
 // "contents" when it renders the element's box but not what is inside
 // (content-visibility: hidden, as hidden="until-found" gives), else null.
+// content-visibility skips the contents only of some boxes: not of
+// display:contents, inline, table, table-row, table-caption or ruby ones
+// (checked in Chrome). Only the displays it was seen to skip count, and a child
+// the browser says is shown (checkVisibility) means it did not; anything else
+// keeps its contents, as the screen may show them.
+const CONTENT_SKIPPING_DISPLAYS = new Set(["block", "flow-root", "list-item", "inline-block", "flex", "inline-flex", "grid", "inline-grid", "table-cell"]);
+
 export function hiddenPart(element, computedStyle = (node) => window.getComputedStyle(node)) {
   const style = computedStyle(element);
   if (style.display === "none") return "element";
-  return style.contentVisibility === "hidden" ? "contents" : null;
+  if (style.contentVisibility !== "hidden" || !CONTENT_SKIPPING_DISPLAYS.has(style.display)) return null;
+  const shownChild = Array.from(element.children || []).some((child) => typeof child.checkVisibility === "function" && child.checkVisibility());
+  return shownChild ? null : "contents";
 }
 
 function visibleBackground(value) {

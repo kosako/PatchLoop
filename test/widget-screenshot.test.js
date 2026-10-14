@@ -269,10 +269,21 @@ test("the direction comes from the browser's own rules when it has :dir(), the a
 test("what is hidden comes from the computed style: the element (display:none) or its contents (content-visibility:hidden)", () => {
   const style = (display, contentVisibility = "visible") => () => ({ display, contentVisibility });
   assert.equal(hiddenPart({}, style("none")), "element");
-  assert.equal(hiddenPart({}, style("block", "hidden")), "contents");
   assert.equal(hiddenPart({}, style("none", "hidden")), "element");
   assert.equal(hiddenPart({}, style("block math")), null);
   assert.equal(hiddenPart({}, style("contents", "auto")), null);
+  for (const display of ["block", "flow-root", "list-item", "inline-block", "flex", "inline-flex", "grid", "inline-grid", "table-cell"]) {
+    assert.equal(hiddenPart({}, style(display, "hidden")), "contents", display);
+  }
+  // content-visibility does not skip these boxes' contents: they stay.
+  for (const display of ["contents", "inline", "table", "inline-table", "table-row", "table-row-group", "table-caption", "ruby"]) {
+    assert.equal(hiddenPart({}, style(display, "hidden")), null, display);
+  }
+  // A child the browser says is shown means the contents were not skipped.
+  const shown = { checkVisibility: () => true };
+  const skipped = { checkVisibility: () => false };
+  assert.equal(hiddenPart({ children: [skipped, shown] }, style("block", "hidden")), null);
+  assert.equal(hiddenPart({ children: [skipped] }, style("block", "hidden")), "contents");
 
   // MathML has no offsetParent: the computed style alone decides.
   const MATHML_NS = "http://www.w3.org/1998/Math/MathML";
