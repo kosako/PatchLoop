@@ -428,3 +428,16 @@ test("deleting a revision relabels the ones left, and the note goes with the las
   assertNoNode(noteOf(ui, "orig", "[data-revisions]"), "revisions note");
 });
 
+test("a delete finds the links to it by the card's anchor, not by an id a browser may read alike", async () => {
+  const ui = inboxHarness([
+    feedback("rev-cr", { replaces: "a\rb" }), feedback("rev-lf", { replaces: "a\nb" }),
+    feedback("a\rb"), feedback("a\nb")
+  ], { replies: [{ ok: true, body: { ok: true } }] });
+  // As a browser reads the attribute: CR becomes LF.
+  const crLink = ui.get("[data-card-link]", ui.card("rev-cr"));
+  crLink.dataset.targetId = "a\nb";
+  await ui.click(ui.get("[data-delete-feedback]", ui.card("a\nb")));
+  assertSameNode(ui.get("[data-card-link]", ui.card("rev-cr")), crLink, "the link to the card kept");
+  assert.equal(noteOf(ui, "rev-lf", "[data-revision-of]").textContent, "元のコメント（a\nb、この受信箱には無い）の修正版です。");
+});
+

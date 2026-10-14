@@ -359,10 +359,13 @@ function importFailureMessage(failed) {
 
   // After a delete, the other cards stop linking to it: a revision names the
   // missing original by its id, and a replaced comment lists the revisions
-  // left (the texts inbox-view.js writes).
-  const forgetLinkedCard = (id) => {
+  // left (the texts inbox-view.js writes). Links are matched by the card's
+  // anchor, which differs for every id; an attribute holding the id itself
+  // can read the same for two ids (a browser turns CR into LF there).
+  const forgetLinkedCard = (anchor) => {
     document.querySelectorAll("[data-card-link]").forEach((link) => {
-      if (link.dataset.targetId !== id) return;
+      if (link.getAttribute("href") !== "#" + anchor) return;
+      const id = link.dataset.targetId;
       if (link.dataset.linkRole === "original") {
         const code = document.createElement("code");
         code.textContent = id;
@@ -392,8 +395,9 @@ function importFailureMessage(failed) {
       try {
         const { response, result } = await inboxRequest("/feedback/" + encodeURIComponent(button.dataset.feedbackId), { method: "DELETE" });
         if (!response.ok) throw new Error(result.error || "削除できませんでした。");
+        const anchor = card.getAttribute("id");
         card.remove();
-        forgetLinkedCard(button.dataset.feedbackId);
+        if (anchor) forgetLinkedCard(anchor);
         applyFilters();
         showInboxMessage("フィードバックを削除しました。");
         if (panel && !panel.hidden) textInput?.focus();

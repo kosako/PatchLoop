@@ -1149,10 +1149,13 @@ function mdTableCell(value) {
   return String(value ?? "").replaceAll("|", "\\|").replaceAll("\n", " ");
 }
 
-// A code span in a table cell: no backtick to end it early, no line break or
-// unescaped pipe to break the row.
+// A table cell shown as code, for any value: an HTML <code> whose every
+// character that could end the cell or row (| and backslashes before it,
+// line breaks) or read as Markdown or HTML is a character reference, so the
+// value renders as itself. Line breaks become spaces.
 function mdTableCode(value) {
-  return `\`${mdTableCell(String(value ?? "").replaceAll("\`", "'").replace(/\r\n?/g, "\n"))}\``;
+  const text = String(value ?? "").replace(/\r\n?|\n/g, " ");
+  return `<code>${Array.from(text, (char) => /[A-Za-z0-9 .:#/-]/.test(char) ? char : `&#${char.codePointAt(0)};`).join("")}</code>`;
 }
 
 // Collects the request body (bounded by MAX_BODY_BYTES, or a route's own

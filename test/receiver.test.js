@@ -439,14 +439,19 @@ test("a revision says what it replaces in Slack and in its GitHub Issue (#121)",
   const receiver = await startReceiver(t, {
     GITHUB_TOKEN: "test-token", GITHUB_REPO: "acme/demo", GITHUB_API_BASE: github.baseUrl, SLACK_WEBHOOK_URL: slack.baseUrl
   });
-  const revision = { ...feedbackPayload("pl_revision_note"), replaces: "pl_original_`note`|cell\r\nnext", schemaVersion: 4 };
+  const revision = { ...feedbackPayload("pl_revision_note"), replaces: "pl_original_`note`\\|cell\r\nnext *x* <b>", schemaVersion: 4 };
   assert.equal((await postJson(`${receiver.baseUrl}/feedback`, revision)).status, 201);
   const fields = slack.requests[0].body.blocks.flatMap((block) => block.fields || []).map((field) => field.text);
   assert.ok(fields.some((text) => /^\*Replaces\*\n`pl_original_/.test(text)));
 
   assert.equal((await postJson(`${receiver.baseUrl}/feedback/${revision.id}/github-issue`, {})).status, 201);
-  // The id cannot end the code span, split the cell or start a new row.
-  assert.ok(github.requests[0].body.body.split("\n").includes("| Replaces | `pl_original_'note'\\|cell next` (an earlier version of this comment) |"));
+  // The id cannot split the cell (not even after a backslash), start a new
+  // row, or read as Markdown or HTML: it renders as itself, line break as a space.
+  const row = github.requests[0].body.body.split("\n").find((line) => line.startsWith("| Replaces |"));
+  assert.equal(row.split("|").length, 4);
+  assert.doesNotMatch(row, /\\|`|\*|<b>/);
+  const code = row.match(/<code>(.*)<\/code>/)[1].replace(/&#(\d+);/g, (_, number) => String.fromCodePoint(Number(number)));
+  assert.equal(code, "pl_original_`note`\\|cell next *x* <b>");
 
   const original = feedbackPayload("pl_not_a_revision");
   assert.equal((await postJson(`${receiver.baseUrl}/feedback`, original)).status, 201);
