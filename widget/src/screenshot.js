@@ -63,7 +63,7 @@ export function captureScreenshot(target) {
 
 function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scrollX, scrollY, overlay, uncaptured }) {
   const bodyClone = document.body.cloneNode(true);
-  blankUnrenderedElements(document.body.querySelectorAll("*"), bodyClone.querySelectorAll("*"), isUnrendered, browserTextDirection(document));
+  blankUnrenderedElements(document.body.querySelectorAll("*"), bodyClone.querySelectorAll("*"), (element) => hiddenPart(element), browserTextDirection(document));
   clearTemplateContents(bodyClone.querySelectorAll("template"));
   removeComments(bodyClone);
   bodyClone.querySelectorAll(`${WIDGET_NODES}, script`).forEach((node) => node.remove());
@@ -141,7 +141,9 @@ function topPageElementAt(x, y) {
 
 // Elements the page does not render (display:none: the hidden attribute, a
 // <template>, a closed <dialog>, anything a stylesheet hides that way) are
-// emptied in the snapshot (#122), so the image file holds no more of them than
+// emptied in the snapshot (#122), and so are the contents of elements that
+// skip rendering them (content-visibility: hidden, as hidden="until-found"
+// gives, whose own box stays as it is), so the image file holds no more of them than
 // the screen shows: every text in them becomes one character that keeps only
 // its direction (blankText), the attributes that
 // carry content become empty, comments go. Their
@@ -166,26 +168,37 @@ const CONTENT_ATTRIBUTES = new Set([
   "action", "formaction", "ping", "download", "content", "label", "aria-label", "aria-description", "aria-valuetext"
 ]);
 
+// hidden: what of an element the page does not render (see hiddenPart);
 // direction: a text's direction as dir="auto" sees it (see browserTextDirection).
-export function blankUnrenderedElements(originals, clones, unrendered, direction = approximateTextDirection) {
+export function blankUnrenderedElements(originals, clones, hidden, direction = approximateTextDirection) {
   if (originals.length !== clones.length) return;
   let blankedOriginal = null;
   for (let index = 0; index < originals.length; index += 1) {
     const original = originals[index];
     // Inside an element already emptied, with it.
     if (blankedOriginal && blankedOriginal.contains(original)) continue;
-    if (!isBlankable(original) || !unrendered(original)) continue;
+    const part = isBlankable(original) ? hidden(original) : null;
+    if (!part) continue;
     blankedOriginal = original;
-    blankSubtree(clones[index], direction);
+    if (part === "contents") blankChildren(clones[index], direction);
+    else blankSubtree(clones[index], direction);
   }
 }
 
 function blankSubtree(element, direction) {
+  blankAttributes(element);
+  blankChildren(element, direction);
+}
+
+function blankAttributes(element) {
   const keepsFormState = element.tagName === "INPUT" && String(element.getAttribute("type") || "").toLowerCase() !== "hidden";
   element.getAttributeNames().forEach((name) => {
     const key = name.toLowerCase();
     if (CONTENT_ATTRIBUTES.has(key) && !(keepsFormState && FORM_STATE_ATTRIBUTES.has(key))) element.setAttribute(name, "");
   });
+}
+
+function blankChildren(element, direction) {
   Array.from(element.childNodes).forEach((child) => {
     if (child.nodeType === TEXT_NODE) {
       if (child.data) child.data = blankText(child.data, direction);
@@ -265,13 +278,13 @@ export function removeComments(node) {
   });
 }
 
-// offsetParent is null for every HTML element display:none hides (and for
-// some rendered ones, fixed-position for one, which the computed style tells
-// apart). Elements without it (MathML; SVG is kept before this) are told by the
-// computed style alone.
-export function isUnrendered(element, computedStyle = (node) => window.getComputedStyle(node)) {
-  if (element.offsetParent) return false;
-  return computedStyle(element).display === "none";
+// "element" when the page does not render the element (display:none),
+// "contents" when it renders the element's box but not what is inside
+// (content-visibility: hidden, as hidden="until-found" gives), else null.
+export function hiddenPart(element, computedStyle = (node) => window.getComputedStyle(node)) {
+  const style = computedStyle(element);
+  if (style.display === "none") return "element";
+  return style.contentVisibility === "hidden" ? "contents" : null;
 }
 
 function visibleBackground(value) {

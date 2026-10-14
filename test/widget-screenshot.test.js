@@ -97,7 +97,7 @@ test("byteLength falls back to the base64 length without Blob", () => {
 
 // --- elements the page does not render (#122) ------------------------------
 
-const { blankText, blankUnrenderedElements, browserTextDirection, clearTemplateContents, isUnrendered, removeComments } = require("../widget/src/screenshot.js");
+const { blankText, blankUnrenderedElements, browserTextDirection, clearTemplateContents, hiddenPart, removeComments } = require("../widget/src/screenshot.js");
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -266,19 +266,32 @@ test("the direction comes from the browser's own rules when it has :dir(), the a
   assert.deepEqual(["\u0640مرحبا", "Ⅰ", "123"].map(old), ["rtl", "ltr", null]);
 });
 
-test("an element without offsetParent (MathML) is judged by its computed display, so a hidden one is emptied", () => {
-  const style = (display) => () => ({ display });
-  assert.equal(isUnrendered({ offsetParent: undefined }, style("none")), true);
-  assert.equal(isUnrendered({ offsetParent: undefined }, style("block math")), false);
-  assert.equal(isUnrendered({ offsetParent: null }, style("none")), true);
-  assert.equal(isUnrendered({ offsetParent: null }, style("block")), false);
-  assert.equal(isUnrendered({ offsetParent: {} }, () => { throw new Error("not asked"); }), false);
+test("what is hidden comes from the computed style: the element (display:none) or its contents (content-visibility:hidden)", () => {
+  const style = (display, contentVisibility = "visible") => () => ({ display, contentVisibility });
+  assert.equal(hiddenPart({}, style("none")), "element");
+  assert.equal(hiddenPart({}, style("block", "hidden")), "contents");
+  assert.equal(hiddenPart({}, style("none", "hidden")), "element");
+  assert.equal(hiddenPart({}, style("block math")), null);
+  assert.equal(hiddenPart({}, style("contents", "auto")), null);
 
+  // MathML has no offsetParent: the computed style alone decides.
   const MATHML_NS = "http://www.w3.org/1998/Math/MathML";
   const mtext = el("mtext", { title: "math title" }, [text("math text")], { namespaceURI: MATHML_NS });
   const math = el("math", { style: "display:none" }, [mtext], { namespaceURI: MATHML_NS });
   const copy = snapshot(el("body", {}, [math]), new Set([math, mtext]));
   assert.deepEqual([texts(copy), copy.childNodes[0].childNodes[0].attributes], [["\u200e"], { title: "" }]);
+});
+
+test("hidden=\"until-found\" keeps its own box and attributes and empties what is inside", () => {
+  const link = el("a", { href: "/private" }, [text("inside")]);
+  const section = el("section", { hidden: "until-found", id: "more", title: "own title" }, [text("lead"), link]);
+  const body = el("body", {}, [section, el("p", {}, [text("after")])]);
+  const copy = copyOf(body);
+  blankUnrenderedElements(elementsOf(body), elementsOf(copy), (node) => (node === section ? "contents" : node === link ? "element" : null));
+  const [sectionCopy, afterCopy] = copy.childNodes;
+  assert.deepEqual(sectionCopy.attributes, { hidden: "until-found", id: "more", title: "own title" });
+  assert.deepEqual([texts(sectionCopy), sectionCopy.childNodes[1].attributes], [["\u200e", "\u200e"], { href: "" }]);
+  assert.deepEqual(texts(afterCopy), ["after"]);
 });
 
 test("comments go from the whole snapshot", () => {
