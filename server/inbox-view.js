@@ -22,6 +22,17 @@ function createInboxView(deps) {
   }
 
   function renderInbox(items) {
+    // A comment edited after it left the widget comes as a new one pointing at
+    // it with replaces (#121): each card says which revisions it has.
+    const revisionsOf = new Map();
+    const presentIds = new Set();
+    items.forEach((item) => {
+      if (!item || typeof item.id !== "string") return;
+      presentIds.add(item.id);
+      if (typeof item.replaces !== "string" || !item.replaces) return;
+      if (!revisionsOf.has(item.replaces)) revisionsOf.set(item.replaces, []);
+      revisionsOf.get(item.replaces).push(item.id);
+    });
     const cards = items.map((item) => {
       try {
         return renderCard(item);
@@ -59,7 +70,7 @@ function createInboxView(deps) {
       const slackStatus = escapeHtml((slack && slack.status) || "unknown");
       const github = item.integrations && item.integrations.github;
       const githubStatus = escapeHtml((github && github.status) || "none");
-      const searchText = escapeHtml([item.comment, item.reviewer, target.selector, page.url, page.title, item.id, item.projectId, item.demoId]
+      const searchText = escapeHtml([item.comment, item.reviewer, target.selector, page.url, page.title, item.id, item.replaces, item.projectId, item.demoId]
         .filter(Boolean).join(" ").toLowerCase());
       const statusOptions = FEEDBACK_STATUSES
         .map((value) => `<option value="${value}"${value === status ? " selected" : ""}>${STATUS_LABELS[value]}</option>`)
@@ -70,7 +81,7 @@ function createInboxView(deps) {
       // Only a saved screenshot comes with a check of what it cannot show (#148).
       const uncaptured = screenshot && screenshot.status === "saved" ? summarizeUncaptured(screenshot) : null;
       return `
-      <article class="card" data-card data-status="${status}" data-kind="${kind}" data-project="${project}" data-demo="${demo}" data-reviewer="${reviewer}" data-source="${source}" data-slack="${slackStatus}" data-github="${githubStatus}" data-search="${searchText}">
+      <article class="card" id="${escapeHtml(cardAnchor(item.id))}" data-card data-status="${status}" data-kind="${kind}" data-project="${project}" data-demo="${demo}" data-reviewer="${reviewer}" data-source="${source}" data-slack="${slackStatus}" data-github="${githubStatus}" data-search="${searchText}">
         <header class="card-header">
           <span class="kind kind-${kind}">${escapeHtml(KIND_LABELS[target.kind] || "その他")}</span>
           <span class="reviewer">${reviewer || "投稿者不明"}</span>
@@ -81,6 +92,7 @@ function createInboxView(deps) {
             <p class="card-context">${project || "プロジェクト未指定"}${demo ? ` <span>/</span> ${demo}` : ""}</p>
             <p class="comment">${comment}</p>
             <p class="page-link">${safeLinkUrl(page.url) ? `<a href="${escapeHtml(safeLinkUrl(page.url))}" target="_blank" rel="noopener">${pageTitle || pageUrl}<span class="sr-only">（新しいタブで開く）</span></a>` : pageTitle || pageUrl}</p>
+            ${renderRevisionNotes(item, revisionsOf.get(item.id) || [], presentIds)}
             ${renderUncapturedNote(uncaptured)}
           </div>
           ${renderScreenshotPreview(screenshot)}
@@ -105,6 +117,7 @@ function createInboxView(deps) {
           <div><dt>Slack</dt><dd>${escapeHtml(formatSlackStatus(slack))}</dd></div>
           <div><dt>GitHub</dt><dd>${githubStatus}</dd></div>
           <div><dt>Created</dt><dd>${createdAt}</dd></div>
+          ${typeof item.replaces === "string" && item.replaces ? `<div><dt>Replaces</dt><dd><code>${escapeHtml(item.replaces)}</code></dd></div>` : ""}
           ${importedAt ? `<div><dt>Imported</dt><dd>${importedAt}</dd></div>` : ""}
         </dl>
         <details>
@@ -293,6 +306,32 @@ function createInboxView(deps) {
 
 // Elements the screenshot cannot show that touch the selected spot (#148), as a
 // note under the comment. The numbers match the dashed frames on the image.
+// The card of a feedback id, as a link target.
+function cardAnchor(id) {
+  return `feedback-${String(id || "")}`;
+}
+
+function cardLink(id, label) {
+  return `<a href="#${escapeHtml(encodeURIComponent(cardAnchor(id)))}">${escapeHtml(label)}</a>`;
+}
+
+// #121: a revision names the comment it replaces; a replaced comment links to
+// its revisions. The original may be missing (deleted here, or never sent here).
+function renderRevisionNotes(item, revisions, presentIds) {
+  const notes = [];
+  if (typeof item.replaces === "string" && item.replaces) {
+    const original = presentIds.has(item.replaces)
+      ? `${cardLink(item.replaces, "元のコメント")}の修正版です。`
+      : `元のコメント（<code>${escapeHtml(item.replaces)}</code>、この受信箱には無い）の修正版です。`;
+    notes.push(`<p class="revision-note">${original}</p>`);
+  }
+  if (revisions.length > 0) {
+    const links = revisions.map((id, index) => cardLink(id, revisions.length > 1 ? `修正版 ${index + 1}` : "修正版")).join("、");
+    notes.push(`<p class="revision-note revision-note-replaced">このコメントには修正版があります: ${links}</p>`);
+  }
+  return notes.join("");
+}
+
 function renderUncapturedNote(summary) {
   if (!summary || summary.state !== "detected" || summary.touching.length === 0) return "";
   const list = summary.touching

@@ -1067,6 +1067,8 @@ function gitHubIssueBody(item) {
   lines.push(`| Viewport | ${mdTableCell(formatViewport(env.viewport))} |`);
   lines.push(`| Created | ${mdTableCell(item.createdAt || item.receivedAt || "(unknown)")} |`);
   lines.push(`| Feedback ID | \`${String(item.id || "-").replaceAll("\`", "'")}\` |`);
+  // A revision of an earlier comment (#121), which stays as it was received.
+  if (typeof item.replaces === "string" && item.replaces) lines.push(`| Replaces | \`${item.replaces.replaceAll("\`", "'")}\` (an earlier version of this comment) |`);
   lines.push("");
 
   if (target.text) {
@@ -2039,7 +2041,9 @@ function buildSlackMessage(item) {
         { type: "mrkdwn", text: `*Target*\n${slackEscape(formatTarget(target))}` },
         { type: "mrkdwn", text: `*Viewport*\n${slackEscape(formatViewport(env.viewport))}` },
         { type: "mrkdwn", text: `*Selector*\n${formatSlackCode(target.selector || "(none)")}` },
-        { type: "mrkdwn", text: `*Created*\n${slackEscape(item.createdAt || item.receivedAt || "(unknown)")}` }
+        { type: "mrkdwn", text: `*Created*\n${slackEscape(item.createdAt || item.receivedAt || "(unknown)")}` },
+        // A revision of an earlier comment (#121).
+        ...(typeof item.replaces === "string" && item.replaces ? [{ type: "mrkdwn", text: `*Replaces*\n${formatSlackCode(item.replaces)}` }] : [])
       ]
     }
   ];

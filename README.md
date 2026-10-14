@@ -214,6 +214,7 @@ node server/receive.js
 - `GET /` で受信した feedback の一覧（inbox）を表示します
 - inbox のサイドバーに対応状況別の件数を表示します。検索・プロジェクト・対応状況で絞り込み、詳細条件で kind / demo / reviewer / source / Slack / GitHub も指定できます。変更・失敗時にも検索条件を保持します
 - 各 feedback には triage status（`new` / `accepted` / `fixed` / `ignored`）があり、card 上の select から変更できます。status は sqlite に永続化されます
+- 修正版（`replaces` のある feedback）の card には「元のコメントの修正版です」と、置き換えられた feedback の card には「このコメントには修正版があります」と出し、互いの card へリンクします（元のコメントがこの受信箱に無いときはその id を出します）。修正版でも元の feedback は書き換えず、status も別々です。GitHub Issue の本文と Slack の通知には `Replaces` として元の id を載せます
 - `POST /feedback/:id/status` で API からも status を更新できます（body は `{"status": "accepted"}` 形式）
 - `POST /feedback-status` で、widget が送ったコメントの status を照会できます（body は `{"ids": ["pl_..."], "projectId": "..."}`、`projectId` は省略可）。応答は `{"ok": true, "statuses": [{"id": "pl_...", "status": "fixed"}]}` で、見つからない id は含めず、feedback の本文などは返しません（`Cache-Control: no-store`）。`ids` は 1〜200 件・各 1〜200 文字、body は 64 KiB（`MAX_BODY_BYTES` がそれより小さければその値）まで。`POST /feedback` と同じく許可 origin・ingest key（project に紐づく key ならその project の feedback だけ）・rate limit が効きます。id を知っていれば status を読めるので、既定では `RECEIVER_TOKEN` を設定した receiver にはこの endpoint がありません（404。`statusLookup` で変えられます。下記）
 - `DELETE /feedback/:id` で feedback と紐づく screenshot を削除できます（inbox の card の「削除」ボタンからも）

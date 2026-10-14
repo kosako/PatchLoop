@@ -97,3 +97,30 @@ test("a card's details tell none, not checked and failed apart, and say nothing 
     assert.doesNotMatch(renderInbox([feedback({ screenshot })]), /写らない要素/);
   }
 });
+
+// A comment edited after it left the widget comes as a revision with replaces (#121).
+function card(html, id) {
+  const start = html.indexOf(`id="feedback-${id}"`);
+  assert.notEqual(start, -1, `card ${id}`);
+  return html.slice(start, html.indexOf("</article>", start));
+}
+
+test("a replaced comment links to its revisions, and a revision to the comment it replaces (#121)", () => {
+  const html = renderInbox([
+    feedback({ id: "rev2", comment: "Second try", replaces: "orig" }),
+    feedback({ id: "rev1", comment: "First try", replaces: "orig" }),
+    feedback({ id: "orig", comment: "Original" })
+  ]);
+  assert.match(card(html, "orig"), /このコメントには修正版があります: <a href="#feedback-rev2">修正版 1<\/a>、<a href="#feedback-rev1">修正版 2<\/a>/);
+  assert.match(card(html, "rev1"), /<a href="#feedback-orig">元のコメント<\/a>の修正版です。/);
+  assert.match(card(html, "rev1"), /<dt>Replaces<\/dt><dd><code>orig<\/code><\/dd>/);
+  assert.doesNotMatch(card(html, "rev1"), /修正版があります/);
+});
+
+test("a revision whose original is not in this inbox says so, and odd ids stay text", () => {
+  const html = renderInbox([feedback({ id: "a\"b<c", comment: "Revised", replaces: "gone<script>" })]);
+  assert.match(html, /元のコメント（<code>gone&lt;script&gt;<\/code>、この受信箱には無い）の修正版です。/);
+  assert.match(html, /id="feedback-a&quot;b&lt;c"/);
+  const linked = renderInbox([feedback({ id: "x y", comment: "Original" }), feedback({ id: "r", replaces: "x y" })]);
+  assert.match(linked, /<a href="#feedback-x%20y">元のコメント<\/a>/);
+});

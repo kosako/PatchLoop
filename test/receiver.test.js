@@ -430,6 +430,28 @@ test("POST /feedback stores a revision as its own comment, keeping the one it re
   }
 });
 
+test("a revision says what it replaces in Slack and in its GitHub Issue (#121)", async (t) => {
+  const github = await startMockGitHub(t, (res) => {
+    res.writeHead(201, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ number: 8, html_url: "https://github.com/acme/demo/issues/8" }));
+  });
+  const slack = await startMockGitHub(t, (res) => res.end("ok"));
+  const receiver = await startReceiver(t, {
+    GITHUB_TOKEN: "test-token", GITHUB_REPO: "acme/demo", GITHUB_API_BASE: github.baseUrl, SLACK_WEBHOOK_URL: slack.baseUrl
+  });
+  const revision = { ...feedbackPayload("pl_revision_note"), replaces: "pl_original_`note`", schemaVersion: 4 };
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, revision)).status, 201);
+  const fields = slack.requests[0].body.blocks.flatMap((block) => block.fields || []).map((field) => field.text);
+  assert.ok(fields.some((text) => /^\*Replaces\*\n`pl_original_/.test(text)));
+
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback/${revision.id}/github-issue`, {})).status, 201);
+  assert.match(github.requests[0].body.body, /\| Replaces \| `pl_original_'note'` \(an earlier version of this comment\) \|/);
+
+  const original = feedbackPayload("pl_not_a_revision");
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, original)).status, 201);
+  assert.doesNotMatch(JSON.stringify(slack.requests[1].body.blocks), /Replaces/);
+});
+
 test("POST /import stores bundle feedback and strips delivery metadata", async (t) => {
   const receiver = await startReceiver(t);
   const payload = {
