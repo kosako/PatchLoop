@@ -25,7 +25,8 @@ test("every hook inbox.js queries is rendered by the server's markup", () => {
   // check each one the script looks up against the parsed page.
   const selectors = new Set([...script.matchAll(/(?:querySelector(?:All)?|closest)\((["'])(.+?)\1\)/g)].map((match) => match[2]));
   for (const hook of ["[data-filter-key]", "[data-status-count]", "[data-github-create]", "[data-github-cell]", "#inbox"]) assert.ok(selectors.has(hook), hook);
-  const ui = inboxHarness([feedback("one", { integrations: { github: { status: "failed", error: "boom" } } })]);
+  // A revision pair renders the hooks of the links between them (#121).
+  const ui = inboxHarness([feedback("one", { integrations: { github: { status: "failed", error: "boom" } } }), feedback("rev", { replaces: "one" })]);
   for (const selector of selectors) assert.ok(ui.document.querySelector(selector), `${selector} is missing from the rendered inbox`);
   // Each filter compares its value with the card attribute of the same key.
   for (const select of ui.all("[data-filter-key]")) {
@@ -392,3 +393,38 @@ test("a node renders the same at any depth, so a failing assertion cannot walk t
     assert.ok(rendered(4) === rendered(2), `${node.tagName} grows from ${rendered(2)} to ${rendered(4)} chars between depth 2 and 4`);
   }
 });
+
+// --- links between a revision and the comment it replaces (#121) ---------
+
+const noteOf = (ui, id, selector) => ui.card(id).querySelector(selector);
+
+test("a link to a card the filters hide shows that card and moves focus to it", async () => {
+  const ui = inboxHarness([feedback("rev", { replaces: "orig" }), feedback("orig", { status: "fixed" })]);
+  await ui.change(ui.get('[data-filter-key="status"]'), "new");
+  assert.equal(ui.card("orig").hidden, true);
+  await ui.click(ui.get("[data-card-link]", ui.card("rev")));
+  assert.equal(ui.card("orig").hidden, false);
+  assertSameNode(ui.document.activeElement, ui.card("orig"), "focus");
+});
+
+test("deleting the original leaves its revision naming it by id, with no link", async () => {
+  const ui = inboxHarness([feedback("rev", { replaces: "orig" }), feedback("orig")], { replies: [{ ok: true, body: { ok: true } }] });
+  await ui.click(ui.get("[data-delete-feedback]", ui.card("orig")));
+  const note = noteOf(ui, "rev", "[data-revision-of]");
+  assert.equal(note.textContent, "元のコメント（orig、この受信箱には無い）の修正版です。");
+  assertNoNode(note.querySelector("[data-card-link]"), "link to the deleted card");
+});
+
+test("deleting a revision relabels the ones left, and the note goes with the last", async () => {
+  const ui = inboxHarness([feedback("r2", { replaces: "orig" }), feedback("r1", { replaces: "orig" }), feedback("orig")], {
+    replies: [{ ok: true, body: { ok: true } }, { ok: true, body: { ok: true } }]
+  });
+  assert.equal(noteOf(ui, "orig", "[data-revisions]").textContent, "このコメントには修正版があります: 修正版 1、修正版 2");
+  await ui.click(ui.get("[data-delete-feedback]", ui.card("r2")));
+  const note = noteOf(ui, "orig", "[data-revisions]");
+  assert.equal(note.textContent, "このコメントには修正版があります: 修正版");
+  assert.equal(note.querySelector("[data-card-link]").dataset.targetId, "r1");
+  await ui.click(ui.get("[data-delete-feedback]", ui.card("r1")));
+  assertNoNode(noteOf(ui, "orig", "[data-revisions]"), "revisions note");
+});
+

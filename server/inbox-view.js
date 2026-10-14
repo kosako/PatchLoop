@@ -70,7 +70,8 @@ function createInboxView(deps) {
       const slackStatus = escapeHtml((slack && slack.status) || "unknown");
       const github = item.integrations && item.integrations.github;
       const githubStatus = escapeHtml((github && github.status) || "none");
-      const searchText = escapeHtml([item.comment, item.reviewer, target.selector, page.url, page.title, item.id, item.replaces, item.projectId, item.demoId]
+      const replaces = typeof item.replaces === "string" ? item.replaces : "";
+      const searchText = escapeHtml([item.comment, item.reviewer, target.selector, page.url, page.title, item.id, replaces, item.projectId, item.demoId]
         .filter(Boolean).join(" ").toLowerCase());
       const statusOptions = FEEDBACK_STATUSES
         .map((value) => `<option value="${value}"${value === status ? " selected" : ""}>${STATUS_LABELS[value]}</option>`)
@@ -117,7 +118,7 @@ function createInboxView(deps) {
           <div><dt>Slack</dt><dd>${escapeHtml(formatSlackStatus(slack))}</dd></div>
           <div><dt>GitHub</dt><dd>${githubStatus}</dd></div>
           <div><dt>Created</dt><dd>${createdAt}</dd></div>
-          ${typeof item.replaces === "string" && item.replaces ? `<div><dt>Replaces</dt><dd><code>${escapeHtml(item.replaces)}</code></dd></div>` : ""}
+          ${replaces ? `<div><dt>Replaces</dt><dd><code>${escapeHtml(replaces)}</code></dd></div>` : ""}
           ${importedAt ? `<div><dt>Imported</dt><dd>${importedAt}</dd></div>` : ""}
         </dl>
         <details>
@@ -306,28 +307,35 @@ function createInboxView(deps) {
 
 // Elements the screenshot cannot show that touch the selected spot (#148), as a
 // note under the comment. The numbers match the dashed frames on the image.
-// The card of a feedback id, as a link target.
+// The card of a feedback id, as a link target: every UTF-16 code unit of the
+// id in hex, so any id gives a distinct, plain ASCII id attribute and fragment.
 function cardAnchor(id) {
-  return `feedback-${String(id || "")}`;
+  const text = String(id || "");
+  let hex = "";
+  for (let index = 0; index < text.length; index += 1) hex += text.charCodeAt(index).toString(16).padStart(4, "0");
+  return `feedback-${hex}`;
 }
 
-function cardLink(id, label) {
-  return `<a href="#${escapeHtml(encodeURIComponent(cardAnchor(id)))}">${escapeHtml(label)}</a>`;
+// role: "original" (from a revision) or "revision" (from the replaced card).
+// inbox.js reveals a card the filters hide and updates the links on a delete.
+function cardLink(id, label, role) {
+  return `<a href="#${cardAnchor(id)}" data-card-link data-link-role="${role}" data-target-id="${escapeHtml(id)}">${escapeHtml(label)}</a>`;
 }
 
 // #121: a revision names the comment it replaces; a replaced comment links to
-// its revisions. The original may be missing (deleted here, or never sent here).
+// its revisions. The original may be missing (deleted here, or never sent
+// here). inbox.js writes the same texts when a delete changes them.
 function renderRevisionNotes(item, revisions, presentIds) {
   const notes = [];
   if (typeof item.replaces === "string" && item.replaces) {
     const original = presentIds.has(item.replaces)
-      ? `${cardLink(item.replaces, "元のコメント")}の修正版です。`
+      ? `${cardLink(item.replaces, "元のコメント", "original")}の修正版です。`
       : `元のコメント（<code>${escapeHtml(item.replaces)}</code>、この受信箱には無い）の修正版です。`;
-    notes.push(`<p class="revision-note">${original}</p>`);
+    notes.push(`<p class="revision-note" data-revision-of>${original}</p>`);
   }
   if (revisions.length > 0) {
-    const links = revisions.map((id, index) => cardLink(id, revisions.length > 1 ? `修正版 ${index + 1}` : "修正版")).join("、");
-    notes.push(`<p class="revision-note revision-note-replaced">このコメントには修正版があります: ${links}</p>`);
+    const links = revisions.map((id, index) => cardLink(id, revisions.length > 1 ? `修正版 ${index + 1}` : "修正版", "revision")).join("、");
+    notes.push(`<p class="revision-note revision-note-replaced" data-revisions>このコメントには修正版があります: <span data-revision-links>${links}</span></p>`);
   }
   return notes.join("");
 }

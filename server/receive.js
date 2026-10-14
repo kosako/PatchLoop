@@ -1063,12 +1063,12 @@ function gitHubIssueBody(item) {
   lines.push(`| Reviewer | ${mdTableCell(item.reviewer || "(no name)")} |`);
   lines.push(`| Page | ${pageLink ? `[${mdTableCell(page.title || page.url)}](${pageLink})` : mdTableCell(page.title || page.url || "(unknown)")} |`);
   lines.push(`| Target | ${mdTableCell(formatTarget(target))} |`);
-  lines.push(`| Selector | \`${String(target.selector || "(none)").replaceAll("\`", "'")}\` |`);
+  lines.push(`| Selector | ${mdTableCode(target.selector || "(none)")} |`);
   lines.push(`| Viewport | ${mdTableCell(formatViewport(env.viewport))} |`);
   lines.push(`| Created | ${mdTableCell(item.createdAt || item.receivedAt || "(unknown)")} |`);
-  lines.push(`| Feedback ID | \`${String(item.id || "-").replaceAll("\`", "'")}\` |`);
+  lines.push(`| Feedback ID | ${mdTableCode(item.id || "-")} |`);
   // A revision of an earlier comment (#121), which stays as it was received.
-  if (typeof item.replaces === "string" && item.replaces) lines.push(`| Replaces | \`${item.replaces.replaceAll("\`", "'")}\` (an earlier version of this comment) |`);
+  if (typeof item.replaces === "string" && item.replaces) lines.push(`| Replaces | ${mdTableCode(item.replaces)} (an earlier version of this comment) |`);
   lines.push("");
 
   if (target.text) {
@@ -1147,6 +1147,12 @@ function uncapturedIssueSentence(summary) {
 
 function mdTableCell(value) {
   return String(value ?? "").replaceAll("|", "\\|").replaceAll("\n", " ");
+}
+
+// A code span in a table cell: no backtick to end it early, no line break or
+// unescaped pipe to break the row.
+function mdTableCode(value) {
+  return `\`${mdTableCell(String(value ?? "").replaceAll("\`", "'").replace(/\r\n?/g, "\n"))}\``;
 }
 
 // Collects the request body (bounded by MAX_BODY_BYTES, or a route's own

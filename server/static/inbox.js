@@ -343,6 +343,45 @@ function importFailureMessage(failed) {
     });
   });
 
+  // Links between a revision and the comment it replaces (#121). A card the
+  // filters hide is shown for the visit; the next filter change applies again.
+  const showLinkedCard = (event) => {
+    const anchor = (event.currentTarget.getAttribute("href") || "").slice(1);
+    const card = Array.from(document.querySelectorAll("[data-card]")).find((candidate) => candidate.getAttribute("id") === anchor);
+    if (!card) return;
+    event.preventDefault();
+    card.hidden = false;
+    card.setAttribute("tabindex", "-1");
+    if (typeof card.scrollIntoView === "function") card.scrollIntoView({ block: "start" });
+    card.focus();
+  };
+  document.querySelectorAll("[data-card-link]").forEach((link) => link.addEventListener("click", showLinkedCard));
+
+  // After a delete, the other cards stop linking to it: a revision names the
+  // missing original by its id, and a replaced comment lists the revisions
+  // left (the texts inbox-view.js writes).
+  const forgetLinkedCard = (id) => {
+    document.querySelectorAll("[data-card-link]").forEach((link) => {
+      if (link.dataset.targetId !== id) return;
+      if (link.dataset.linkRole === "original") {
+        const code = document.createElement("code");
+        code.textContent = id;
+        link.closest("[data-revision-of]")?.replaceChildren("元のコメント（", code, "、この受信箱には無い）の修正版です。");
+        return;
+      }
+      const container = link.closest("[data-revision-links]");
+      link.remove();
+      if (!container) return;
+      const left = Array.from(container.querySelectorAll("[data-card-link]"));
+      if (left.length === 0) {
+        container.closest("[data-revisions]")?.remove();
+        return;
+      }
+      left.forEach((remaining, index) => { remaining.textContent = left.length > 1 ? "修正版 " + (index + 1) : "修正版"; });
+      container.replaceChildren(...left.flatMap((remaining, index) => index === 0 ? [remaining] : ["、", remaining]));
+    });
+  };
+
   document.querySelectorAll("[data-delete-feedback]").forEach((button) => {
     button.addEventListener("click", async () => {
       if (button.disabled) return;
@@ -354,6 +393,7 @@ function importFailureMessage(failed) {
         const { response, result } = await inboxRequest("/feedback/" + encodeURIComponent(button.dataset.feedbackId), { method: "DELETE" });
         if (!response.ok) throw new Error(result.error || "削除できませんでした。");
         card.remove();
+        forgetLinkedCard(button.dataset.feedbackId);
         applyFilters();
         showInboxMessage("フィードバックを削除しました。");
         if (panel && !panel.hidden) textInput?.focus();
