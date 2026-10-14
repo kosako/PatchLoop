@@ -640,6 +640,10 @@ async function submitComment(event) {
   clearFormError(form);
 
   if (state.editingId) {
+    // Another tab may have exported, revised or deleted it meanwhile (#139):
+    // decide on the current state. A deletion closed the form and said so.
+    syncFeedbackFromOtherTab();
+    if (!state.editingId) return;
     const target = state.feedback.find((item) => item.id === state.editingId);
     const changed = target && (target.comment !== comment || target.reviewer !== reviewer);
     if (target && hasLeftDevice(target)) {
@@ -684,9 +688,10 @@ async function submitComment(event) {
 }
 
 // Whether the comment has left this device: exported, or the receiver (or
-// Slack) may hold it, or edited here after it did (localEdited, before #121).
+// Slack) may hold it, including a delivery cut off before its answer, or
+// edited here after it did (localEdited, before #121).
 function hasLeftDevice(item) {
-  return Boolean(item.exported || item.localEdited || receiverHasCopy(item.delivery));
+  return Boolean(item.exported || item.localEdited || item.delivery?.interrupted || receiverHasCopy(item.delivery));
 }
 
 // Lists, saves, announces and delivers a new comment, or the revision of one
@@ -1168,15 +1173,19 @@ function saveFeedbackList() {
   refreshTooltip();
 }
 
-// Returns whether a delivery left pending was taken as cut off.
+// Returns whether a delivery left pending was taken as cut off. Draws only
+// when something changed, so the list keeps its elements (and focus) otherwise.
 function syncFeedbackFromOtherTab() {
-  applyStorageChanges(syncPersistedFeedback());
+  const changes = syncPersistedFeedback();
+  applyStorageChanges(changes);
   // A delivery the other tab started, or one it has finished.
   const settled = settlePendingDeliveries();
-  // Comments edited there change the marker labels and the tooltip too.
-  renumberMarkers();
-  refreshTooltip();
-  renderFeedbackList();
+  if (changes.changed || settled) {
+    // Comments edited there change the marker labels and the tooltip too.
+    renumberMarkers();
+    refreshTooltip();
+    renderFeedbackList();
+  }
   return settled;
 }
 
@@ -1189,9 +1198,16 @@ function applyStorageChanges({ added, removed }) {
   added.slice().reverse().forEach(addCommittedMarker);
   if (added.length || removed.length) renumberMarkers();
   if (state.editingId && removed.includes(state.editingId)) {
-    state.editingId = null;
-    closeCommentForm();
-    showWidgetNotice("このコメントは別のタブで削除されました。", true);
+    // Replaced by a revision there (#121): the edit goes on with the revision.
+    const revision = state.feedback.find((item) => item.replaces === state.editingId);
+    if (revision) {
+      state.editingId = revision.id;
+      showWidgetNotice("このコメントは別のタブで修正版になりました。保存すると、その修正版を直します。");
+    } else {
+      state.editingId = null;
+      closeCommentForm();
+      showWidgetNotice("このコメントは別のタブで削除されました。", true);
+    }
   }
 }
 
@@ -1561,10 +1577,13 @@ function renderFeedbackList() {
   const clear = root.querySelector("[data-pl-clear]");
   if (clear) clear.hidden = state.feedback.length === 0;
   if (clear) clear.disabled = state.feedback.some((item) => item.delivery?.pending);
-  // A comment focused from its marker stays focused across the re-render
-  // below, which replaces every list item (a delivery reply, re-anchoring).
+  // A comment focused from its marker, or one of its buttons, stays focused
+  // across the re-render below, which replaces every list item (a delivery
+  // reply, re-anchoring, another tab's save).
   const focused = document.activeElement;
-  const focusedId = list.contains(focused) && focused.matches("[data-feedback-id]") ? focused.dataset.feedbackId : null;
+  const focusedItem = list.contains(focused) ? focused.closest("[data-feedback-id]") : null;
+  const focusedId = focusedItem ? focusedItem.dataset.feedbackId : null;
+  const focusedButton = focusedItem && focused !== focusedItem ? LIST_BUTTONS.find((selector) => focused.matches(selector)) : null;
   if (state.feedback.length === 0) {
     list.innerHTML = '<p class="pl-feedback-list-empty">まだコメントはありません。<br />「コメントを追加」から最初の気づきを残しましょう。</p>';
     return;
@@ -1606,8 +1625,14 @@ function renderFeedbackList() {
       `;
     })
     .join("");
-  if (focusedId) feedbackListItem(focusedId)?.focus({ preventScroll: true });
+  if (focusedId) {
+    const item = feedbackListItem(focusedId);
+    const button = focusedButton ? item?.querySelector(focusedButton) : null;
+    (button && !button.disabled ? button : item)?.focus({ preventScroll: true });
+  }
 }
+
+const LIST_BUTTONS = ["[data-pl-retry]", "[data-pl-edit]", "[data-pl-delete]"];
 
 // Matched by comparing dataset values, as a stored id is not safe to put in a
 // selector unescaped.
@@ -1773,6 +1798,8 @@ async function retryFeedback(id) {
 }
 
 function startEditFeedback(id) {
+  // What another tab did to it decides how the edit goes (#121).
+  syncFeedbackFromOtherTab();
   const item = state.feedback.find((f) => f.id === id);
   if (!item) return;
   if (state.active) setFeedbackMode(false);

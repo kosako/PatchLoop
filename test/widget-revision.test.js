@@ -109,3 +109,52 @@ test("another tab takes the revision's place for the original when it hears of i
   assert.equal(pins(b).length, 1);
   assert.equal(pins(b)[0][0], b.api.getFeedback()[0].id);
 });
+
+// --- another tab revised or deleted the comment being edited (#139) --------
+
+function twoTabs() {
+  const storage = new Map();
+  const a = widgetHarness({ storage });
+  a.init(DOWNLOAD);
+  return { storage, a, open() { const b = widgetHarness({ storage }); b.init(DOWNLOAD); return b; } };
+}
+const savedFeedback = (storage) => JSON.parse([...storage.entries()].find(([key]) => key.startsWith("patchloop:feedback:"))[1]).feedback;
+const formHidden = (w) => w.document.querySelector("[data-pl-comment]").hidden;
+
+test("an edit started before another tab exported and revised the comment goes on to that revision, heard or not", async () => {
+  for (const heard of [true, false]) {
+    const { storage, a, open } = twoTabs();
+    await a.submit("Original");
+    const originalId = a.api.getFeedback()[0].id;
+    const b = open();
+    listItem(b, "Original").querySelector("[data-pl-edit]").click();
+
+    exportAll(a);
+    await edit(a, "Original", "Revised in A");
+    if (heard) {
+      const key = [...storage.keys()].find((name) => name.startsWith("patchloop:feedback:"));
+      b.window.emit("storage", { key });
+      assert.equal(formHidden(b), false);
+      assert.equal(notice(b), "このコメントは別のタブで修正版になりました。保存すると、その修正版を直します。");
+    }
+    await b.submit("Edited in B", { captureTarget: false });
+
+    assert.deepEqual(savedFeedback(storage).map((item) => [item.comment, item.replaces]), [["Edited in B", originalId]]);
+    assert.deepEqual(Array.from(b.api.getFeedback(), (item) => item.comment), ["Edited in B"]);
+  }
+});
+
+test("an edit of a comment another tab deleted does not bring it back as a revision", async () => {
+  const { storage, a, open } = twoTabs();
+  await a.submit("Exported, then deleted");
+  exportAll(a);
+  const b = open();
+  listItem(b, "Exported, then deleted").querySelector("[data-pl-edit]").click();
+  listItem(a, "Exported, then deleted").querySelector("[data-pl-delete]").click();
+
+  await b.submit("Too late", { captureTarget: false });
+  assert.equal(formHidden(b), true);
+  assert.equal(notice(b), "このコメントは別のタブで削除されました。");
+  assert.deepEqual(savedFeedback(storage), []);
+  assert.equal(b.api.getFeedback().length, 0);
+});

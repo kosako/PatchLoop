@@ -187,7 +187,7 @@ test("editing an unconfirmed Slack delivery posts the revision to Slack too (#12
   assert.deepEqual([w.api.getFeedback().length, w.api.getFeedback()[0].replaces, w.api.getFeedback()[0].comment], [1, originalId, "Revised"]);
 });
 
-test("restoring an interrupted delivery preserves the comment and offers recovery", async () => {
+test("restoring an interrupted delivery preserves the comment and offers recovery; an edit then goes as a revision (#121)", async () => {
   let complete;
   const w = widgetHarness({ replies: [() => new Promise((resolve) => { complete = resolve; })] });
   w.init({ persistFeedback: true });
@@ -205,15 +205,14 @@ test("restoring an interrupted delivery preserves the comment and offers recover
   await submission;
   assert.equal(notice.textContent, noticeBefore);
   assert.equal(w.api.getFeedback()[0].delivery.ok, null);
+  // The receiver may hold the cut-off delivery, so the edit is a revision.
+  const originalId = w.api.getFeedback()[0].id;
   w.document.querySelector("[data-pl-edit]").click();
   await w.submit("Corrected before retry", { captureTarget: false });
-  assert.notEqual(w.api.getFeedback()[0].localEdited, true);
-  const retry = w.document.querySelector("[data-pl-retry]");
-  assert.ok(retry);
-  await Promise.all(w.document.querySelector("[data-pl-list]").emit("click", { target: retry }));
   assert.equal(w.requests.length, 2);
-  assert.equal(JSON.parse(w.requests[1].body).comment, "Corrected before retry");
-  assert.equal(w.api.getFeedback()[0].delivery.ok, true);
+  assert.deepEqual([JSON.parse(w.requests[1].body).comment, JSON.parse(w.requests[1].body).replaces], ["Corrected before retry", originalId]);
+  assert.deepEqual([w.api.getFeedback().length, w.api.getFeedback()[0].delivery.ok], [1, true]);
+  assert.equal(w.document.querySelector("[data-pl-retry]"), null);
 });
 
 test("interrupted Slack delivery keeps its destination and does not offer a duplicate-prone retry", async () => {
