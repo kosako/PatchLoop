@@ -94,3 +94,54 @@ test("byteLength falls back to the base64 length without Blob", () => {
     globalThis.window.Blob = original;
   }
 });
+
+// --- elements the page does not render (#122) ------------------------------
+
+const { blankUnrenderedElements } = require("../widget/src/screenshot.js");
+
+// A small element tree: enough of the DOM for the walk over document order.
+function el(tagName, attributes = {}, children = [], extra = {}) {
+  const node = {
+    tagName: tagName.toUpperCase(), attributes: { ...attributes }, children, ...extra,
+    getAttributeNames() { return Object.keys(this.attributes); },
+    removeAttribute(name) { delete this.attributes[name]; },
+    replaceChildren() { this.children = []; },
+    contains(other) { return other === this || this.children.some((child) => child.contains(other)); }
+  };
+  return node;
+}
+function inOrder(root) {
+  return root.children.flatMap((child) => [child, ...inOrder(child)]);
+}
+function clone(node) {
+  return el(node.tagName, node.attributes, node.children.map(clone), node.content ? { content: { children: [...node.content.children], replaceChildren() { this.children = []; } } } : {});
+}
+
+test("an element the page does not render is emptied in the snapshot, keeping the attributes stylesheets match on", () => {
+  const inner = el("span", { "data-note": "kept-data" }, [el("b", {}, [])]);
+  const hidden = el("div", { class: "panel", hidden: "", "data-state": "closed", title: "hidden title", "aria-label": "hidden label" }, [inner]);
+  const input = el("input", { type: "hidden", name: "form-check", value: "hidden-value" });
+  const template = el("template", { id: "row" }, [], { content: { children: [el("p")], replaceChildren() { this.children = []; } } });
+  const style = el("style", {}, [el("text")]);
+  const shown = el("p", { title: "visible title" }, [el("em")]);
+  const body = el("body", {}, [hidden, input, template, style, shown]);
+  const copy = clone(body);
+  const unrendered = new Set([hidden, inner, input, template, style]);
+
+  blankUnrenderedElements(inOrder(body), inOrder(copy), (node) => unrendered.has(node));
+  const [hiddenCopy, inputCopy, templateCopy, styleCopy, shownCopy] = copy.children;
+  assert.deepEqual([hiddenCopy.children.length, hiddenCopy.attributes], [0, { class: "panel", hidden: "", "data-state": "closed" }]);
+  assert.deepEqual(inputCopy.attributes, { type: "hidden", name: "form-check" });
+  assert.deepEqual([templateCopy.children.length, templateCopy.content.children.length, templateCopy.attributes], [0, 0, { id: "row" }]);
+  // A <style> in the body still styles the page; what is shown stays as it is.
+  assert.equal(styleCopy.children.length, 1);
+  assert.deepEqual([shownCopy.children.length, shownCopy.attributes], [1, { title: "visible title" }]);
+});
+
+test("a page and clone that do not line up are left alone", () => {
+  const body = el("body", {}, [el("div", { title: "t" }, [el("i")])]);
+  const copy = clone(body);
+  blankUnrenderedElements(inOrder(body), [], () => true);
+  blankUnrenderedElements(inOrder(body).slice(1), inOrder(copy), () => true);
+  assert.deepEqual([copy.children[0].children.length, copy.children[0].attributes], [1, { title: "t" }]);
+});

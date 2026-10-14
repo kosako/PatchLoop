@@ -63,6 +63,7 @@ export function captureScreenshot(target) {
 
 function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scrollX, scrollY, overlay, uncaptured }) {
   const bodyClone = document.body.cloneNode(true);
+  blankUnrenderedElements(document.body.querySelectorAll("*"), bodyClone.querySelectorAll("*"), isUnrendered);
   bodyClone.querySelectorAll(`${WIDGET_NODES}, script`).forEach((node) => node.remove());
   bodyClone.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
 
@@ -134,6 +135,43 @@ function uncapturedFor(viewport, overlay) {
 // on the selected spot while the screenshot is taken, so they are skipped.
 function topPageElementAt(x, y) {
   return document.elementsFromPoint(x, y).find((element) => !element.closest(WIDGET_NODES)) || null;
+}
+
+// Elements the page does not render (display:none: the hidden attribute, a
+// <template>, a closed <dialog>, anything a stylesheet hides that way) are
+// emptied in the snapshot (#122): their text, children and the attributes
+// that carry content go, so the image file holds no more of them than the
+// screen shows. The element itself stays, with the attributes stylesheets
+// match on, so sibling selectors (+, ~, :nth-child) still apply as on the page.
+// originals and clones are the elements of the page's body and of its clone,
+// in the same document order.
+const KEPT_UNRENDERED_TAGS = new Set(["STYLE", "LINK"]);
+const CONTENT_ATTRIBUTES = new Set(["value", "title", "alt", "placeholder", "href", "src", "srcset", "action", "formaction", "content", "label", "aria-label", "aria-description", "aria-valuetext"]);
+
+export function blankUnrenderedElements(originals, clones, unrendered) {
+  if (originals.length !== clones.length) return;
+  let blankedOriginal = null;
+  for (let index = 0; index < originals.length; index += 1) {
+    const original = originals[index];
+    // Inside an element already emptied: gone with it.
+    if (blankedOriginal && blankedOriginal.contains(original)) continue;
+    if (KEPT_UNRENDERED_TAGS.has(original.tagName) || !unrendered(original)) continue;
+    blankedOriginal = original;
+    const clone = clones[index];
+    clone.replaceChildren();
+    if (clone.content && typeof clone.content.replaceChildren === "function") clone.content.replaceChildren();
+    clone.getAttributeNames().forEach((name) => {
+      if (CONTENT_ATTRIBUTES.has(name.toLowerCase())) clone.removeAttribute(name);
+    });
+  }
+}
+
+// offsetParent is null for every element display:none hides (and for some
+// rendered ones, fixed-position for one, which the computed style tells
+// apart). SVG elements have none and stay.
+function isUnrendered(element) {
+  if (element.offsetParent !== null) return false;
+  return window.getComputedStyle(element).display === "none";
 }
 
 function visibleBackground(value) {
