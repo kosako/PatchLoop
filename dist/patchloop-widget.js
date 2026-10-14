@@ -919,6 +919,7 @@ function captureScreenshot(target) {
 function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scrollX, scrollY, overlay, uncaptured }) {
   const bodyClone = document.body.cloneNode(true);
   blankUnrenderedElements(document.body.querySelectorAll("*"), bodyClone.querySelectorAll("*"), isUnrendered);
+  removeComments(bodyClone);
   bodyClone.querySelectorAll(`${WIDGET_NODES}, script`).forEach((node) => node.remove());
   bodyClone.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
 
@@ -994,36 +995,69 @@ function topPageElementAt(x, y) {
 
 // Elements the page does not render (display:none: the hidden attribute, a
 // <template>, a closed <dialog>, anything a stylesheet hides that way) are
-// emptied in the snapshot (#122): their text, children and the attributes
-// that carry content go, so the image file holds no more of them than the
-// screen shows. The element itself stays, with the attributes stylesheets
-// match on, so sibling selectors (+, ~, :nth-child) still apply as on the page.
+// emptied in the snapshot (#122), so the image file holds no more of them than
+// the screen shows: every text in them becomes one space, the attributes that
+// carry content become empty, comments and <template> contents go. Their
+// elements and other attributes stay, and an emptied text is still there, so
+// what the page's selectors match is unchanged (:empty, :nth-child, +, ~,
+// :has(), [value]); only a selector on such an attribute's value could differ.
+// Kept as they are: SVG, whose hidden parts are often icons that <use> draws
+// elsewhere; <option> and <optgroup>, as a <select> shows its selected option
+// even when hidden; <style> and <link>, which style the page.
 // originals and clones are the elements of the page's body and of its clone,
 // in the same document order.
-const KEPT_UNRENDERED_TAGS = new Set(["STYLE", "LINK"]);
-const CONTENT_ATTRIBUTES = new Set(["value", "title", "alt", "placeholder", "href", "src", "srcset", "action", "formaction", "content", "label", "aria-label", "aria-description", "aria-valuetext"]);
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+const KEPT_UNRENDERED_TAGS = new Set(["STYLE", "LINK", "OPTION", "OPTGROUP"]);
+const CONTENT_ATTRIBUTES = new Set([
+  "value", "title", "alt", "placeholder", "href", "src", "srcset", "srcdoc", "data", "poster", "cite", "longdesc",
+  "action", "formaction", "ping", "download", "content", "label", "aria-label", "aria-description", "aria-valuetext"
+]);
 
 function blankUnrenderedElements(originals, clones, unrendered) {
   if (originals.length !== clones.length) return;
   let blankedOriginal = null;
   for (let index = 0; index < originals.length; index += 1) {
     const original = originals[index];
-    // Inside an element already emptied: gone with it.
+    // Inside an element already emptied, with it.
     if (blankedOriginal && blankedOriginal.contains(original)) continue;
-    if (KEPT_UNRENDERED_TAGS.has(original.tagName) || !unrendered(original)) continue;
+    if (original.namespaceURI === SVG_NAMESPACE || KEPT_UNRENDERED_TAGS.has(original.tagName) || !unrendered(original)) continue;
     blankedOriginal = original;
-    const clone = clones[index];
-    clone.replaceChildren();
-    if (clone.content && typeof clone.content.replaceChildren === "function") clone.content.replaceChildren();
-    clone.getAttributeNames().forEach((name) => {
-      if (CONTENT_ATTRIBUTES.has(name.toLowerCase())) clone.removeAttribute(name);
-    });
+    blankSubtree(clones[index]);
   }
 }
 
-// offsetParent is null for every element display:none hides (and for some
-// rendered ones, fixed-position for one, which the computed style tells
-// apart). SVG elements have none and stay.
+function blankSubtree(element) {
+  element.getAttributeNames().forEach((name) => {
+    if (CONTENT_ATTRIBUTES.has(name.toLowerCase())) element.setAttribute(name, "");
+  });
+  if (element.content && typeof element.content.replaceChildren === "function") element.content.replaceChildren();
+  Array.from(element.childNodes).forEach((child) => {
+    if (child.nodeType === TEXT_NODE) {
+      if (child.data) child.data = " ";
+    } else if (child.nodeType === COMMENT_NODE) {
+      child.remove();
+    } else if (child.nodeType === ELEMENT_NODE && child.namespaceURI !== SVG_NAMESPACE) {
+      blankSubtree(child);
+    }
+  });
+}
+
+const ELEMENT_NODE = 1;
+const TEXT_NODE = 3;
+const COMMENT_NODE = 8;
+
+// Comments are never rendered (#122); with or without them, selectors match
+// the same.
+function removeComments(node) {
+  Array.from(node.childNodes).forEach((child) => {
+    if (child.nodeType === COMMENT_NODE) child.remove();
+    else if (child.nodeType === ELEMENT_NODE) removeComments(child);
+  });
+}
+
+// offsetParent is null for every HTML element display:none hides (and for
+// some rendered ones, fixed-position for one, which the computed style tells
+// apart). Elements without it (SVG, MathML) are left to blankUnrenderedElements.
 function isUnrendered(element) {
   if (element.offsetParent !== null) return false;
   return window.getComputedStyle(element).display === "none";
@@ -1265,7 +1299,7 @@ function base64Encode(value) {
   return btoa(binary);
 }
 
-return { captureScreenshot, uncapturedTouching, blankUnrenderedElements, snapshotBodyOffsetStyle, byteLength, base64Encode };
+return { captureScreenshot, uncapturedTouching, blankUnrenderedElements, removeComments, snapshotBodyOffsetStyle, byteLength, base64Encode };
 })();
 // --- widget/src/payload.js ---
 const __pl_widget_src_payload = (() => {

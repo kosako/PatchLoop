@@ -97,51 +97,114 @@ test("byteLength falls back to the base64 length without Blob", () => {
 
 // --- elements the page does not render (#122) ------------------------------
 
-const { blankUnrenderedElements } = require("../widget/src/screenshot.js");
+const { blankUnrenderedElements, removeComments } = require("../widget/src/screenshot.js");
 
-// A small element tree: enough of the DOM for the walk over document order.
-function el(tagName, attributes = {}, children = [], extra = {}) {
+const HTML_NS = "http://www.w3.org/1999/xhtml";
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+// A small node tree: enough of the DOM for the walk over document order.
+function adopt(parent, children) {
+  children.forEach((child) => {
+    child.remove = function () { parent.childNodes = parent.childNodes.filter((node) => node !== this); };
+  });
+  return children;
+}
+function text(data) { return { nodeType: 3, data }; }
+function comment(data) { return { nodeType: 8, data }; }
+function el(tagName, attributes = {}, children = [], { namespaceURI = HTML_NS, content = null } = {}) {
   const node = {
-    tagName: tagName.toUpperCase(), attributes: { ...attributes }, children, ...extra,
+    nodeType: 1, tagName: namespaceURI === HTML_NS ? tagName.toUpperCase() : tagName, namespaceURI, attributes: { ...attributes }, content,
     getAttributeNames() { return Object.keys(this.attributes); },
-    removeAttribute(name) { delete this.attributes[name]; },
-    replaceChildren() { this.children = []; },
-    contains(other) { return other === this || this.children.some((child) => child.contains(other)); }
+    setAttribute(name, value) { this.attributes[name] = value; },
+    contains(other) { return other === this || this.childNodes.some((child) => child.nodeType === 1 && child.contains(other)); }
   };
+  node.childNodes = adopt(node, children);
   return node;
 }
-function inOrder(root) {
-  return root.children.flatMap((child) => [child, ...inOrder(child)]);
+function fragment(children) {
+  return { childNodes: children, replaceChildren() { this.childNodes = []; } };
 }
-function clone(node) {
-  return el(node.tagName, node.attributes, node.children.map(clone), node.content ? { content: { children: [...node.content.children], replaceChildren() { this.children = []; } } } : {});
+function copyOf(node) {
+  if (node.nodeType !== 1) return { ...node };
+  return el(node.tagName, node.attributes, node.childNodes.map(copyOf), { namespaceURI: node.namespaceURI, content: node.content && fragment([...node.content.childNodes]) });
+}
+const elementsOf = (root) => root.childNodes.filter((node) => node.nodeType === 1).flatMap((child) => [child, ...elementsOf(child)]);
+const texts = (node) => node.childNodes.flatMap((child) => child.nodeType === 3 ? [child.data] : child.nodeType === 1 ? texts(child) : []);
+const kinds = (node) => node.childNodes.map((child) => child.nodeType === 1 ? child.tagName : child.nodeType);
+
+function snapshot(body, unrendered) {
+  const copy = copyOf(body);
+  blankUnrenderedElements(elementsOf(body), elementsOf(copy), (node) => unrendered.has(node));
+  return copy;
 }
 
-test("an element the page does not render is emptied in the snapshot, keeping the attributes stylesheets match on", () => {
-  const inner = el("span", { "data-note": "kept-data" }, [el("b", {}, [])]);
-  const hidden = el("div", { class: "panel", hidden: "", "data-state": "closed", title: "hidden title", "aria-label": "hidden label" }, [inner]);
+test("an element the page does not render keeps its elements and attributes, but no text, content attributes or comments", () => {
+  const inner = el("span", { "data-note": "kept", title: "inner title" }, [text("hidden inner text")]);
+  const hidden = el("div", { class: "panel", hidden: "", "data-state": "closed", title: "hidden title", "aria-label": "hidden label" },
+    [text("hidden text"), comment("hidden comment"), inner, el("i")]);
+  const shown = el("p", { title: "visible title" }, [text("visible text")]);
+  const body = el("body", {}, [hidden, shown]);
+  const copy = snapshot(body, new Set([hidden, inner]));
+  const [hiddenCopy, shownCopy] = copy.childNodes;
+
+  // Every element stays (selectors such as :nth-child, + and :has() match as
+  // before), each text keeps being a text (:empty too), and the attributes
+  // stay present, empty when they carry content.
+  assert.deepEqual(kinds(hiddenCopy), [3, "SPAN", "I"]);
+  assert.deepEqual(texts(hiddenCopy), [" ", " "]);
+  assert.deepEqual(hiddenCopy.attributes, { class: "panel", hidden: "", "data-state": "closed", title: "", "aria-label": "" });
+  assert.deepEqual(hiddenCopy.childNodes[1].attributes, { "data-note": "kept", title: "" });
+  assert.deepEqual(hiddenCopy.childNodes[2].childNodes, []);
+  assert.deepEqual([shownCopy.attributes, texts(shownCopy)], [{ title: "visible title" }, ["visible text"]]);
+});
+
+test("content kept in attributes goes too: input values, srcdoc, object data, links", () => {
   const input = el("input", { type: "hidden", name: "form-check", value: "hidden-value" });
-  const template = el("template", { id: "row" }, [], { content: { children: [el("p")], replaceChildren() { this.children = []; } } });
-  const style = el("style", {}, [el("text")]);
-  const shown = el("p", { title: "visible title" }, [el("em")]);
-  const body = el("body", {}, [hidden, input, template, style, shown]);
-  const copy = clone(body);
-  const unrendered = new Set([hidden, inner, input, template, style]);
+  const frame = el("iframe", { hidden: "", srcdoc: "<p>inline document</p>" });
+  const object = el("object", { data: "https://example.test/file.pdf", type: "application/pdf" });
+  const link = el("a", { href: "https://example.test/path" }, [text("link")]);
+  const wrapper = el("div", { style: "display:none" }, [object, link]);
+  const copy = snapshot(el("body", {}, [input, frame, wrapper]), new Set([input, frame, wrapper, object, link]));
+  const [inputCopy, frameCopy, wrapperCopy] = copy.childNodes;
+  assert.deepEqual(inputCopy.attributes, { type: "hidden", name: "form-check", value: "" });
+  assert.deepEqual(frameCopy.attributes, { hidden: "", srcdoc: "" });
+  assert.deepEqual(wrapperCopy.childNodes.map((child) => child.attributes), [{ data: "", type: "application/pdf" }, { href: "" }]);
+});
 
-  blankUnrenderedElements(inOrder(body), inOrder(copy), (node) => unrendered.has(node));
-  const [hiddenCopy, inputCopy, templateCopy, styleCopy, shownCopy] = copy.children;
-  assert.deepEqual([hiddenCopy.children.length, hiddenCopy.attributes], [0, { class: "panel", hidden: "", "data-state": "closed" }]);
-  assert.deepEqual(inputCopy.attributes, { type: "hidden", name: "form-check" });
-  assert.deepEqual([templateCopy.children.length, templateCopy.content.children.length, templateCopy.attributes], [0, 0, { id: "row" }]);
-  // A <style> in the body still styles the page; what is shown stays as it is.
-  assert.equal(styleCopy.children.length, 1);
-  assert.deepEqual([shownCopy.children.length, shownCopy.attributes], [1, { title: "visible title" }]);
+test("a <template>'s content goes; <style>, <link>, <option> and <optgroup> stay as the page shows them", () => {
+  const template = el("template", { id: "row" }, [], { content: fragment([el("p", {}, [text("template text")])]) });
+  const style = el("style", {}, [text(".x { color: red }")]);
+  const placeholder = el("option", { hidden: "", selected: "", value: "" }, [text("Choose one")]);
+  const group = el("optgroup", { hidden: "", label: "Group" }, [el("option", {}, [text("In the group")])]);
+  const select = el("select", {}, [placeholder, group, el("option", { value: "jp" }, [text("Japan")])]);
+  const copy = snapshot(el("body", {}, [template, style, select]), new Set([template, style, placeholder, group]));
+  const [templateCopy, styleCopy, selectCopy] = copy.childNodes;
+  assert.deepEqual([templateCopy.content.childNodes, templateCopy.attributes], [[], { id: "row" }]);
+  assert.deepEqual(texts(styleCopy), [".x { color: red }"]);
+  assert.deepEqual(texts(selectCopy), ["Choose one", "In the group", "Japan"]);
+  assert.deepEqual(selectCopy.childNodes[0].attributes, { hidden: "", selected: "", value: "" });
+});
+
+test("SVG stays as it is, hidden or inside a hidden element: <use> may draw it elsewhere", () => {
+  const sprite = el("svg", { style: "display:none" }, [el("symbol", { id: "icon" }, [el("text", {}, [text("icon label")], { namespaceURI: SVG_NS })], { namespaceURI: SVG_NS })], { namespaceURI: SVG_NS });
+  const nested = el("svg", {}, [el("use", { href: "#icon" }, [], { namespaceURI: SVG_NS })], { namespaceURI: SVG_NS });
+  const wrapper = el("div", { hidden: "" }, [text("wrapper text"), nested]);
+  const copy = snapshot(el("body", {}, [sprite, wrapper]), new Set([sprite, wrapper, nested]));
+  const [spriteCopy, wrapperCopy] = copy.childNodes;
+  assert.deepEqual(texts(spriteCopy), ["icon label"]);
+  assert.deepEqual([texts(wrapperCopy), wrapperCopy.childNodes[1].childNodes[0].attributes], [[" "], { href: "#icon" }]);
+});
+
+test("comments go from the whole snapshot", () => {
+  const body = el("body", {}, [comment("top"), el("p", {}, [text("shown"), comment("inside")])]);
+  removeComments(body);
+  assert.deepEqual([kinds(body), kinds(body.childNodes[0])], [["P"], [3]]);
 });
 
 test("a page and clone that do not line up are left alone", () => {
-  const body = el("body", {}, [el("div", { title: "t" }, [el("i")])]);
-  const copy = clone(body);
-  blankUnrenderedElements(inOrder(body), [], () => true);
-  blankUnrenderedElements(inOrder(body).slice(1), inOrder(copy), () => true);
-  assert.deepEqual([copy.children[0].children.length, copy.children[0].attributes], [1, { title: "t" }]);
+  const body = el("body", {}, [el("div", { title: "t" }, [text("kept")])]);
+  const copy = copyOf(body);
+  blankUnrenderedElements(elementsOf(body), [], () => true);
+  blankUnrenderedElements(elementsOf(body).slice(1), elementsOf(copy), () => true);
+  assert.deepEqual([copy.childNodes[0].attributes, texts(copy)], [{ title: "t" }, ["kept"]]);
 });
