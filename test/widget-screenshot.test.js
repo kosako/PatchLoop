@@ -115,6 +115,7 @@ function el(tagName, attributes = {}, children = [], { namespaceURI = HTML_NS, c
   const node = {
     nodeType: 1, tagName: namespaceURI === HTML_NS ? tagName.toUpperCase() : tagName, namespaceURI, attributes: { ...attributes }, content,
     getAttributeNames() { return Object.keys(this.attributes); },
+    getAttribute(name) { return Object.hasOwn(this.attributes, name) ? this.attributes[name] : null; },
     setAttribute(name, value) { this.attributes[name] = value; },
     contains(other) { return other === this || this.childNodes.some((child) => child.nodeType === 1 && child.contains(other)); }
   };
@@ -183,6 +184,30 @@ test("a <template>'s content goes; <style>, <link>, <option> and <optgroup> stay
   assert.deepEqual(texts(styleCopy), [".x { color: red }"]);
   assert.deepEqual(texts(selectCopy), ["Choose one", "In the group", "Japan"]);
   assert.deepEqual(selectCopy.childNodes[0].attributes, { hidden: "", selected: "", value: "" });
+});
+
+test("inside a hidden element, <style> and <link> stay: they style the page", () => {
+  const style = el("style", {}, [text(".x { color: red }")]);
+  const link = el("link", { rel: "stylesheet", href: "/late.css" });
+  const wrapper = el("div", { hidden: "" }, [text("wrapper text"), style, link]);
+  const copy = snapshot(el("body", {}, [wrapper]), new Set([wrapper, style, link]));
+  const [, styleCopy, linkCopy] = copy.childNodes[0].childNodes;
+  assert.deepEqual(texts(styleCopy), [".x { color: red }"]);
+  assert.deepEqual(linkCopy.attributes, { rel: "stylesheet", href: "/late.css" });
+});
+
+test("form controls keep what decides the form's validity: values, placeholders, textarea and select contents", () => {
+  const field = el("input", { type: "text", required: "", value: "ok", placeholder: "Name", title: "field title" });
+  const token = el("input", { type: "hidden", value: "hidden-value" });
+  const note = el("textarea", { required: "" }, [text("typed note")]);
+  const choice = el("select", { required: "" }, [el("option", { value: "jp" }, [text("Japan")])]);
+  const form = el("form", { hidden: "" }, [field, token, note, choice, el("button", {}, [text("Send")])]);
+  const copy = snapshot(el("body", {}, [form]), new Set([form, field, token, note, choice]));
+  const [fieldCopy, tokenCopy, noteCopy, choiceCopy, buttonCopy] = copy.childNodes[0].childNodes;
+  assert.deepEqual(fieldCopy.attributes, { type: "text", required: "", value: "ok", placeholder: "Name", title: "" });
+  assert.deepEqual(tokenCopy.attributes, { type: "hidden", value: "" });
+  assert.deepEqual([texts(noteCopy), texts(choiceCopy), choiceCopy.childNodes[0].attributes], [["typed note"], ["Japan"], { value: "jp" }]);
+  assert.deepEqual(texts(buttonCopy), [" "]);
 });
 
 test("SVG stays as it is, hidden or inside a hidden element: <use> may draw it elsewhere", () => {

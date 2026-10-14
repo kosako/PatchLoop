@@ -143,7 +143,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 
 ### 画像のファイルに入るもの
 
-画面画像（SVG）のファイルには、ページの body を複製した DOM が入ります。描かれない要素（`display:none` のもの。`hidden` 属性・`<template>`・閉じた `<dialog>`・スタイルシートで隠したものなど）の中は、文字を空白 1 つにし、内容を持つ属性（`value`・`href`・`src`・`srcdoc`・`data`・`title`・`alt`・`placeholder`・`aria-label` など）の値を空にし、`<template>` の中身を除きます。要素とほかの属性（`class`・`id`・`data-*`・`type` など）は残すので、ページのセレクタ（`:empty`・`:nth-child`・`+`・`~`・`:has()`・`[value]` など）の当たり方は変わりません（空にした属性の値で比べるセレクタだけは変わりえます）。次のものは描かれなくても、そのまま入ります: SVG の中（隠した SVG はアイコンなどとして `<use>` でほかの場所に描かれることがあるため）、`<option>` と `<optgroup>`（`<select>` は隠した option でも選択中なら表示するため）、`<style>` と `<link>`。HTML のコメントは入れません。`script` と widget 自身も入れません。配置に効くので、画面の外の部分（スクロールした先など）、`visibility: hidden` や透明・重なりで見えない要素、見えている要素の属性（リンク先など）もそのまま入ります。
+画面画像（SVG）のファイルには、ページの body を複製した DOM が入ります。描かれない要素（`display:none` のもの。`hidden` 属性・`<template>`・閉じた `<dialog>`・スタイルシートで隠したものなど）の中は、文字を空白 1 つにし、内容を持つ属性（`value`・`href`・`src`・`srcdoc`・`data`・`title`・`alt`・`placeholder`・`aria-label` など）の値を空にし、`<template>` の中身を除きます。要素とほかの属性（`class`・`id`・`data-*`・`type` など）は残すので、ページのセレクタ（`:empty`・`:nth-child`・`+`・`~`・`:has()`・`[value]` など）の当たり方は変わりません（空にした属性の値で比べるセレクタだけは変わりえます）。次のものは描かれなくても、隠れた要素の中にあっても、そのまま入ります: SVG の中（隠した SVG はアイコンなどとして `<use>` でほかの場所に描かれることがあるため）、`<style>` と `<link>`（ページを装飾するため）、フォームの値（`<select>` とその option、`<textarea>` の中身、`type="hidden"` 以外の `<input>` の `value` と `placeholder`。フォームの検証の状態や `:placeholder-shown` が見えている部分のスタイルを決めることがあり、`<select>` は隠した option でも選択中なら表示するため）。`type="hidden"` の `<input>` の `value` は空にします。HTML のコメントは入れません。`script` と widget 自身も入れません。配置に効くので、画面の外の部分（スクロールした先など）、`visibility: hidden` や透明・重なりで見えない要素、見えている要素の属性（リンク先など）もそのまま入ります。
 
 ### スクリーンショットに写らないもの
 

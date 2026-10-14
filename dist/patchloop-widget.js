@@ -1001,13 +1001,17 @@ function topPageElementAt(x, y) {
 // elements and other attributes stay, and an emptied text is still there, so
 // what the page's selectors match is unchanged (:empty, :nth-child, +, ~,
 // :has(), [value]); only a selector on such an attribute's value could differ.
-// Kept as they are: SVG, whose hidden parts are often icons that <use> draws
-// elsewhere; <option> and <optgroup>, as a <select> shows its selected option
-// even when hidden; <style> and <link>, which style the page.
+// Kept as they are, wherever they are: SVG, whose hidden parts are often
+// icons that <use> draws elsewhere; <style> and <link>, which style the page;
+// form controls' values (<select> and its options, <textarea>, an <input>'s
+// value and placeholder unless it is type=hidden), which decide the form's
+// validity and :placeholder-shown, so styles on what is shown, and a <select>
+// shows its selected option even when that option is hidden.
 // originals and clones are the elements of the page's body and of its clone,
 // in the same document order.
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
-const KEPT_UNRENDERED_TAGS = new Set(["STYLE", "LINK", "OPTION", "OPTGROUP"]);
+const KEPT_UNRENDERED_TAGS = new Set(["STYLE", "LINK", "SELECT", "OPTION", "OPTGROUP", "TEXTAREA"]);
+const FORM_STATE_ATTRIBUTES = new Set(["value", "placeholder"]);
 const CONTENT_ATTRIBUTES = new Set([
   "value", "title", "alt", "placeholder", "href", "src", "srcset", "srcdoc", "data", "poster", "cite", "longdesc",
   "action", "formaction", "ping", "download", "content", "label", "aria-label", "aria-description", "aria-valuetext"
@@ -1020,15 +1024,17 @@ function blankUnrenderedElements(originals, clones, unrendered) {
     const original = originals[index];
     // Inside an element already emptied, with it.
     if (blankedOriginal && blankedOriginal.contains(original)) continue;
-    if (original.namespaceURI === SVG_NAMESPACE || KEPT_UNRENDERED_TAGS.has(original.tagName) || !unrendered(original)) continue;
+    if (!isBlankable(original) || !unrendered(original)) continue;
     blankedOriginal = original;
     blankSubtree(clones[index]);
   }
 }
 
 function blankSubtree(element) {
+  const keepsFormState = element.tagName === "INPUT" && String(element.getAttribute("type") || "").toLowerCase() !== "hidden";
   element.getAttributeNames().forEach((name) => {
-    if (CONTENT_ATTRIBUTES.has(name.toLowerCase())) element.setAttribute(name, "");
+    const key = name.toLowerCase();
+    if (CONTENT_ATTRIBUTES.has(key) && !(keepsFormState && FORM_STATE_ATTRIBUTES.has(key))) element.setAttribute(name, "");
   });
   if (element.content && typeof element.content.replaceChildren === "function") element.content.replaceChildren();
   Array.from(element.childNodes).forEach((child) => {
@@ -1036,10 +1042,14 @@ function blankSubtree(element) {
       if (child.data) child.data = " ";
     } else if (child.nodeType === COMMENT_NODE) {
       child.remove();
-    } else if (child.nodeType === ELEMENT_NODE && child.namespaceURI !== SVG_NAMESPACE) {
+    } else if (child.nodeType === ELEMENT_NODE && isBlankable(child)) {
       blankSubtree(child);
     }
   });
+}
+
+function isBlankable(element) {
+  return element.namespaceURI !== SVG_NAMESPACE && !KEPT_UNRENDERED_TAGS.has(element.tagName);
 }
 
 const ELEMENT_NODE = 1;
