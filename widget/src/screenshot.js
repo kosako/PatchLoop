@@ -267,10 +267,11 @@ export function removeComments(node) {
 
 // offsetParent is null for every HTML element display:none hides (and for
 // some rendered ones, fixed-position for one, which the computed style tells
-// apart). Elements without it (SVG, MathML) are left to blankUnrenderedElements.
-function isUnrendered(element) {
-  if (element.offsetParent !== null) return false;
-  return window.getComputedStyle(element).display === "none";
+// apart). Elements without it (MathML; SVG is kept before this) are told by the
+// computed style alone.
+export function isUnrendered(element, computedStyle = (node) => window.getComputedStyle(node)) {
+  if (element.offsetParent) return false;
+  return computedStyle(element).display === "none";
 }
 
 function visibleBackground(value) {

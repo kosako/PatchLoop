@@ -97,7 +97,7 @@ test("byteLength falls back to the base64 length without Blob", () => {
 
 // --- elements the page does not render (#122) ------------------------------
 
-const { blankText, blankUnrenderedElements, browserTextDirection, clearTemplateContents, removeComments } = require("../widget/src/screenshot.js");
+const { blankText, blankUnrenderedElements, browserTextDirection, clearTemplateContents, isUnrendered, removeComments } = require("../widget/src/screenshot.js");
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -264,6 +264,21 @@ test("the direction comes from the browser's own rules when it has :dir(), the a
   // Without :dir() (an older browser): by script.
   const old = browserTextDirection({ createElement: () => ({ setAttribute() {}, matches() { throw new SyntaxError("unknown pseudo-class"); } }) });
   assert.deepEqual(["\u0640مرحبا", "Ⅰ", "123"].map(old), ["rtl", "ltr", null]);
+});
+
+test("an element without offsetParent (MathML) is judged by its computed display, so a hidden one is emptied", () => {
+  const style = (display) => () => ({ display });
+  assert.equal(isUnrendered({ offsetParent: undefined }, style("none")), true);
+  assert.equal(isUnrendered({ offsetParent: undefined }, style("block math")), false);
+  assert.equal(isUnrendered({ offsetParent: null }, style("none")), true);
+  assert.equal(isUnrendered({ offsetParent: null }, style("block")), false);
+  assert.equal(isUnrendered({ offsetParent: {} }, () => { throw new Error("not asked"); }), false);
+
+  const MATHML_NS = "http://www.w3.org/1998/Math/MathML";
+  const mtext = el("mtext", { title: "math title" }, [text("math text")], { namespaceURI: MATHML_NS });
+  const math = el("math", { style: "display:none" }, [mtext], { namespaceURI: MATHML_NS });
+  const copy = snapshot(el("body", {}, [math]), new Set([math, mtext]));
+  assert.deepEqual([texts(copy), copy.childNodes[0].childNodes[0].attributes], [["\u200e"], { title: "" }]);
 });
 
 test("comments go from the whole snapshot", () => {
