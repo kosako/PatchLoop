@@ -97,7 +97,7 @@ test("byteLength falls back to the base64 length without Blob", () => {
 
 // --- elements the page does not render (#122) ------------------------------
 
-const { blankUnrenderedElements, removeComments } = require("../widget/src/screenshot.js");
+const { blankUnrenderedElements, clearTemplateContents, removeComments } = require("../widget/src/screenshot.js");
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -172,7 +172,7 @@ test("content kept in attributes goes too: input values, srcdoc, object data, li
   assert.deepEqual(wrapperCopy.childNodes.map((child) => child.attributes), [{ data: "", type: "application/pdf" }, { href: "" }]);
 });
 
-test("a <template>'s content goes; <style>, <link>, <option> and <optgroup> stay as the page shows them", () => {
+test("hidden <style>, <link>, <option> and <optgroup> stay as the page shows them; a hidden <template> keeps its attributes", () => {
   const template = el("template", { id: "row" }, [], { content: fragment([el("p", {}, [text("template text")])]) });
   const style = el("style", {}, [text(".x { color: red }")]);
   const placeholder = el("option", { hidden: "", selected: "", value: "" }, [text("Choose one")]);
@@ -180,7 +180,7 @@ test("a <template>'s content goes; <style>, <link>, <option> and <optgroup> stay
   const select = el("select", {}, [placeholder, group, el("option", { value: "jp" }, [text("Japan")])]);
   const copy = snapshot(el("body", {}, [template, style, select]), new Set([template, style, placeholder, group]));
   const [templateCopy, styleCopy, selectCopy] = copy.childNodes;
-  assert.deepEqual([templateCopy.content.childNodes, templateCopy.attributes], [[], { id: "row" }]);
+  assert.deepEqual(templateCopy.attributes, { id: "row" });
   assert.deepEqual(texts(styleCopy), [".x { color: red }"]);
   assert.deepEqual(texts(selectCopy), ["Choose one", "In the group", "Japan"]);
   assert.deepEqual(selectCopy.childNodes[0].attributes, { hidden: "", selected: "", value: "" });
@@ -218,6 +218,18 @@ test("SVG stays as it is, hidden or inside a hidden element: <use> may draw it e
   const [spriteCopy, wrapperCopy] = copy.childNodes;
   assert.deepEqual(texts(spriteCopy), ["icon label"]);
   assert.deepEqual([texts(wrapperCopy), wrapperCopy.childNodes[1].childNodes[0].attributes], [[" "], { href: "#icon" }]);
+});
+
+test("every <template>'s content goes, also inside a kept <select> and outside hidden elements", () => {
+  const inSelect = el("template", {}, [], { content: fragment([el("option", { value: "inner" }, [text("template option")])]) });
+  const shown = el("template", { id: "shown" }, [], { content: fragment([el("p", {}, [text("template text")])]) });
+  const wrapper = el("div", { hidden: "" }, [el("select", {}, [inSelect, el("option", {}, [text("Plain")])])]);
+  const body = el("body", {}, [wrapper, shown]);
+  const copy = snapshot(body, new Set([wrapper, shown]));
+  const templates = elementsOf(copy).filter((node) => node.tagName === "TEMPLATE");
+  clearTemplateContents(templates);
+  assert.deepEqual(templates.map((template) => template.content.childNodes), [[], []]);
+  assert.deepEqual(texts(copy.childNodes[0]), ["Plain"]);
 });
 
 test("comments go from the whole snapshot", () => {

@@ -64,6 +64,7 @@ export function captureScreenshot(target) {
 function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scrollX, scrollY, overlay, uncaptured }) {
   const bodyClone = document.body.cloneNode(true);
   blankUnrenderedElements(document.body.querySelectorAll("*"), bodyClone.querySelectorAll("*"), isUnrendered);
+  clearTemplateContents(bodyClone.querySelectorAll("template"));
   removeComments(bodyClone);
   bodyClone.querySelectorAll(`${WIDGET_NODES}, script`).forEach((node) => node.remove());
   bodyClone.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
@@ -142,7 +143,7 @@ function topPageElementAt(x, y) {
 // <template>, a closed <dialog>, anything a stylesheet hides that way) are
 // emptied in the snapshot (#122), so the image file holds no more of them than
 // the screen shows: every text in them becomes one space, the attributes that
-// carry content become empty, comments and <template> contents go. Their
+// carry content become empty, comments go. Their
 // elements and other attributes stay, and an emptied text is still there, so
 // what the page's selectors match is unchanged (:empty, :nth-child, +, ~,
 // :has(), [value]); only a selector on such an attribute's value could differ.
@@ -181,7 +182,6 @@ function blankSubtree(element) {
     const key = name.toLowerCase();
     if (CONTENT_ATTRIBUTES.has(key) && !(keepsFormState && FORM_STATE_ATTRIBUTES.has(key))) element.setAttribute(name, "");
   });
-  if (element.content && typeof element.content.replaceChildren === "function") element.content.replaceChildren();
   Array.from(element.childNodes).forEach((child) => {
     if (child.nodeType === TEXT_NODE) {
       if (child.data) child.data = " ";
@@ -200,6 +200,14 @@ function isBlankable(element) {
 const ELEMENT_NODE = 1;
 const TEXT_NODE = 3;
 const COMMENT_NODE = 8;
+
+// A <template>'s content is never rendered, wherever the template is, and
+// selectors never reach into it (#122).
+export function clearTemplateContents(templates) {
+  Array.from(templates).forEach((template) => {
+    if (template.content && typeof template.content.replaceChildren === "function") template.content.replaceChildren();
+  });
+}
 
 // Comments are never rendered (#122); with or without them, selectors match
 // the same.
