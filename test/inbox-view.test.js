@@ -97,3 +97,48 @@ test("a card's details tell none, not checked and failed apart, and say nothing 
     assert.doesNotMatch(renderInbox([feedback({ screenshot })]), /写らない要素/);
   }
 });
+
+// A comment edited after it left the widget comes as a revision with replaces (#121).
+// Card anchors are the id's UTF-16 code units in hex.
+const anchor = (id) => `feedback-${Array.from({ length: id.length }, (_, index) => id.charCodeAt(index).toString(16).padStart(4, "0")).join("")}`;
+
+function card(html, id) {
+  const start = html.indexOf(`id="${anchor(id)}"`);
+  assert.notEqual(start, -1, `card ${id}`);
+  return html.slice(start, html.indexOf("</article>", start));
+}
+
+test("a replaced comment links to its revisions, and a revision to the comment it replaces (#121)", () => {
+  const html = renderInbox([
+    feedback({ id: "rev2", comment: "Second try", replaces: "orig" }),
+    feedback({ id: "rev1", comment: "First try", replaces: "orig" }),
+    feedback({ id: "orig", comment: "Original" })
+  ]);
+  const links = [...card(html, "orig").matchAll(/<a href="#([^"]+)" data-card-link data-link-role="revision" data-target-id="([^"]+)">([^<]+)<\/a>/g)].map((match) => match.slice(1));
+  assert.deepEqual(links, [[anchor("rev2"), "rev2", "修正版 1"], [anchor("rev1"), "rev1", "修正版 2"]]);
+  assert.match(card(html, "orig"), /このコメントには修正版があります: <span data-revision-links>/);
+  assert.ok(card(html, "rev1").includes(`<a href="#${anchor("orig")}" data-card-link data-link-role="original" data-target-id="orig">元のコメント</a>の修正版です。`));
+  assert.match(card(html, "rev1"), /<dt>Replaces<\/dt><dd><code>orig<\/code><\/dd>/);
+  assert.doesNotMatch(card(html, "rev1"), /修正版があります/);
+});
+
+test("a revision whose original is not in this inbox says so, and odd ids stay text", () => {
+  const html = renderInbox([feedback({ id: "a\"b<c", comment: "Revised", replaces: "gone<script>" })]);
+  assert.match(html, /元のコメント（<code>gone&lt;script&gt;<\/code>、この受信箱には無い）の修正版です。/);
+  assert.ok(html.includes(`id="${anchor("a\"b<c")}"`));
+});
+
+test("card anchors are plain ASCII and distinct for any id, and never throw (#121)", () => {
+  const ids = ["a\rb", "a\nb", "x y", "\ud800lone", "日本"];
+  const html = renderInbox([...ids.map((id) => feedback({ id, comment: id })), feedback({ id: "rev", replaces: "\ud800lone" })]);
+  const anchors = [...html.matchAll(/<article class="card" id="([^"]+)"/g)].map((match) => match[1]);
+  assert.equal(new Set(anchors).size, ids.length + 1);
+  for (const value of anchors) assert.match(value, /^feedback-[0-9a-f]+$/);
+  assert.ok(html.includes(`href="#${anchor("\ud800lone")}"`));
+});
+
+test("a stored replaces that is not a string does not break the card", () => {
+  const html = renderInbox([feedback({ id: "odd", comment: "Kept", replaces: { toString: 1 } })]);
+  assert.match(html, /data-status-select data-feedback-id="odd"/);
+  assert.doesNotMatch(html, /修正版/);
+});

@@ -1063,10 +1063,12 @@ function gitHubIssueBody(item) {
   lines.push(`| Reviewer | ${mdTableCell(item.reviewer || "(no name)")} |`);
   lines.push(`| Page | ${pageLink ? `[${mdTableCell(page.title || page.url)}](${pageLink})` : mdTableCell(page.title || page.url || "(unknown)")} |`);
   lines.push(`| Target | ${mdTableCell(formatTarget(target))} |`);
-  lines.push(`| Selector | \`${String(target.selector || "(none)").replaceAll("\`", "'")}\` |`);
+  lines.push(`| Selector | ${mdTableCode(target.selector || "(none)")} |`);
   lines.push(`| Viewport | ${mdTableCell(formatViewport(env.viewport))} |`);
   lines.push(`| Created | ${mdTableCell(item.createdAt || item.receivedAt || "(unknown)")} |`);
-  lines.push(`| Feedback ID | \`${String(item.id || "-").replaceAll("\`", "'")}\` |`);
+  lines.push(`| Feedback ID | ${mdTableCode(item.id || "-")} |`);
+  // A revision of an earlier comment (#121), which stays as it was received.
+  if (typeof item.replaces === "string" && item.replaces) lines.push(`| Replaces | ${mdTableCode(item.replaces)} (an earlier version of this comment) |`);
   lines.push("");
 
   if (target.text) {
@@ -1145,6 +1147,19 @@ function uncapturedIssueSentence(summary) {
 
 function mdTableCell(value) {
   return String(value ?? "").replaceAll("|", "\\|").replaceAll("\n", " ");
+}
+
+// A table cell shown as code, for any value: an HTML <code> in which the
+// ASCII punctuation that could end the cell or row (| and backslashes before
+// it) or read as Markdown or HTML, and control characters, are character
+// references, so the value renders as itself. Line breaks become spaces. The
+// cell keeps the first 300 characters, so the references cannot push the body
+// past GitHub's limit; the raw payload below has the whole value.
+const MD_TABLE_CODE_ESCAPED = /[\x00-\x1f\x7f!"$%&'()*+,;<=>?@[\\\]^_`{|}~]/;
+
+function mdTableCode(value) {
+  const text = truncateText(String(value ?? "").replace(/\r\n?|\n/g, " "), 300);
+  return `<code>${Array.from(text, (char) => MD_TABLE_CODE_ESCAPED.test(char) ? `&#${char.codePointAt(0)};` : char).join("")}</code>`;
 }
 
 // Collects the request body (bounded by MAX_BODY_BYTES, or a route's own
@@ -2039,7 +2054,9 @@ function buildSlackMessage(item) {
         { type: "mrkdwn", text: `*Target*\n${slackEscape(formatTarget(target))}` },
         { type: "mrkdwn", text: `*Viewport*\n${slackEscape(formatViewport(env.viewport))}` },
         { type: "mrkdwn", text: `*Selector*\n${formatSlackCode(target.selector || "(none)")}` },
-        { type: "mrkdwn", text: `*Created*\n${slackEscape(item.createdAt || item.receivedAt || "(unknown)")}` }
+        { type: "mrkdwn", text: `*Created*\n${slackEscape(item.createdAt || item.receivedAt || "(unknown)")}` },
+        // A revision of an earlier comment (#121).
+        ...(typeof item.replaces === "string" && item.replaces ? [{ type: "mrkdwn", text: `*Replaces*\n${formatSlackCode(item.replaces)}` }] : [])
       ]
     }
   ];
