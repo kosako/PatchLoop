@@ -441,3 +441,13 @@ test("a delete finds the links to it by the card's anchor, not by an id a browse
   assert.equal(noteOf(ui, "rev-lf", "[data-revision-of]").textContent, "元のコメント（a\nb、この受信箱には無い）の修正版です。");
 });
 
+test("a card shown in place of a malformed record keeps its anchor, so links reach it and its delete updates them", async () => {
+  const malformed = feedback("bad", { environment: { viewport: { width: { toString: 1 }, height: 1 } } });
+  const ui = inboxHarness([feedback("rev", { replaces: "bad" }), malformed], { replies: [{ ok: true, body: { ok: true } }] });
+  const fallback = ui.get('[data-delete-feedback][data-feedback-id="bad"]').closest("[data-card]");
+  assert.match(fallback.textContent, /詳細を表示できません/);
+  assert.equal(ui.get("[data-card-link]", ui.card("rev")).getAttribute("href"), "#" + fallback.getAttribute("id"));
+  await ui.click(ui.get('[data-delete-feedback][data-feedback-id="bad"]'));
+  assert.equal(noteOf(ui, "rev", "[data-revision-of]").textContent, "元のコメント（bad、この受信箱には無い）の修正版です。");
+});
+

@@ -430,7 +430,7 @@ test("POST /feedback stores a revision as its own comment, keeping the one it re
   }
 });
 
-test("a revision says what it replaces in Slack and in its GitHub Issue (#121)", async (t) => {
+test("a revision says what it replaces in Slack and in its GitHub Issue, whose table cells stay short (#121)", async (t) => {
   const github = await startMockGitHub(t, (res) => {
     res.writeHead(201, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ number: 8, html_url: "https://github.com/acme/demo/issues/8" }));
@@ -456,6 +456,20 @@ test("a revision says what it replaces in Slack and in its GitHub Issue (#121)",
   const original = feedbackPayload("pl_not_a_revision");
   assert.equal((await postJson(`${receiver.baseUrl}/feedback`, original)).status, 201);
   assert.doesNotMatch(JSON.stringify(slack.requests[1].body.blocks), /Replaces/);
+
+  // Whatever a value holds, its table cell stays short, so a long selector
+  // cannot push the body past GitHub's limit (65,536 characters).
+  for (const [index, selector] of [`#${"日".repeat(10000)}`, `#${"*".repeat(10000)}`].entries()) {
+    const payload = feedbackPayload(`pl_long_selector_${index}`);
+    payload.target.selector = selector;
+    assert.equal((await postJson(`${receiver.baseUrl}/feedback`, payload)).status, 201);
+    assert.equal((await postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {})).status, 201);
+    const body = github.requests[index + 1].body.body;
+    const row = body.split("\n").find((line) => line.startsWith("| Selector |"));
+    assert.ok(row.length < 2000, `selector row of ${row.length} characters`);
+    assert.ok(body.length < 65536, `body of ${body.length} characters`);
+  }
+  assert.match(github.requests[1].body.body.split("\n").find((line) => line.startsWith("| Selector |")), /<code>#日日日/);
 });
 
 test("POST /import stores bundle feedback and strips delivery metadata", async (t) => {
