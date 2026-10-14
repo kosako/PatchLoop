@@ -1242,7 +1242,9 @@ const { pageUrlForSharing } = __pl_widget_src_url;
 // so the receiver can branch on it as the schema grows for team use.
 // v2 adds the optional sourceContext block (#96).
 // v3 adds screenshot.uncaptured (#148).
-const PAYLOAD_SCHEMA_VERSION = 3;
+// v4 adds replaces, on the revision of a comment edited after it left this
+// device (#121).
+const PAYLOAD_SCHEMA_VERSION = 4;
 
 function buildPayload(comment, reviewer, target, includeScreenshot = state.options.captureScreenshot) {
   return {
@@ -1285,6 +1287,36 @@ function buildPayload(comment, reviewer, target, includeScreenshot = state.optio
   };
 }
 
+// The revision of a comment edited after it left this device (#121): a new
+// comment with the same place, page, image and creation time, pointing at the
+// one it replaces, so what the receiver holds is never rewritten and an import
+// does not skip the edit as a duplicate. previousIds, kept on this device only
+// (LOCAL_ONLY_KEYS), lists every earlier version, so an edit another tab began
+// on any of them follows to the latest revision.
+function buildRevision(original, comment, reviewer) {
+  const revision = JSON.parse(JSON.stringify(original));
+  ["delivery", "exported", "exportedAt", "exportedFileName", "localEdited"].forEach((key) => delete revision[key]);
+  return {
+    ...revision,
+    schemaVersion: PAYLOAD_SCHEMA_VERSION,
+    id: generateFeedbackId(),
+    replaces: original.id,
+    previousIds: [...(Array.isArray(original.previousIds) ? original.previousIds : []), original.id],
+    comment,
+    reviewer
+  };
+}
+
+// Kept with a comment on this device, never sent or exported.
+const LOCAL_ONLY_KEYS = ["previousIds"];
+
+// The payload as it leaves this device.
+function outgoingPayload(item) {
+  const copy = { ...item };
+  LOCAL_ONLY_KEYS.forEach((key) => delete copy[key]);
+  return copy;
+}
+
 // Date.now() alone collides across tabs/reviewers within the same
 // millisecond, which also collides marker Map keys and orphans nodes.
 function generateFeedbackId() {
@@ -1294,7 +1326,7 @@ function generateFeedbackId() {
   return `pl_${Date.now()}_${random}`;
 }
 
-return { buildPayload };
+return { buildPayload, buildRevision, LOCAL_ONLY_KEYS, outgoingPayload };
 })();
 // --- widget/src/tab-sync.js ---
 const __pl_widget_src_tab_sync = (() => {
@@ -1565,10 +1597,17 @@ function persistFeedbackList() {
 }
 
 // Takes in what another tab of the page saved (#139); its version of a comment
-// wins, except the delivery state of one this tab is delivering.
+// wins, except the delivery state of one this tab is delivering. changed tells
+// whether the list differs at all afterwards.
 function syncPersistedFeedback() {
   if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return noChanges();
-  return mergeStoredFeedback("stored");
+  const before = listSignature(state.feedback);
+  const changes = mergeStoredFeedback("stored");
+  return { ...changes, changed: listSignature(state.feedback) !== before };
+}
+
+function listSignature(feedback) {
+  return JSON.stringify(feedback.map((item) => [item.id, feedbackFingerprints(item)]));
 }
 
 // Whether a storage change is to this page's saved list; a null key is a clear().
@@ -1614,7 +1653,7 @@ function fingerprintsOf(feedback) {
 }
 
 function noChanges() {
-  return { added: [], removed: [] };
+  return { added: [], removed: [], changed: false };
 }
 
 function clearPersistedFeedback() {
@@ -1780,7 +1819,7 @@ const { selectorFor, textFor } = __pl_widget_src_selector;
 const { resolveSourceContext } = __pl_widget_src_source_context;
 const { applyPageUrlRule, normalizeKeepQueryParams } = __pl_widget_src_url;
 const { DEFAULTS, state } = __pl_widget_src_state;
-const { buildPayload } = __pl_widget_src_payload;
+const { buildPayload, buildRevision, outgoingPayload } = __pl_widget_src_payload;
 const { uncapturedTouching } = __pl_widget_src_screenshot;
 const { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } = __pl_widget_src_inbox_status;
 const { isLocallyEdited, pendingAge, receiverHasCopy } = __pl_widget_src_delivery_state;
@@ -1942,7 +1981,7 @@ function renderShell() {
       <p class="pl-capture-note" data-pl-capture-note>画像には画面外の内容が含まれる場合があります。機密情報のあるページでは外してください。</p>
       <p class="pl-uncaptured-hint" id="pl-uncaptured-hint" data-pl-uncaptured-hint hidden></p>
       <p class="pl-form-error" id="pl-form-error" data-pl-form-error role="alert" hidden></p>
-      <p class="pl-edit-note" data-pl-edit-note hidden>編集はこの端末に保存されます。受信済みの内容や作成済みの Issue は更新されません。</p>
+      <p class="pl-edit-note" data-pl-edit-note hidden></p>
       <div class="pl-form-actions">
         <button type="button" data-pl-cancel>キャンセル</button>
         <button type="submit" data-pl-submit>コメントを送る</button>
@@ -2251,7 +2290,13 @@ function openCommentForm(point, options = {}) {
   const submit = form.querySelector("[data-pl-submit]");
   if (submit) submit.textContent = editing ? "変更を保存" : "コメントを送る";
   const editNote = form.querySelector("[data-pl-edit-note]");
-  if (editNote) editNote.hidden = !editing;
+  if (editNote) {
+    editNote.hidden = !editing;
+    const edited = editing ? state.feedback.find((item) => item.id === state.editingId) : null;
+    editNote.textContent = edited && hasLeftDevice(edited)
+      ? "書き出し済みか送信済みのコメントです。変更は元のコメントの修正版（新しいコメント）として届けます。受け取り済みの元のコメントや作成済みの Issue は変わりません。"
+      : "編集はこの端末に保存されます。";
+  }
   const screenshotField = form.querySelector("[data-pl-screenshot-field]");
   const captureNote = form.querySelector("[data-pl-capture-note]");
   if (screenshotField) screenshotField.hidden = editing || !state.options.captureScreenshot;
@@ -2410,20 +2455,29 @@ async function submitComment(event) {
   clearFormError(form);
 
   if (state.editingId) {
+    // Another tab may have exported, revised or deleted it meanwhile (#139):
+    // decide on the current state. A deletion closed the form and said so.
+    syncFeedbackFromOtherTab();
+    if (!state.editingId) return;
     const target = state.feedback.find((item) => item.id === state.editingId);
+    const changed = target && (target.comment !== comment || target.reviewer !== reviewer);
+    if (target && hasLeftDevice(target)) {
+      if (!changed && !isLocallyEdited(target)) {
+        state.editingId = null;
+        closeCommentForm();
+        showWidgetNotice("変更はありません。");
+        return;
+      }
+      // What left this device is not rewritten: the edit goes as a revision
+      // (#121). An earlier local change that never left goes with it.
+      saveReviewer(reviewer);
+      state.editingId = null;
+      await commitFeedback(buildRevision(target, comment, reviewer), root, target);
+      return;
+    }
     if (target) {
-      const changed = target.comment !== comment || target.reviewer !== reviewer;
       target.comment = comment;
       target.reviewer = reviewer;
-      // The receiver holds the comment when it took the post or answered 409
-      // (it already had that id), so an edit no longer matches the inbox (#187).
-      if (changed && (receiverHasCopy(target.delivery) || target.exported)) target.localEdited = true;
-      // Re-export the local change; receivers still deduplicate the original ID.
-      if (changed && target.exported) {
-        delete target.exported;
-        delete target.exportedAt;
-        delete target.exportedFileName;
-      }
       saveReviewer(reviewer);
       saveFeedbackList();
       renumberMarkers();
@@ -2433,7 +2487,7 @@ async function submitComment(event) {
     }
     state.editingId = null;
     closeCommentForm();
-    showWidgetNotice("変更をこの端末に保存しました。送信先の内容は更新されません。");
+    showWidgetNotice("変更をこの端末に保存しました。");
     return;
   }
 
@@ -2445,12 +2499,31 @@ async function submitComment(event) {
   // screenshot: the reviewer may have scrolled since choosing the spot.
   const placement = storedPlacement(state.pendingTarget);
   if (placement) refreshTargetCoordinates(state.pendingTarget, placement);
-  const payload = buildPayload(comment, reviewer, state.pendingTarget, includeScreenshot);
+  await commitFeedback(buildPayload(comment, reviewer, state.pendingTarget, includeScreenshot), root);
+}
+
+// Whether the comment has left this device: exported, or the receiver (or
+// Slack) may hold it, including a delivery cut off before its answer, or
+// edited here after it did (localEdited, before #121).
+function hasLeftDevice(item) {
+  return Boolean(item.exported || item.localEdited || item.delivery?.interrupted || receiverHasCopy(item.delivery));
+}
+
+// Lists, saves, announces and delivers a new comment, or the revision of one
+// that has left this device (#121), which takes the original's place in the
+// list and on the page.
+async function commitFeedback(payload, root, replacing = null) {
   const delivering = shouldDeliverFeedback();
-  if (delivering) payload.delivery = pendingDelivery();
-  state.feedback.unshift(payload);
-  finalizePendingMarker(payload);
-  if (delivering) state.deliveringIds.add(payload.id);
+  if (delivering) {
+    payload.delivery = pendingDelivery();
+    state.deliveringIds.add(payload.id);
+  }
+  if (replacing) {
+    replaceFeedback(replacing, payload);
+  } else {
+    state.feedback.unshift(payload);
+    finalizePendingMarker(payload);
+  }
   saveFeedbackList();
   renderFeedbackList();
   expandPanel();
@@ -2473,9 +2546,22 @@ async function submitComment(event) {
     saveFeedbackList();
     renderFeedbackList();
     showWidgetNotice(deliveryStatusText(payload.delivery), payload.delivery.ok === false);
+  } else if (state.options.deliveryMode === "download") {
+    showWidgetNotice(replacing ? "変更を元のコメントの修正版として保存しました。「未送信を書き出す」から共有できます。" : "コメントを保存しました。「未送信を書き出す」から共有できます。");
   } else {
-    showWidgetNotice(state.options.deliveryMode === "download" ? "コメントを保存しました。「未送信を書き出す」から共有できます。" : "コメントをこの端末に保存しました。外部には送信していません。");
+    showWidgetNotice(replacing ? "変更を元のコメントの修正版としてこの端末に保存しました。外部には送信していません。" : "コメントをこの端末に保存しました。外部には送信していません。");
   }
+}
+
+function replaceFeedback(original, revision) {
+  const index = state.feedback.indexOf(original);
+  if (index === -1) state.feedback.unshift(revision);
+  else state.feedback.splice(index, 1, revision);
+  state.feedbackMarkers.get(original.id)?.node?.remove();
+  state.feedbackMarkers.delete(original.id);
+  state.approximateIds.delete(original.id);
+  addCommittedMarker(revision);
+  renumberMarkers();
 }
 
 function showWidgetNotice(message, error = false) {
@@ -2499,7 +2585,7 @@ async function postFeedback(payload) {
     const response = await fetchWithTimeout(state.options.endpoint, {
       method: "POST",
       headers,
-      body: JSON.stringify(payload)
+      body: JSON.stringify(outgoingPayload(payload))
     });
     return logDelivery(payload, { ok: response.ok, status: response.status });
   } catch (error) {
@@ -2663,7 +2749,7 @@ function downloadFeedbackItems(items, pages = []) {
   const exportedAt = new Date().toISOString();
   try {
     const bundle = buildFeedbackBundle(items.map((item) => {
-      const copy = { ...item };
+      const copy = outgoingPayload(item);
       delete copy.exported;
       delete copy.exportedAt;
       delete copy.exportedFileName;
@@ -2902,15 +2988,19 @@ function saveFeedbackList() {
   refreshTooltip();
 }
 
-// Returns whether a delivery left pending was taken as cut off.
+// Returns whether a delivery left pending was taken as cut off. Draws only
+// when something changed, so the list keeps its elements (and focus) otherwise.
 function syncFeedbackFromOtherTab() {
-  applyStorageChanges(syncPersistedFeedback());
+  const changes = syncPersistedFeedback();
+  applyStorageChanges(changes);
   // A delivery the other tab started, or one it has finished.
   const settled = settlePendingDeliveries();
-  // Comments edited there change the marker labels and the tooltip too.
-  renumberMarkers();
-  refreshTooltip();
-  renderFeedbackList();
+  if (changes.changed || settled) {
+    // Comments edited there change the marker labels and the tooltip too.
+    renumberMarkers();
+    refreshTooltip();
+    renderFeedbackList();
+  }
   return settled;
 }
 
@@ -2923,9 +3013,17 @@ function applyStorageChanges({ added, removed }) {
   added.slice().reverse().forEach(addCommittedMarker);
   if (added.length || removed.length) renumberMarkers();
   if (state.editingId && removed.includes(state.editingId)) {
-    state.editingId = null;
-    closeCommentForm();
-    showWidgetNotice("このコメントは別のタブで削除されました。", true);
+    // Replaced by a revision there (#121), maybe more than once since this tab
+    // last heard: the edit goes on with the latest revision.
+    const revision = state.feedback.find((item) => item.replaces === state.editingId || (Array.isArray(item.previousIds) && item.previousIds.includes(state.editingId)));
+    if (revision) {
+      state.editingId = revision.id;
+      showWidgetNotice("このコメントは別のタブで修正版になりました。保存すると、その修正版を直します。");
+    } else {
+      state.editingId = null;
+      closeCommentForm();
+      showWidgetNotice("このコメントは別のタブで削除されました。", true);
+    }
   }
 }
 
@@ -3295,10 +3393,13 @@ function renderFeedbackList() {
   const clear = root.querySelector("[data-pl-clear]");
   if (clear) clear.hidden = state.feedback.length === 0;
   if (clear) clear.disabled = state.feedback.some((item) => item.delivery?.pending);
-  // A comment focused from its marker stays focused across the re-render
-  // below, which replaces every list item (a delivery reply, re-anchoring).
+  // A comment focused from its marker, or one of its buttons, stays focused
+  // across the re-render below, which replaces every list item (a delivery
+  // reply, re-anchoring, another tab's save).
   const focused = document.activeElement;
-  const focusedId = list.contains(focused) && focused.matches("[data-feedback-id]") ? focused.dataset.feedbackId : null;
+  const focusedItem = list.contains(focused) ? focused.closest("[data-feedback-id]") : null;
+  const focusedId = focusedItem ? focusedItem.dataset.feedbackId : null;
+  const focusedButton = focusedItem && focused !== focusedItem ? LIST_BUTTONS.find((selector) => focused.matches(selector)) : null;
   if (state.feedback.length === 0) {
     list.innerHTML = '<p class="pl-feedback-list-empty">まだコメントはありません。<br />「コメントを追加」から最初の気づきを残しましょう。</p>';
     return;
@@ -3340,8 +3441,14 @@ function renderFeedbackList() {
       `;
     })
     .join("");
-  if (focusedId) feedbackListItem(focusedId)?.focus({ preventScroll: true });
+  if (focusedId) {
+    const item = feedbackListItem(focusedId);
+    const button = focusedButton ? item?.querySelector(focusedButton) : null;
+    (button && !button.disabled ? button : item)?.focus({ preventScroll: true });
+  }
 }
+
+const LIST_BUTTONS = ["[data-pl-retry]", "[data-pl-edit]", "[data-pl-delete]"];
 
 // Matched by comparing dataset values, as a stored id is not safe to put in a
 // selector unescaped.
@@ -3507,6 +3614,8 @@ async function retryFeedback(id) {
 }
 
 function startEditFeedback(id) {
+  // What another tab did to it decides how the edit goes (#121).
+  syncFeedbackFromOtherTab();
   const item = state.feedback.find((f) => f.id === id);
   if (!item) return;
   if (state.active) setFeedbackMode(false);

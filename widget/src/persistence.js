@@ -139,10 +139,17 @@ export function persistFeedbackList() {
 }
 
 // Takes in what another tab of the page saved (#139); its version of a comment
-// wins, except the delivery state of one this tab is delivering.
+// wins, except the delivery state of one this tab is delivering. changed tells
+// whether the list differs at all afterwards.
 export function syncPersistedFeedback() {
   if (!state.options.persistFeedback || !state.options.feedbackStorageKey) return noChanges();
-  return mergeStoredFeedback("stored");
+  const before = listSignature(state.feedback);
+  const changes = mergeStoredFeedback("stored");
+  return { ...changes, changed: listSignature(state.feedback) !== before };
+}
+
+function listSignature(feedback) {
+  return JSON.stringify(feedback.map((item) => [item.id, feedbackFingerprints(item)]));
 }
 
 // Whether a storage change is to this page's saved list; a null key is a clear().
@@ -188,7 +195,7 @@ function fingerprintsOf(feedback) {
 }
 
 function noChanges() {
-  return { added: [], removed: [] };
+  return { added: [], removed: [], changed: false };
 }
 
 export function clearPersistedFeedback() {

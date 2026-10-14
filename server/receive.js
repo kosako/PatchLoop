@@ -1345,6 +1345,8 @@ function validateFeedbackPayload(payload) {
   if (payload.projectId != null) requireString(payload.projectId, "feedback.projectId");
   if (payload.demoId != null) requireString(payload.demoId, "feedback.demoId");
   if (payload.createdAt != null) requireString(payload.createdAt, "feedback.createdAt");
+  // The comment a revision replaces (#121): an id, like feedback.id.
+  if (payload.replaces != null) requireNonEmptyString(payload.replaces, "feedback.replaces");
   if (payload.page.url != null) requireString(payload.page.url, "feedback.page.url");
   if (payload.page.title != null) requireString(payload.page.title, "feedback.page.title");
   for (const field of ["browser", "language"]) {

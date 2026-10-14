@@ -463,6 +463,20 @@ test("rereading the saved list applies the URL rule as loading does, so a trim t
   assert.deepEqual(saved(storage).map((item) => item.page.url), [`${BASE}/page`, `${BASE}/page?step=2`]);
 });
 
+test("a button focused in the list stays focused when another tab's save redraws the list", async () => {
+  const storage = new Map();
+  const a = openTab(storage);
+  await add(a, "Focused");
+  const b = openTab(storage);
+  listItem(a, "Focused").querySelector("[data-pl-edit]").focus();
+  await add(b, "From B");
+  hear(a, keyOf(storage));
+  const active = a.document.activeElement;
+  assert.equal(active.matches("[data-pl-edit]"), true);
+  assert.equal(active.isConnected, true);
+  assert.equal(active.closest("[data-feedback-id]").dataset.feedbackId, a.api.getFeedback().find((item) => item.comment === "Focused").id);
+});
+
 // --- mergeFeedbackLists --------------------------------------------------
 
 const item = (id, createdAt, extra = {}) => ({ id, createdAt, comment: id, reviewer: "R", ...extra });

@@ -415,6 +415,21 @@ test("POST /feedback validates the sourceContext shape", async (t) => {
   assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
 });
 
+test("POST /feedback stores a revision as its own comment, keeping the one it replaces, and checks replaces (#121)", async (t) => {
+  const receiver = await startReceiver(t);
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_original"))).status, 201);
+  const revision = { ...feedbackPayload("pl_revision"), replaces: "pl_original", comment: "Corrected", schemaVersion: 4 };
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, revision)).status, 201);
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.deepEqual(stored.map((item) => [item.id, item.replaces ?? null]).sort(), [["pl_original", null], ["pl_revision", "pl_original"]]);
+
+  for (const replaces of ["", 12]) {
+    const response = await postJson(`${receiver.baseUrl}/feedback`, { ...feedbackPayload(`pl_bad_${typeof replaces}`), replaces });
+    assert.equal(response.status, 400);
+    assert.match(response.body.error, /feedback\.replaces must/);
+  }
+});
+
 test("POST /import stores bundle feedback and strips delivery metadata", async (t) => {
   const receiver = await startReceiver(t);
   const payload = {

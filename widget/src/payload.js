@@ -9,7 +9,9 @@ import { pageUrlForSharing } from "./url.js";
 // so the receiver can branch on it as the schema grows for team use.
 // v2 adds the optional sourceContext block (#96).
 // v3 adds screenshot.uncaptured (#148).
-const PAYLOAD_SCHEMA_VERSION = 3;
+// v4 adds replaces, on the revision of a comment edited after it left this
+// device (#121).
+const PAYLOAD_SCHEMA_VERSION = 4;
 
 export function buildPayload(comment, reviewer, target, includeScreenshot = state.options.captureScreenshot) {
   return {
@@ -50,6 +52,36 @@ export function buildPayload(comment, reviewer, target, includeScreenshot = stat
     screenshot: includeScreenshot ? captureScreenshot(target) : null,
     createdAt: new Date().toISOString()
   };
+}
+
+// The revision of a comment edited after it left this device (#121): a new
+// comment with the same place, page, image and creation time, pointing at the
+// one it replaces, so what the receiver holds is never rewritten and an import
+// does not skip the edit as a duplicate. previousIds, kept on this device only
+// (LOCAL_ONLY_KEYS), lists every earlier version, so an edit another tab began
+// on any of them follows to the latest revision.
+export function buildRevision(original, comment, reviewer) {
+  const revision = JSON.parse(JSON.stringify(original));
+  ["delivery", "exported", "exportedAt", "exportedFileName", "localEdited"].forEach((key) => delete revision[key]);
+  return {
+    ...revision,
+    schemaVersion: PAYLOAD_SCHEMA_VERSION,
+    id: generateFeedbackId(),
+    replaces: original.id,
+    previousIds: [...(Array.isArray(original.previousIds) ? original.previousIds : []), original.id],
+    comment,
+    reviewer
+  };
+}
+
+// Kept with a comment on this device, never sent or exported.
+export const LOCAL_ONLY_KEYS = ["previousIds"];
+
+// The payload as it leaves this device.
+export function outgoingPayload(item) {
+  const copy = { ...item };
+  LOCAL_ONLY_KEYS.forEach((key) => delete copy[key]);
+  return copy;
 }
 
 // Date.now() alone collides across tabs/reviewers within the same

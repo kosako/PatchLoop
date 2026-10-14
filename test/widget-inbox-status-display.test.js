@@ -98,9 +98,9 @@ test("a comment missing from the answer is marked as not in the inbox and stays 
   assert.equal(markerState(widget, ids.second).hidden, true);
 });
 
-test("a comment edited here after it was sent is not treated as finished (#147)", async () => {
+test("an edit after sending goes as a revision, which the inbox status of the original does not finish (#147, #121)", async () => {
   let id;
-  const widget = widgetHarness({ statusReply: (query) => answer([{ id, status: "fixed" }])(query) });
+  const widget = widgetHarness({ statusReply: (query) => answer(query.ids.map((asked) => ({ id: asked, status: asked === id ? "fixed" : "new" })))(query) });
   widget.init();
   await widget.submit("Before the edit");
   widget.api.setFeedbackMode(false);
@@ -108,7 +108,21 @@ test("a comment edited here after it was sent is not treated as finished (#147)"
   widget.document.querySelector("[data-pl-edit]").click();
   widget.document.querySelector("[data-pl-comment-text]").value = "After the edit";
   await Promise.all(widget.document.querySelector("[data-pl-comment]").emit("submit"));
-  assert.equal(widget.api.getFeedback()[0].localEdited, true);
+  const [revision] = widget.api.getFeedback().map((item) => item.id);
+  assert.equal(widget.api.getFeedback()[0].replaces, id);
+  await reopenPanel(widget);
+  assert.equal(markerState(widget, revision).hidden, false);
+  assert.equal(chipText(widget, revision), "受信箱: 未確認");
+});
+
+test("a comment with a local change made before revisions existed is not treated as finished (#147)", async () => {
+  let id;
+  const widget = widgetHarness({ statusReply: (query) => answer([{ id, status: "fixed" }])(query) });
+  widget.init();
+  await widget.submit("Before the edit");
+  widget.api.setFeedbackMode(false);
+  [id] = widget.api.getFeedback().map((item) => item.id);
+  widget.api.getFeedback()[0].localEdited = true;
   await reopenPanel(widget);
   assert.equal(markerState(widget, id).hidden, false);
   assert.equal(chipText(widget, id), "受信箱: 修正済み");

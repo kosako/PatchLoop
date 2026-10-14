@@ -4,21 +4,41 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const { widgetHarness } = require("../test-support/widget-dom.js");
 
-test("editing a delivered comment marks it as a local change without pretending to resend", async () => {
+test("editing a delivered comment sends a revision that takes its place in the list (#121)", async () => {
   const w = widgetHarness();
   w.init({ persistFeedback: true });
   await w.submit("Original");
-  const edit = w.document.querySelector("[data-pl-edit]");
-  edit.click();
-  assert.equal(w.document.querySelector("[data-pl-edit-note]").hidden, false);
+  const originalId = w.api.getFeedback()[0].id;
+  w.document.querySelector("[data-pl-edit]").click();
+  const note = w.document.querySelector("[data-pl-edit-note]");
+  assert.equal(note.hidden, false);
+  assert.match(note.textContent, /元のコメントの修正版/);
   await w.submit("Changed", { captureTarget: false });
-  assert.equal(w.requests.length, 1);
-  assert.equal(JSON.parse(w.requests[0].body).comment, "Original");
-  assert.equal(w.api.getFeedback()[0].localEdited, true);
-  assert.match(w.document.querySelector("[data-pl-list]").innerHTML, /ローカル変更・送信先には未反映/);
+
+  assert.equal(w.requests.length, 2);
+  const revision = JSON.parse(w.requests[1].body);
+  assert.deepEqual([revision.comment, revision.replaces, revision.schemaVersion], ["Changed", originalId, 4]);
+  assert.notEqual(revision.id, originalId);
+  assert.deepEqual(JSON.parse(w.requests[0].body).target, revision.target);
+  assert.equal(w.api.getFeedback().length, 1);
+  assert.deepEqual([w.api.getFeedback()[0].id, w.api.getFeedback()[0].delivery.ok], [revision.id, true]);
+  assert.equal(w.document.querySelectorAll("[data-patchloop-pin]").length, 1);
+  assert.doesNotMatch(w.document.querySelector("[data-pl-list]").innerHTML, /ローカル変更/);
   w.api.destroy();
   w.init({ persistFeedback: true });
-  assert.equal(w.api.getFeedback()[0].localEdited, true);
+  assert.deepEqual([w.api.getFeedback().length, w.api.getFeedback()[0].replaces], [1, originalId]);
+});
+
+test("editing a comment that has not left this device changes it in place", async () => {
+  const w = widgetHarness({ replies: [new Error("network")] });
+  w.init();
+  await w.submit("Not delivered");
+  const id = w.api.getFeedback()[0].id;
+  w.document.querySelector("[data-pl-edit]").click();
+  assert.equal(w.document.querySelector("[data-pl-edit-note]").textContent, "編集はこの端末に保存されます。");
+  await w.submit("Fixed before the retry", { captureTarget: false });
+  assert.equal(w.requests.length, 1);
+  assert.deepEqual([w.api.getFeedback()[0].id, w.api.getFeedback()[0].comment, w.api.getFeedback()[0].replaces], [id, "Fixed before the retry", undefined]);
 });
 
 test("failed delivery can be retried without adding a second local comment", async () => {
@@ -45,15 +65,15 @@ test("duplicate-ID response stays unresolved and does not offer blind repeated r
   assert.match(w.document.querySelector("[data-pl-notice]").textContent, /受信箱の内容を確認/);
 });
 
-test("editing a comment the receiver already held (409) marks it as a local change (#187)", async () => {
+test("editing a comment the receiver already held (409) sends it as a revision (#187, #121)", async () => {
   const w = widgetHarness({ replies: [{ ok: false, status: 409 }] });
   w.init();
   await w.submit("Original");
+  const originalId = w.api.getFeedback()[0].id;
   w.document.querySelector("[data-pl-edit]").click();
   await w.submit("Changed", { captureTarget: false });
-  assert.equal(w.requests.length, 1);
-  assert.equal(w.api.getFeedback()[0].localEdited, true);
-  assert.match(w.document.querySelector("[data-pl-list]").innerHTML, /ローカル変更・送信先には未反映/);
+  assert.equal(w.requests.length, 2);
+  assert.deepEqual([JSON.parse(w.requests[1].body).replaces, w.api.getFeedback()[0].delivery.ok], [originalId, true]);
   assert.equal(w.document.querySelector("[data-pl-retry]"), null);
 });
 
@@ -155,18 +175,19 @@ test("keyboard selection never targets PatchLoop point or area markers", async (
   }
 });
 
-test("editing an unconfirmed Slack delivery is explicitly a local-only change", async () => {
+test("editing an unconfirmed Slack delivery posts the revision to Slack too (#121)", async () => {
   const w = widgetHarness();
   w.init({ deliveryMode: "slack-webhook", slackWebhookUrl: "https://hooks.slack.test/example" });
   await w.submit("Original");
+  const originalId = w.api.getFeedback()[0].id;
   assert.equal(w.api.getFeedback()[0].delivery.ok, null);
   w.document.querySelector("[data-pl-edit]").click();
   await w.submit("Revised", { captureTarget: false });
-  assert.equal(w.requests.length, 1);
-  assert.equal(w.api.getFeedback()[0].localEdited, true);
+  assert.equal(w.requests.length, 2);
+  assert.deepEqual([w.api.getFeedback().length, w.api.getFeedback()[0].replaces, w.api.getFeedback()[0].comment], [1, originalId, "Revised"]);
 });
 
-test("restoring an interrupted delivery preserves the comment and offers recovery", async () => {
+test("restoring an interrupted delivery preserves the comment and offers recovery; an edit then goes as a revision (#121)", async () => {
   let complete;
   const w = widgetHarness({ replies: [() => new Promise((resolve) => { complete = resolve; })] });
   w.init({ persistFeedback: true });
@@ -184,15 +205,14 @@ test("restoring an interrupted delivery preserves the comment and offers recover
   await submission;
   assert.equal(notice.textContent, noticeBefore);
   assert.equal(w.api.getFeedback()[0].delivery.ok, null);
+  // The receiver may hold the cut-off delivery, so the edit is a revision.
+  const originalId = w.api.getFeedback()[0].id;
   w.document.querySelector("[data-pl-edit]").click();
   await w.submit("Corrected before retry", { captureTarget: false });
-  assert.notEqual(w.api.getFeedback()[0].localEdited, true);
-  const retry = w.document.querySelector("[data-pl-retry]");
-  assert.ok(retry);
-  await Promise.all(w.document.querySelector("[data-pl-list]").emit("click", { target: retry }));
   assert.equal(w.requests.length, 2);
-  assert.equal(JSON.parse(w.requests[1].body).comment, "Corrected before retry");
-  assert.equal(w.api.getFeedback()[0].delivery.ok, true);
+  assert.deepEqual([JSON.parse(w.requests[1].body).comment, JSON.parse(w.requests[1].body).replaces], ["Corrected before retry", originalId]);
+  assert.deepEqual([w.api.getFeedback().length, w.api.getFeedback()[0].delivery.ok], [1, true]);
+  assert.equal(w.document.querySelector("[data-pl-retry]"), null);
 });
 
 test("interrupted Slack delivery keeps its destination and does not offer a duplicate-prone retry", async () => {
