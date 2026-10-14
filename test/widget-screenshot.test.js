@@ -97,7 +97,7 @@ test("byteLength falls back to the base64 length without Blob", () => {
 
 // --- elements the page does not render (#122) ------------------------------
 
-const { blankText, blankUnrenderedElements, clearTemplateContents, removeComments } = require("../widget/src/screenshot.js");
+const { blankText, blankUnrenderedElements, browserTextDirection, clearTemplateContents, removeComments } = require("../widget/src/screenshot.js");
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -242,6 +242,28 @@ test("a hidden text keeps only the direction of its first strong character, whic
   const box = el("div", { dir: "auto" }, [hidden, el("span", {}, [text("A")])]);
   const copy = snapshot(el("body", {}, [box]), new Set([hidden]));
   assert.deepEqual(texts(copy.childNodes[0]), ["\u200f", "A"]);
+});
+
+test("the direction comes from the browser's own rules when it has :dir(), the approximation otherwise", () => {
+  // A stand-in for the browser: only "R" and "L" are strong here.
+  const probe = {
+    setAttribute() {}, textContent: "",
+    matches(selector) {
+      assert.equal(selector, ":dir(rtl)");
+      return /^[^RL]*R/.test(this.textContent.replace(/\u05D0/g, "R"));
+    }
+  };
+  const direction = browserTextDirection({ createElement: () => probe });
+  assert.deepEqual(["R first", "L first", "no strong 123"].map(direction), ["rtl", "ltr", null]);
+  assert.deepEqual(["R first", "L first", "no strong 123"].map((data) => blankText(data, direction)), ["\u200f", "\u200e", " "]);
+  const hidden = el("span", { hidden: "" }, [text("R hidden")]);
+  const body = el("body", {}, [el("div", { dir: "auto" }, [hidden])]);
+  const copy = copyOf(body);
+  blankUnrenderedElements(elementsOf(body), elementsOf(copy), (node) => node === hidden, direction);
+  assert.deepEqual(texts(copy), ["\u200f"]);
+  // Without :dir() (an older browser): by script.
+  const old = browserTextDirection({ createElement: () => ({ setAttribute() {}, matches() { throw new SyntaxError("unknown pseudo-class"); } }) });
+  assert.deepEqual(["\u0640مرحبا", "Ⅰ", "123"].map(old), ["rtl", "ltr", null]);
 });
 
 test("comments go from the whole snapshot", () => {

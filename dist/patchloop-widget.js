@@ -918,7 +918,7 @@ function captureScreenshot(target) {
 
 function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scrollX, scrollY, overlay, uncaptured }) {
   const bodyClone = document.body.cloneNode(true);
-  blankUnrenderedElements(document.body.querySelectorAll("*"), bodyClone.querySelectorAll("*"), isUnrendered);
+  blankUnrenderedElements(document.body.querySelectorAll("*"), bodyClone.querySelectorAll("*"), isUnrendered, browserTextDirection(document));
   clearTemplateContents(bodyClone.querySelectorAll("template"));
   removeComments(bodyClone);
   bodyClone.querySelectorAll(`${WIDGET_NODES}, script`).forEach((node) => node.remove());
@@ -1021,7 +1021,8 @@ const CONTENT_ATTRIBUTES = new Set([
   "action", "formaction", "ping", "download", "content", "label", "aria-label", "aria-description", "aria-valuetext"
 ]);
 
-function blankUnrenderedElements(originals, clones, unrendered) {
+// direction: a text's direction as dir="auto" sees it (see browserTextDirection).
+function blankUnrenderedElements(originals, clones, unrendered, direction = approximateTextDirection) {
   if (originals.length !== clones.length) return;
   let blankedOriginal = null;
   for (let index = 0; index < originals.length; index += 1) {
@@ -1030,11 +1031,11 @@ function blankUnrenderedElements(originals, clones, unrendered) {
     if (blankedOriginal && blankedOriginal.contains(original)) continue;
     if (!isBlankable(original) || !unrendered(original)) continue;
     blankedOriginal = original;
-    blankSubtree(clones[index]);
+    blankSubtree(clones[index], direction);
   }
 }
 
-function blankSubtree(element) {
+function blankSubtree(element, direction) {
   const keepsFormState = element.tagName === "INPUT" && String(element.getAttribute("type") || "").toLowerCase() !== "hidden";
   element.getAttributeNames().forEach((name) => {
     const key = name.toLowerCase();
@@ -1042,11 +1043,11 @@ function blankSubtree(element) {
   });
   Array.from(element.childNodes).forEach((child) => {
     if (child.nodeType === TEXT_NODE) {
-      if (child.data) child.data = blankText(child.data);
+      if (child.data) child.data = blankText(child.data, direction);
     } else if (child.nodeType === COMMENT_NODE) {
       child.remove();
     } else if (child.nodeType === ELEMENT_NODE && isBlankable(child)) {
-      blankSubtree(child);
+      blankSubtree(child, direction);
     }
   });
 }
@@ -1055,17 +1056,47 @@ function isBlankable(element) {
   return element.namespaceURI !== SVG_NAMESPACE && !KEPT_UNRENDERED_TAGS.has(element.tagName);
 }
 
-// A text's stand-in: an invisible mark of the direction of its first strong
-// character (RLM for a right-to-left script, LRM otherwise), as dir="auto"
-// takes the direction of the first strong character it meets; one space when
-// it has none (digits, punctuation and spaces are not strong).
-const STRONG_CHARACTER = /[\p{L}\u200E\u200F\u061C]/u;
-const RIGHT_TO_LEFT = /[\p{Script=Hebrew}\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}\p{Script=Samaritan}\p{Script=Mandaic}\p{Script=Adlam}\p{Script=Hanifi_Rohingya}\u200F\u061C]/u;
+// A text's stand-in: an invisible mark of the direction dir="auto" takes from
+// it, the direction of its first strong character (RLM for right-to-left, LRM
+// for left-to-right), or one space when it has none (digits, punctuation and
+// spaces are not strong).
+function blankText(data, direction = approximateTextDirection) {
+  const found = direction(String(data));
+  if (found === "rtl") return "\u200F";
+  return found === "ltr" ? "\u200E" : " ";
+}
 
-function blankText(data) {
+// "rtl", "ltr" or null (no strong character) for a text, by the browser's own
+// rules (Bidi_Class): a dir="auto" probe that is never attached, matched with
+// :dir(). A right-to-left letter added at the end tells a text without a strong
+// character from a left-to-right one. Where :dir() is not supported, by script.
+function browserTextDirection(doc) {
+  let probe = null;
+  return (data) => {
+    try {
+      if (!probe) {
+        probe = doc.createElement("div");
+        probe.setAttribute("dir", "auto");
+      }
+      probe.textContent = data;
+      if (probe.matches(":dir(rtl)")) return "rtl";
+      probe.textContent = `${data}\u05D0`;
+      return probe.matches(":dir(rtl)") ? null : "ltr";
+    } catch (_) {
+      return approximateTextDirection(data);
+    }
+  };
+}
+
+// By script: letters of right-to-left scripts are right-to-left, other letters
+// left-to-right. Close to the browser's rules, not the same.
+const STRONG_CHARACTER = /[\p{L}\p{Nl}\u0640\u200E\u200F\u061C]/u;
+const RIGHT_TO_LEFT = /[\p{Script=Hebrew}\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}\p{Script=Samaritan}\p{Script=Mandaic}\p{Script=Adlam}\p{Script=Hanifi_Rohingya}\u0640\u200F\u061C]/u;
+
+function approximateTextDirection(data) {
   const strong = String(data).match(STRONG_CHARACTER);
-  if (!strong) return " ";
-  return RIGHT_TO_LEFT.test(strong[0]) ? "\u200F" : "\u200E";
+  if (!strong) return null;
+  return RIGHT_TO_LEFT.test(strong[0]) ? "rtl" : "ltr";
 }
 
 const ELEMENT_NODE = 1;
@@ -1333,7 +1364,7 @@ function base64Encode(value) {
   return btoa(binary);
 }
 
-return { captureScreenshot, uncapturedTouching, blankUnrenderedElements, blankText, clearTemplateContents, removeComments, snapshotBodyOffsetStyle, byteLength, base64Encode };
+return { captureScreenshot, uncapturedTouching, blankUnrenderedElements, blankText, browserTextDirection, approximateTextDirection, clearTemplateContents, removeComments, snapshotBodyOffsetStyle, byteLength, base64Encode };
 })();
 // --- widget/src/payload.js ---
 const __pl_widget_src_payload = (() => {
