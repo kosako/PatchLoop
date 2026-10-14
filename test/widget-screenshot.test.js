@@ -97,7 +97,7 @@ test("byteLength falls back to the base64 length without Blob", () => {
 
 // --- elements the page does not render (#122) ------------------------------
 
-const { blankUnrenderedElements, clearTemplateContents, removeComments } = require("../widget/src/screenshot.js");
+const { blankText, blankUnrenderedElements, clearTemplateContents, removeComments } = require("../widget/src/screenshot.js");
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -152,7 +152,7 @@ test("an element the page does not render keeps its elements and attributes, but
   // before), each text keeps being a text (:empty too), and the attributes
   // stay present, empty when they carry content.
   assert.deepEqual(kinds(hiddenCopy), [3, "SPAN", "I"]);
-  assert.deepEqual(texts(hiddenCopy), [" ", " "]);
+  assert.deepEqual(texts(hiddenCopy), ["\u200e", "\u200e"]);
   assert.deepEqual(hiddenCopy.attributes, { class: "panel", hidden: "", "data-state": "closed", title: "", "aria-label": "" });
   assert.deepEqual(hiddenCopy.childNodes[1].attributes, { "data-note": "kept", title: "" });
   assert.deepEqual(hiddenCopy.childNodes[2].childNodes, []);
@@ -207,7 +207,7 @@ test("form controls keep what decides the form's validity: values, placeholders,
   assert.deepEqual(fieldCopy.attributes, { type: "text", required: "", value: "ok", placeholder: "Name", title: "" });
   assert.deepEqual(tokenCopy.attributes, { type: "hidden", value: "" });
   assert.deepEqual([texts(noteCopy), texts(choiceCopy), choiceCopy.childNodes[0].attributes], [["typed note"], ["Japan"], { value: "jp" }]);
-  assert.deepEqual(texts(buttonCopy), [" "]);
+  assert.deepEqual(texts(buttonCopy), ["\u200e"]);
 });
 
 test("SVG stays as it is, hidden or inside a hidden element: <use> may draw it elsewhere", () => {
@@ -217,7 +217,7 @@ test("SVG stays as it is, hidden or inside a hidden element: <use> may draw it e
   const copy = snapshot(el("body", {}, [sprite, wrapper]), new Set([sprite, wrapper, nested]));
   const [spriteCopy, wrapperCopy] = copy.childNodes;
   assert.deepEqual(texts(spriteCopy), ["icon label"]);
-  assert.deepEqual([texts(wrapperCopy), wrapperCopy.childNodes[1].childNodes[0].attributes], [[" "], { href: "#icon" }]);
+  assert.deepEqual([texts(wrapperCopy), wrapperCopy.childNodes[1].childNodes[0].attributes], [["\u200e"], { href: "#icon" }]);
 });
 
 test("every <template>'s content goes, also inside a kept <select> and outside hidden elements", () => {
@@ -230,6 +230,18 @@ test("every <template>'s content goes, also inside a kept <select> and outside h
   clearTemplateContents(templates);
   assert.deepEqual(templates.map((template) => template.content.childNodes), [[], []]);
   assert.deepEqual(texts(copy.childNodes[0]), ["Plain"]);
+});
+
+test("a hidden text keeps only the direction of its first strong character, which dir=\"auto\" goes by", () => {
+  assert.equal(blankText("שלום world"), "\u200f");
+  assert.equal(blankText("123 مرحبا"), "\u200f");
+  assert.equal(blankText("Hello שלום"), "\u200e");
+  assert.equal(blankText("日本語"), "\u200e");
+  for (const neutral of ["123", "  \n ", "!?-"]) assert.equal(blankText(neutral), " ");
+  const hidden = el("span", { hidden: "" }, [text("א")]);
+  const box = el("div", { dir: "auto" }, [hidden, el("span", {}, [text("A")])]);
+  const copy = snapshot(el("body", {}, [box]), new Set([hidden]));
+  assert.deepEqual(texts(copy.childNodes[0]), ["\u200f", "A"]);
 });
 
 test("comments go from the whole snapshot", () => {

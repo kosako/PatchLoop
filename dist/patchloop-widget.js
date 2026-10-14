@@ -997,11 +997,14 @@ function topPageElementAt(x, y) {
 // Elements the page does not render (display:none: the hidden attribute, a
 // <template>, a closed <dialog>, anything a stylesheet hides that way) are
 // emptied in the snapshot (#122), so the image file holds no more of them than
-// the screen shows: every text in them becomes one space, the attributes that
+// the screen shows: every text in them becomes one character that keeps only
+// its direction (blankText), the attributes that
 // carry content become empty, comments go. Their
-// elements and other attributes stay, and an emptied text is still there, so
-// what the page's selectors match is unchanged (:empty, :nth-child, +, ~,
-// :has(), [value]); only a selector on such an attribute's value could differ.
+// elements and other attributes stay, and an emptied text is still there with
+// its direction, so what the page's selectors match is unchanged (:empty,
+// :nth-child, +, ~, :has(), [value], :dir()) and so is the direction dir="auto"
+// and <bdi> work out from text, hidden text included; only a selector on such
+// an attribute's value could differ.
 // Kept as they are, wherever they are: SVG, whose hidden parts are often
 // icons that <use> draws elsewhere; <style> and <link>, which style the page;
 // form controls' values (<select> and its options, <textarea>, an <input>'s
@@ -1039,7 +1042,7 @@ function blankSubtree(element) {
   });
   Array.from(element.childNodes).forEach((child) => {
     if (child.nodeType === TEXT_NODE) {
-      if (child.data) child.data = " ";
+      if (child.data) child.data = blankText(child.data);
     } else if (child.nodeType === COMMENT_NODE) {
       child.remove();
     } else if (child.nodeType === ELEMENT_NODE && isBlankable(child)) {
@@ -1050,6 +1053,19 @@ function blankSubtree(element) {
 
 function isBlankable(element) {
   return element.namespaceURI !== SVG_NAMESPACE && !KEPT_UNRENDERED_TAGS.has(element.tagName);
+}
+
+// A text's stand-in: an invisible mark of the direction of its first strong
+// character (RLM for a right-to-left script, LRM otherwise), as dir="auto"
+// takes the direction of the first strong character it meets; one space when
+// it has none (digits, punctuation and spaces are not strong).
+const STRONG_CHARACTER = /[\p{L}\u200E\u200F\u061C]/u;
+const RIGHT_TO_LEFT = /[\p{Script=Hebrew}\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}\p{Script=Samaritan}\p{Script=Mandaic}\p{Script=Adlam}\p{Script=Hanifi_Rohingya}\u200F\u061C]/u;
+
+function blankText(data) {
+  const strong = String(data).match(STRONG_CHARACTER);
+  if (!strong) return " ";
+  return RIGHT_TO_LEFT.test(strong[0]) ? "\u200F" : "\u200E";
 }
 
 const ELEMENT_NODE = 1;
@@ -1317,7 +1333,7 @@ function base64Encode(value) {
   return btoa(binary);
 }
 
-return { captureScreenshot, uncapturedTouching, blankUnrenderedElements, clearTemplateContents, removeComments, snapshotBodyOffsetStyle, byteLength, base64Encode };
+return { captureScreenshot, uncapturedTouching, blankUnrenderedElements, blankText, clearTemplateContents, removeComments, snapshotBodyOffsetStyle, byteLength, base64Encode };
 })();
 // --- widget/src/payload.js ---
 const __pl_widget_src_payload = (() => {
