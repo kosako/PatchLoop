@@ -157,23 +157,54 @@ function contrast(foreground, background) {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-// The widget's rules by selector. Rules inside @media repeat a selector with
-// layout only, so the first rule of a selector is kept.
+// The widget's rules in source order, each with the @media it sits in (null
+// outside any).
 function styleRules(widget) {
   const css = widget.document.querySelector("[data-patchloop-style]").textContent;
-  const rules = new Map();
-  for (const match of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    const selector = match[1].trim();
-    if (rules.has(selector)) continue;
-    rules.set(selector, Object.fromEntries(match[2].split(";").filter((part) => part.trim()).map((part) => part.split(":").map((value) => value.trim()))));
+  const rules = [];
+  const preludes = [];
+  let start = 0;
+  for (let index = 0; index < css.length; index += 1) {
+    if (css[index] === "{") {
+      preludes.push(css.slice(start, index).trim());
+      start = index + 1;
+    } else if (css[index] === "}") {
+      const prelude = preludes.pop();
+      if (!prelude.startsWith("@")) {
+        const declarations = {};
+        for (const part of css.slice(start, index).split(";")) {
+          const colon = part.indexOf(":");
+          if (colon === -1) continue;
+          const property = part.slice(0, colon).trim();
+          declarations[property === "background-color" ? "background" : property] = part.slice(colon + 1).trim();
+        }
+        rules.push({ selector: prelude, declarations, media: preludes.findLast((outer) => outer.startsWith("@media")) ?? null });
+      }
+      start = index + 1;
+    }
   }
   return rules;
+}
+
+// What applies by selector outside @media: a selector's rules merged in source
+// order, so a later rule's color or background wins as in the page.
+function cascadedRules(rules) {
+  const merged = new Map();
+  for (const { selector, declarations, media } of rules) {
+    if (!media) merged.set(selector, { ...merged.get(selector), ...declarations });
+  }
+  return merged;
 }
 
 test("every text color of the widget meets 4.5:1 on the backgrounds it is shown on (#125)", () => {
   const widget = widgetHarness();
   widget.init();
-  const rules = styleRules(widget);
+  const allRules = styleRules(widget);
+  // A color or background that only some viewports get needs a check of its own.
+  for (const { selector, declarations, media } of allRules) {
+    if (media) assert.ok(!declarations.color && !declarations.background, `${selector} in ${media}: color or background not checked for contrast`);
+  }
+  const rules = cascadedRules(allRules);
   const checked = new Set();
   const check = (selector, backgroundSelector, composite = (color) => color) => {
     const background = rules.get(backgroundSelector)?.background;
