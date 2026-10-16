@@ -249,9 +249,18 @@ test("every text color of the widget meets 4.5:1 on the backgrounds it is shown 
     ".pl-pin.pl-marker-dot", ".pl-area.pl-marker-dot button", ".pl-pin.pl-marker-dot::before", ".pl-area.pl-marker-dot button::before"
   ]);
 
-  // Rules that set both: the text on its own background.
-  for (const [selector, rule] of rules) {
-    if (rule.color && rule.background && !exempt.has(selector)) check(selector, selector);
+  // Text on its own background: controls and boxes that only hold their own
+  // text, or whose other text is checked on them below. Listed by name, so a
+  // new box that sets both still fails until the text shown on it is checked.
+  for (const selector of [
+    ".pl-handle", ".pl-handle.pl-mode-on", ".pl-panel.pl-collapsed .pl-handle", ".pl-mode",
+    ".pl-actions button", ".pl-form-actions button", ".pl-actions [data-pl-download-all]", '.pl-form-actions button[type="submit"]',
+    ".pl-delivery-settings input", ".pl-delivery-settings select", ".pl-feedback-actions button",
+    ".pl-comment textarea", ".pl-comment input", ".pl-form-error", ".pl-tooltip", ".pl-pin", ".pl-area button",
+    ".pl-capture-guide", ".pl-capture-guide button",
+    ".pl-panel .pl-notice", '.pl-panel .pl-notice[data-state="error"]', ".pl-comment .pl-edit-note", ".pl-comment .pl-uncaptured-hint"
+  ]) {
+    check(selector, selector);
   }
   // The other states a control shows the same text color on.
   check(".pl-handle", ".pl-handle:hover");
@@ -294,6 +303,11 @@ test("every text color of the widget meets 4.5:1 on the backgrounds it is shown 
     }
     if (rule.background) {
       assert.ok(backgrounds.has(selector) || exempt.has(selector) || withoutText.has(selector), `${selector}: background not checked for contrast`);
+    }
+    // Fading changes the contrast without a color: disabled buttons are left
+    // out (as above), exported cards are composited above.
+    if (rule.opacity !== undefined || rule.filter !== undefined) {
+      assert.ok([".pl-root button:disabled", ".pl-feedback-item-exported"].includes(selector), `${selector}: opacity or filter not checked for contrast`);
     }
   }
 });
