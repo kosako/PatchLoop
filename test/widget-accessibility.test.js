@@ -186,12 +186,34 @@ function styleRules(widget) {
   return rules;
 }
 
-// What applies by selector outside @media: a selector's rules merged in source
-// order, so a later rule's color or background wins as in the page.
+// A selector list split at its top-level commas (not those inside :is() and
+// the like).
+function selectorList(prelude) {
+  const selectors = [];
+  let depth = 0;
+  let current = "";
+  for (const char of prelude) {
+    if (char === "(") depth += 1;
+    if (char === ")") depth -= 1;
+    if (char === "," && depth === 0) {
+      selectors.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  selectors.push(current.trim());
+  return selectors;
+}
+
+// What applies by selector outside @media: each selector of a list gets the
+// rule, and a selector's rules are merged in source order, so a later rule's
+// color or background wins as in the page.
 function cascadedRules(rules) {
   const merged = new Map();
-  for (const { selector, declarations, media } of rules) {
-    if (!media) merged.set(selector, { ...merged.get(selector), ...declarations });
+  for (const { selector: prelude, declarations, media } of rules) {
+    if (media) continue;
+    for (const selector of selectorList(prelude)) merged.set(selector, { ...merged.get(selector), ...declarations });
   }
   return merged;
 }
@@ -206,15 +228,26 @@ test("every text color of the widget meets 4.5:1 on the backgrounds it is shown 
   }
   const rules = cascadedRules(allRules);
   const checked = new Set();
+  const backgrounds = new Set();
   const check = (selector, backgroundSelector, composite = (color) => color) => {
     const background = rules.get(backgroundSelector)?.background;
     assert.ok(background, `${backgroundSelector} has a background`);
     const ratio = contrast(composite(rgb(rules.get(selector).color)), composite(rgb(background)));
     assert.ok(ratio >= 4.5, `${selector} on ${backgroundSelector}: ${ratio.toFixed(2)}`);
     checked.add(selector);
+    backgrounds.add(backgroundSelector);
   };
   // A disabled control: WCAG leaves inactive components out of the contrast minimum.
   const exempt = new Set([".pl-actions [data-pl-download-all]:disabled"]);
+  // Backgrounds no text is shown on.
+  const withoutText = new Set([
+    // The handle fills the collapsed panel with a background of its own.
+    ".pl-panel.pl-collapsed", ".pl-feedback-active .pl-panel.pl-collapsed",
+    // The tint of a selection or an area; the area's number is its button.
+    ".pl-selection", ".pl-area", ".pl-area.pl-marker-done", ".pl-area.pl-marker-dot:not(:hover):not(:focus-within)",
+    // A dot-only marker shows no number (font-size: 0), only the dot.
+    ".pl-pin.pl-marker-dot", ".pl-area.pl-marker-dot button", ".pl-pin.pl-marker-dot::before", ".pl-area.pl-marker-dot button::before"
+  ]);
 
   // Rules that set both: the text on its own background.
   for (const [selector, rule] of rules) {
@@ -225,19 +258,23 @@ test("every text color of the widget meets 4.5:1 on the backgrounds it is shown 
   check(".pl-handle.pl-mode-on", ".pl-handle.pl-mode-on:hover");
   check(".pl-panel.pl-collapsed .pl-handle", ".pl-panel.pl-collapsed .pl-handle.pl-mode-on");
   check(".pl-mode", '.pl-mode[aria-pressed="true"]');
-  check(".pl-pin", ".pl-pin.pl-marker-done, .pl-area.pl-marker-done button");
-  check(".pl-area button", ".pl-pin.pl-marker-done, .pl-area.pl-marker-done button");
+  check(".pl-pin", ".pl-pin.pl-marker-done");
+  check(".pl-area button", ".pl-area.pl-marker-done button");
   check(".pl-feedback-num", ".pl-feedback-num.kind-point");
   check(".pl-feedback-num", ".pl-feedback-num.kind-area");
   check(".pl-list-heading", ".pl-list-heading span");
   // Text without a background of its own, on the box it is shown in.
-  for (const selector of [".pl-root", ".pl-panel p", ".pl-delivery-settings summary", ".pl-delivery-settings label", ".pl-feedback-list-empty", ".pl-list-heading", ".pl-display-mode legend", ".pl-display-mode label", ".pl-actions [data-pl-clear]", ".pl-panel .pl-other-pages"]) {
+  for (const selector of [".pl-delivery-settings summary", ".pl-delivery-settings label"]) {
+    check(selector, ".pl-delivery-settings");
+  }
+  for (const selector of [".pl-root", ".pl-panel p", ".pl-feedback-list-empty", ".pl-list-heading", ".pl-display-mode legend", ".pl-display-mode label", ".pl-panel .pl-other-pages"]) {
     check(selector, ".pl-panel");
   }
-  for (const selector of [".pl-root", ".pl-comment label", ".pl-form-heading span", ".pl-comment .pl-capture-note, .pl-comment .pl-edit-note", ".pl-keyboard-hint"]) {
+  for (const selector of [".pl-root", ".pl-comment label", ".pl-form-heading span", ".pl-comment .pl-capture-note", ".pl-keyboard-hint"]) {
     check(selector, ".pl-comment");
   }
   check(".pl-capture-guide small", ".pl-capture-guide");
+  check(".pl-actions [data-pl-clear]", ".pl-actions button");
   check(".pl-feedback-actions [data-pl-delete]", ".pl-feedback-actions button");
   // Comment cards, plain and exported (an exported card may be faded).
   const alpha = Number(rules.get(".pl-feedback-item-exported").opacity ?? 1);
@@ -248,10 +285,15 @@ test("every text color of the widget meets 4.5:1 on the backgrounds it is shown 
     check(selector, ".pl-feedback-item-exported", faded);
   }
 
-  // A text color added later fails here until it is checked above.
+  // A text color or a background added later fails here until it is checked
+  // above or listed as one no text is shown on.
   for (const [selector, rule] of rules) {
-    if (!rule.color) continue;
-    assert.match(rule.color, /^#[\da-f]{3}(?:[\da-f]{3})?$/i, `${selector}: color as a hex value`);
-    assert.ok(checked.has(selector) || exempt.has(selector), `${selector}: text color not checked for contrast`);
+    if (rule.color) {
+      assert.match(rule.color, /^#[\da-f]{3}(?:[\da-f]{3})?$/i, `${selector}: color as a hex value`);
+      assert.ok(checked.has(selector) || exempt.has(selector), `${selector}: text color not checked for contrast`);
+    }
+    if (rule.background) {
+      assert.ok(backgrounds.has(selector) || exempt.has(selector) || withoutText.has(selector), `${selector}: background not checked for contrast`);
+    }
   }
 });
