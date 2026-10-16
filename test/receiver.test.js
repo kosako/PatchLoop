@@ -1680,8 +1680,31 @@ test("Slack fallback text escapes the comment like the blocks do (#150)", async 
   assert.equal(slack.requests[1].body.text, `PatchLoop feedback: ${"x".repeat(119)}&amp;…`);
 });
 
-test("received and imported feedback log one line per item even with newlines in id or comment (#150)", async (t) => {
+test("by default the log names received and imported feedback by id only, without its comment (#122)", async (t) => {
   const receiver = await startReceiver(t);
+  assert.match(receiver.logs, /\[PatchLoop receiver\] comment log: off\n/);
+  let stdout = "";
+  receiver.child.stdout.on("data", (chunk) => { stdout += chunk; });
+  const received = feedbackPayload("pl_quiet_log");
+  delete received.screenshot;
+  received.comment = "a comment that stays out of the log";
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, received)).status, 201);
+  const imported = { ...feedbackPayload("pl_quiet_import"), comment: "an imported comment that stays out too" };
+  delete imported.screenshot;
+  const importResponse = await postJson(`${receiver.baseUrl}/import`, { kind: "patchloop-feedback-bundle", version: 2, exportedAt: "2026-10-16T00:00:00.000Z", feedback: [imported] });
+  assert.equal(importResponse.status, 201);
+  const expected = ["[PatchLoop receiver] received feedback id=pl_quiet_log", "[PatchLoop receiver] imported feedback id=pl_quiet_import"];
+  const deadline = Date.now() + 5000;
+  while (!expected.every((line) => stdout.split("\n").includes(line)) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  for (const line of expected) assert.ok(stdout.split("\n").includes(line), line);
+  assert.doesNotMatch(stdout, /stays out/);
+});
+
+test("received and imported feedback log one line per item even with newlines in id or comment (#150)", async (t) => {
+  // The comment goes into the log only when asked for (#122).
+  const receiver = await startReceiver(t, { LOG_COMMENTS: "1" });
   let stdout = "";
   receiver.child.stdout.on("data", (chunk) => { stdout += chunk; });
 
@@ -2683,6 +2706,7 @@ async function startReceiver(t, extraEnv = {}) {
       GITHUB_TOKEN: "",
       GITHUB_REPO: "",
       STATUS_LOOKUP: "",
+      LOG_COMMENTS: "",
       PATCHLOOP_RECEIVER_CONFIG: path.join(tempDir, "missing-config.json"),
       ...extraEnv
     },

@@ -86,6 +86,11 @@ const RECEIVER_TOKEN = process.env.RECEIVER_TOKEN || config.receiverToken || "";
 const STATUS_LOOKUP_CONFIG = boolSetting(config.statusLookup, null, "statusLookup (config)", !RECEIVER_TOKEN);
 const STATUS_LOOKUP_SETTING = boolSetting(process.env.STATUS_LOOKUP, STATUS_LOOKUP_CONFIG, "STATUS_LOOKUP (env)", STATUS_LOOKUP_CONFIG ?? !RECEIVER_TOKEN);
 const STATUS_LOOKUP_ENABLED = STATUS_LOOKUP_SETTING ?? !RECEIVER_TOKEN;
+// The first characters of each comment in the log (#122). Off by default: a
+// log can travel further than the inbox (a terminal's scrollback, a host's log
+// service). LOG_COMMENTS / logComments turns it on for local checks.
+const LOG_COMMENTS_CONFIG = boolSetting(config.logComments, false, "logComments (config)");
+const LOG_COMMENTS = boolSetting(process.env.LOG_COMMENTS, LOG_COMMENTS_CONFIG, "LOG_COMMENTS (env)");
 // CORS allowlist for the widget ingest route (POST /feedback). Cross-origin
 // JSON POSTs preflight in browsers; the ingest handler also rejects a supplied
 // origin outside the list. Unset keeps the historical open default
@@ -478,6 +483,7 @@ async function start() {
   console.log(`[PatchLoop receiver] limits: body=${MAX_BODY_BYTES}B screenshot=${SCREENSHOT_MAX_BYTES}B disk=${SCREENSHOT_DISK_MAX_BYTES}B count=${MAX_FEEDBACK_COUNT} importItems=${MAX_IMPORT_ITEMS} fieldLength=${MAX_FIELD_LENGTH} arrayLength=${MAX_ARRAY_LENGTH} objectDepth=${MAX_OBJECT_DEPTH}`);
   console.log(`[PatchLoop receiver] rate limit: ${RATE_LIMIT_MAX} req / ${RATE_LIMIT_WINDOW_MS}ms per client (max ${RATE_LIMIT_MAX_CLIENTS} clients, trustProxy=${TRUST_PROXY})`);
   console.log(`[PatchLoop receiver] timeouts: Slack=${SLACK_TIMEOUT_MS}ms GitHub=${GITHUB_TIMEOUT_MS}ms`);
+  console.log(`[PatchLoop receiver] comment log: ${LOG_COMMENTS ? "on (first 60 characters, LOG_COMMENTS)" : "off"}`);
   console.log(`[PatchLoop receiver] Slack webhook: ${SLACK_WEBHOOK_URL ? "enabled" : "disabled"}`);
   console.log(`[PatchLoop receiver] Slack image mode: ${SLACK_IMAGE_MODE}`);
   console.log(`[PatchLoop receiver] Slack file upload: ${SLACK_BOT_TOKEN && SLACK_UPLOAD_CHANNEL_ID ? "enabled" : "disabled"}`);
@@ -557,6 +563,12 @@ function positiveIntSetting(value, fallback, label) {
     return fallback;
   }
   return number;
+}
+
+// The comment part of a received / imported log line: its first 60 characters
+// when LOG_COMMENTS is on, else nothing (#122).
+function commentLog(comment) {
+  return LOG_COMMENTS ? ` comment="${logValue(truncateText(comment || "", 60))}"` : "";
 }
 
 function boolSetting(value, fallback, label, warningFallback = fallback) {
@@ -718,7 +730,7 @@ function handlePostFeedback(req, res) {
     const slackLog = slack.status === "disabled"
       ? ""
       : ` slack=${slack.status}`;
-    console.log(`[PatchLoop receiver] received feedback id=${logValue(payload?.id || "?")} comment="${logValue(truncateText(payload?.comment || "", 60))}"${slackLog}`);
+    console.log(`[PatchLoop receiver] received feedback id=${logValue(payload?.id || "?")}${commentLog(payload?.comment)}${slackLog}`);
     respondJson(res, 201, {
       ok: true,
       id: payload?.id,
@@ -828,7 +840,7 @@ function handlePostImport(req, res) {
       try {
         await store.insert(stored);
         results[index] = { id: stored.id };
-        console.log(`[PatchLoop receiver] imported feedback id=${logValue(stored.id || "?")} comment="${logValue(truncateText(stored.comment || "", 60))}"`);
+        console.log(`[PatchLoop receiver] imported feedback id=${logValue(stored.id || "?")}${commentLog(stored.comment)}`);
       } catch (error) {
         // The insert failed, so drop the screenshot we just wrote for it
         // (saveScreenshot names files uniquely, so this never touches an
