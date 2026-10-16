@@ -96,6 +96,26 @@ PatchLoop includes a standalone widget that can be embedded into a normal HTML p
 </script>
 ```
 
+### Supported Environments
+
+The widget supports desktop Chrome and Edge (both on the latest stable release). It is tested on Chrome. Edge runs the same engine as Chrome (Chromium), so it is included, but it has not been tested on Edge itself yet.
+
+| Browser | Status |
+| --- | --- |
+| Desktop Chrome / Edge | Supported |
+| Safari / Firefox | Untested |
+| Phone and tablet browsers | Untested |
+
+The widget may work in untested environments, but they have not been checked. Known differences: Safari 16.3 and earlier cannot read the regular expression lookbehind in the widget code, so the whole widget fails to load. How screenshots come out was checked on Chrome and may differ in other browsers (see "What Screenshots Do Not Capture").
+
+| Input | What it can do |
+| --- | --- |
+| Mouse | Select a point (click) or an area (drag). Hovering a marker shows its comment |
+| Keyboard | Tab to a button, link or other control on the page and press Enter to select the center of that element as a point (areas cannot be selected). Tabbing to a marker shows its comment, and Enter moves to that comment in the list |
+| Touch | Untested. A tap selects a point. Moving the finger cancels the selection and scrolls the page, so areas cannot be selected |
+
+Marker names, tooltips on focus, Escape to cancel with focus restored, and text contrast (4.5:1 or more) are covered by tests. It has not been checked with a screen reader yet.
+
 ### Init options
 
 - `projectId` (string) — identifier carried in the payload
@@ -421,6 +441,7 @@ Not included yet:
 - Full isolation from page CSS (page rules on bare element names, `*`, `::before` and `::after` no longer reach the widget, but rules of specificity (0,1,1) or higher such as `button:hover`, `!important`, attribute rules loaded after the widget starts, rules on other pseudo-elements (`::placeholder`, `::marker`, `::selection` and so on), and `direction` / `unicode-bidi`, which `all` does not reset, still can. To hide the widget with page CSS, use `!important` or a selector such as `body [data-patchloop-root]`)
 - Per-reviewer authentication (the ingest key is a per-project public key and does not identify individuals; signed tokens issued behind a demo-side login are future scope)
 - AI PR integration
+- Checks on browsers other than desktop Chrome / Edge, and selecting areas by touch or keyboard alone (see "Supported Environments")
 
 ## License
 

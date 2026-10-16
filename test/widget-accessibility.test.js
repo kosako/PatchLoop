@@ -157,29 +157,70 @@ function contrast(foreground, background) {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-test("normal text and marker badges meet 4.5:1, including exported cards", () => {
+// The widget's rules by selector. Rules inside @media repeat a selector with
+// layout only, so the first rule of a selector is kept.
+function styleRules(widget) {
+  const css = widget.document.querySelector("[data-patchloop-style]").textContent;
+  const rules = new Map();
+  for (const match of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selector = match[1].trim();
+    if (rules.has(selector)) continue;
+    rules.set(selector, Object.fromEntries(match[2].split(";").filter((part) => part.trim()).map((part) => part.split(":").map((value) => value.trim()))));
+  }
+  return rules;
+}
+
+test("every text color of the widget meets 4.5:1 on the backgrounds it is shown on (#125)", () => {
   const widget = widgetHarness();
   widget.init();
-  const css = widget.document.querySelector("[data-patchloop-style]").textContent;
-  const rules = new Map([...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((match) => [
-    match[1].trim(), Object.fromEntries(match[2].split(";").filter((part) => part.trim()).map((part) => part.split(":").map((value) => value.trim())))
-  ]));
-  for (const selector of [".pl-pin", ".pl-area button", ".pl-mode", ".pl-handle.pl-mode-on"]) {
-    const rule = rules.get(selector);
-    assert.ok(contrast(rgb(rule.color), rgb(rule.background)) >= 4.5, selector);
+  const rules = styleRules(widget);
+  const checked = new Set();
+  const check = (selector, backgroundSelector, composite = (color) => color) => {
+    const background = rules.get(backgroundSelector)?.background;
+    assert.ok(background, `${backgroundSelector} has a background`);
+    const ratio = contrast(composite(rgb(rules.get(selector).color)), composite(rgb(background)));
+    assert.ok(ratio >= 4.5, `${selector} on ${backgroundSelector}: ${ratio.toFixed(2)}`);
+    checked.add(selector);
+  };
+  // A disabled control: WCAG leaves inactive components out of the contrast minimum.
+  const exempt = new Set([".pl-actions [data-pl-download-all]:disabled"]);
+
+  // Rules that set both: the text on its own background.
+  for (const [selector, rule] of rules) {
+    if (rule.color && rule.background && !exempt.has(selector)) check(selector, selector);
   }
-  assert.ok(contrast(rgb(rules.get(".pl-handle.pl-mode-on").color), rgb(rules.get(".pl-handle.pl-mode-on:hover").background)) >= 4.5, "active handle hover");
-  const numberColor = rules.get(".pl-feedback-num").color;
-  for (const kind of ["point", "area"]) {
-    assert.ok(contrast(rgb(numberColor), rgb(rules.get(`.pl-feedback-num.kind-${kind}`).background)) >= 4.5, `${kind} number`);
+  // The other states a control shows the same text color on.
+  check(".pl-handle", ".pl-handle:hover");
+  check(".pl-handle.pl-mode-on", ".pl-handle.pl-mode-on:hover");
+  check(".pl-panel.pl-collapsed .pl-handle", ".pl-panel.pl-collapsed .pl-handle.pl-mode-on");
+  check(".pl-mode", '.pl-mode[aria-pressed="true"]');
+  check(".pl-pin", ".pl-pin.pl-marker-done, .pl-area.pl-marker-done button");
+  check(".pl-area button", ".pl-pin.pl-marker-done, .pl-area.pl-marker-done button");
+  check(".pl-feedback-num", ".pl-feedback-num.kind-point");
+  check(".pl-feedback-num", ".pl-feedback-num.kind-area");
+  check(".pl-list-heading", ".pl-list-heading span");
+  // Text without a background of its own, on the box it is shown in.
+  for (const selector of [".pl-root", ".pl-panel p", ".pl-delivery-settings summary", ".pl-delivery-settings label", ".pl-feedback-list-empty", ".pl-list-heading", ".pl-display-mode legend", ".pl-display-mode label", ".pl-actions [data-pl-clear]", ".pl-panel .pl-other-pages"]) {
+    check(selector, ".pl-panel");
   }
-  const card = rules.get(".pl-feedback-item");
-  const exported = rules.get(".pl-feedback-item-exported");
-  const alpha = Number(exported.opacity ?? 1);
-  const composite = (color) => color.map((value, index) => value * alpha + rgb(card.background)[index] * (1 - alpha));
-  for (const selector of [".pl-feedback-text", ".pl-feedback-meta", ".pl-feedback-status-unknown", ".pl-feedback-status-fail", ".pl-feedback-approx", ".pl-feedback-exported", ".pl-feedback-actions [data-pl-delete]"]) {
-    const color = rgb(rules.get(selector).color);
-    assert.ok(contrast(color, rgb(card.background)) >= 4.5, selector);
-    assert.ok(contrast(composite(color), composite(rgb(exported.background || card.background))) >= 4.5, `${selector} in exported card`);
+  for (const selector of [".pl-root", ".pl-comment label", ".pl-form-heading span", ".pl-comment .pl-capture-note, .pl-comment .pl-edit-note", ".pl-keyboard-hint"]) {
+    check(selector, ".pl-comment");
+  }
+  check(".pl-capture-guide small", ".pl-capture-guide");
+  check(".pl-feedback-actions [data-pl-delete]", ".pl-feedback-actions button");
+  // Comment cards, plain and exported (an exported card may be faded).
+  const alpha = Number(rules.get(".pl-feedback-item-exported").opacity ?? 1);
+  const card = rgb(rules.get(".pl-feedback-item").background);
+  const faded = (color) => color.map((value, index) => value * alpha + card[index] * (1 - alpha));
+  for (const selector of [".pl-feedback-text", ".pl-feedback-meta", ".pl-feedback-status-ok", ".pl-feedback-status-unknown", ".pl-feedback-status-fail", ".pl-feedback-approx", ".pl-feedback-exported", ".pl-inbox-status", ".pl-inbox-status-done", ".pl-inbox-status-missing"]) {
+    check(selector, ".pl-feedback-item");
+    check(selector, ".pl-feedback-item-exported", faded);
+  }
+
+  // A text color added later fails here until it is checked above.
+  for (const [selector, rule] of rules) {
+    if (!rule.color) continue;
+    assert.match(rule.color, /^#[\da-f]{3}(?:[\da-f]{3})?$/i, `${selector}: color as a hex value`);
+    assert.ok(checked.has(selector) || exempt.has(selector), `${selector}: text color not checked for contrast`);
   }
 });
