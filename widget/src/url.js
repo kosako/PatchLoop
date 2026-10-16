@@ -53,11 +53,17 @@ function keptQueryPairs(query, keepQueryParams) {
 // (#122): a preview's share link can carry a token as well, so they leave
 // under page.url's rule. They may be relative, as the page's URL never is:
 // one keeps its path and only the listed query keys, and loses its fragment;
-// a protocol-relative one is taken as https, which drops any credentials.
+// a protocol-relative one is taken as https, which drops any credentials. One
+// with a scheme or "//" that does not parse returns "", as nothing in it can
+// be told safe to keep (it could hold credentials).
+const SCHEME_OR_AUTHORITY = /^([a-z][a-z0-9+.-]*:|\/\/)/i;
+
 export function sourceUrlForSharing(url, keepQueryParams) {
   if (typeof url !== "string" || url === "") return url;
-  const absolute = pageUrlForSharing(url.startsWith("//") ? `https:${url}` : url, keepQueryParams);
-  if (absolute) return url.startsWith("//") ? absolute.slice("https:".length) : absolute;
+  const protocolRelative = url.startsWith("//");
+  const absolute = pageUrlForSharing(protocolRelative ? `https:${url}` : url, keepQueryParams);
+  if (absolute) return protocolRelative ? absolute.slice("https:".length) : absolute;
+  if (SCHEME_OR_AUTHORITY.test(url)) return "";
   const withoutFragment = url.split("#")[0];
   const question = withoutFragment.indexOf("?");
   if (question === -1) return withoutFragment;
