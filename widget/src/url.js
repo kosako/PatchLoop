@@ -29,13 +29,7 @@ export function pageUrlForSharing(url, keepQueryParams) {
   } catch (_) {
     return "";
   }
-  const keep = new Set(keepQueryParams);
-  // Filter the raw `key=value` pairs instead of re-serializing them, so a kept
-  // value reaches the inbox exactly as the page had it. The constructor drops
-  // one leading "?", so prefix one: a pair like `?step=x` decodes to the key
-  // `?step` the page itself sees, not to `step`.
-  const kept = parsed.search.slice(1).split("&")
-    .filter((pair) => pair !== "" && keep.has(new URLSearchParams(`?${pair}`).keys().next().value));
+  const kept = keptQueryPairs(parsed.search.slice(1), keepQueryParams);
   parsed.username = "";
   parsed.password = "";
   parsed.hash = "";
@@ -45,17 +39,63 @@ export function pageUrlForSharing(url, keepQueryParams) {
   return parsed.href;
 }
 
-// Applies keepQueryParams to a comment's page.url in place and tells whether
-// it changed (#163). Used when saved comments are loaded and whenever a
-// comment leaves (callback, delivery, retry, export), so one built or saved
-// under a wider rule, including one built before a re-init, never leaves
-// with it.
+// Filter the raw `key=value` pairs instead of re-serializing them, so a kept
+// value reaches the inbox exactly as the page had it. The URL parser drops one
+// leading "?", so prefix one: a pair like `?step=x` decodes to the key `?step`
+// the page itself sees, not to `step`.
+function keptQueryPairs(query, keepQueryParams) {
+  const keep = new Set(keepQueryParams);
+  return query.split("&")
+    .filter((pair) => pair !== "" && keep.has(new URLSearchParams(`?${pair}`).keys().next().value));
+}
+
+// The sourceContext URLs (previewUrl, buildUrl) the embedding side passes
+// (#122): a preview's share link can carry a token as well, so they leave
+// under page.url's rule. They may be relative, as the page's URL never is:
+// one keeps its path and only the listed query keys, and loses its fragment;
+// a protocol-relative one is taken as https, which drops any credentials.
+export function sourceUrlForSharing(url, keepQueryParams) {
+  if (typeof url !== "string" || url === "") return url;
+  const absolute = pageUrlForSharing(url.startsWith("//") ? `https:${url}` : url, keepQueryParams);
+  if (absolute) return url.startsWith("//") ? absolute.slice("https:".length) : absolute;
+  const withoutFragment = url.split("#")[0];
+  const question = withoutFragment.indexOf("?");
+  if (question === -1) return withoutFragment;
+  const kept = keptQueryPairs(withoutFragment.slice(question + 1), keepQueryParams);
+  return `${withoutFragment.slice(0, question)}${kept.length > 0 ? `?${kept.join("&")}` : ""}`;
+}
+
+const SOURCE_CONTEXT_URL_KEYS = ["previewUrl", "buildUrl"];
+
+// Applies the rule to a sourceContext's URLs in place; whether any changed.
+export function applySourceContextUrlRule(context, keepQueryParams) {
+  if (!context || typeof context !== "object") return false;
+  let changed = false;
+  SOURCE_CONTEXT_URL_KEYS.forEach((key) => {
+    const url = sourceUrlForSharing(context[key], keepQueryParams);
+    if (url === context[key]) return;
+    context[key] = url;
+    changed = true;
+  });
+  return changed;
+}
+
+// Applies keepQueryParams to a comment's page.url and sourceContext URLs in
+// place and tells whether anything changed (#163, #122). Used when saved
+// comments are loaded and whenever a comment leaves (callback, delivery,
+// retry, export), so one built or saved under a wider rule, including one
+// built before a re-init, never leaves with it.
 export function applyPageUrlRule(item, keepQueryParams) {
-  if (typeof item?.page?.url !== "string") return false;
-  const url = pageUrlForSharing(item.page.url, keepQueryParams);
-  if (url === item.page.url) return false;
-  item.page.url = url;
-  return true;
+  let changed = false;
+  if (typeof item?.page?.url === "string") {
+    const url = pageUrlForSharing(item.page.url, keepQueryParams);
+    if (url !== item.page.url) {
+      item.page.url = url;
+      changed = true;
+    }
+  }
+  if (applySourceContextUrlRule(item?.sourceContext, keepQueryParams)) changed = true;
+  return changed;
 }
 
 // The `keepQueryParams` init option: an array of query keys, matched exactly.
