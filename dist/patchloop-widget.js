@@ -918,6 +918,9 @@ function captureScreenshot(target) {
 
 function buildScreenshotSvg({ width, height, documentWidth, documentHeight, scrollX, scrollY, overlay, uncaptured }) {
   const bodyClone = document.body.cloneNode(true);
+  blankUnrenderedElements(document.body.querySelectorAll("*"), bodyClone.querySelectorAll("*"), (element) => hiddenPart(element), browserTextDirection(document));
+  clearTemplateContents(bodyClone.querySelectorAll("template"));
+  removeComments(bodyClone);
   bodyClone.querySelectorAll(`${WIDGET_NODES}, script`).forEach((node) => node.remove());
   bodyClone.querySelectorAll(".pl-target-highlight").forEach((node) => node.classList.remove("pl-target-highlight"));
 
@@ -989,6 +992,163 @@ function uncapturedFor(viewport, overlay) {
 // on the selected spot while the screenshot is taken, so they are skipped.
 function topPageElementAt(x, y) {
   return document.elementsFromPoint(x, y).find((element) => !element.closest(WIDGET_NODES)) || null;
+}
+
+// Elements the page does not render (display:none: the hidden attribute, a
+// <template>, a closed <dialog>, anything a stylesheet hides that way) are
+// emptied in the snapshot (#122), and so are the contents of elements that
+// skip rendering them (content-visibility: hidden, as hidden="until-found"
+// gives, whose own box stays as it is), so the image file holds no more of them than
+// the screen shows: every text in them becomes one character that keeps only
+// its direction (blankText), the attributes that
+// carry content become empty, comments go. Their
+// elements and other attributes stay, and an emptied text is still there with
+// its direction, so what the page's selectors match is unchanged (:empty,
+// :nth-child, +, ~, :has(), [value], :dir()) and so is the direction dir="auto"
+// and <bdi> work out from text, hidden text included; only a selector on such
+// an attribute's value could differ.
+// Kept as they are, wherever they are: SVG, whose hidden parts are often
+// icons that <use> draws elsewhere; <style> and <link>, which style the page;
+// form controls' values (<select> and its options, <textarea>, an <input>'s
+// value and placeholder unless it is type=hidden), which decide the form's
+// validity and :placeholder-shown, so styles on what is shown, and a <select>
+// shows its selected option even when that option is hidden.
+// originals and clones are the elements of the page's body and of its clone,
+// in the same document order.
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+const KEPT_UNRENDERED_TAGS = new Set(["STYLE", "LINK", "SELECT", "OPTION", "OPTGROUP", "TEXTAREA"]);
+const FORM_STATE_ATTRIBUTES = new Set(["value", "placeholder"]);
+const CONTENT_ATTRIBUTES = new Set([
+  "value", "title", "alt", "placeholder", "href", "src", "srcset", "srcdoc", "data", "poster", "cite", "longdesc",
+  "action", "formaction", "ping", "download", "content", "label", "aria-label", "aria-description", "aria-valuetext"
+]);
+
+// hidden: what of an element the page does not render (see hiddenPart);
+// direction: a text's direction as dir="auto" sees it (see browserTextDirection).
+function blankUnrenderedElements(originals, clones, hidden, direction = approximateTextDirection) {
+  if (originals.length !== clones.length) return;
+  let blankedOriginal = null;
+  for (let index = 0; index < originals.length; index += 1) {
+    const original = originals[index];
+    // Inside an element already emptied, with it.
+    if (blankedOriginal && blankedOriginal.contains(original)) continue;
+    const part = isBlankable(original) ? hidden(original) : null;
+    if (!part) continue;
+    blankedOriginal = original;
+    if (part === "contents") blankChildren(clones[index], direction);
+    else blankSubtree(clones[index], direction);
+  }
+}
+
+function blankSubtree(element, direction) {
+  blankAttributes(element);
+  blankChildren(element, direction);
+}
+
+function blankAttributes(element) {
+  const keepsFormState = element.tagName === "INPUT" && String(element.getAttribute("type") || "").toLowerCase() !== "hidden";
+  element.getAttributeNames().forEach((name) => {
+    const key = name.toLowerCase();
+    if (CONTENT_ATTRIBUTES.has(key) && !(keepsFormState && FORM_STATE_ATTRIBUTES.has(key))) element.setAttribute(name, "");
+  });
+}
+
+function blankChildren(element, direction) {
+  Array.from(element.childNodes).forEach((child) => {
+    if (child.nodeType === TEXT_NODE) {
+      if (child.data) child.data = blankText(child.data, direction);
+    } else if (child.nodeType === COMMENT_NODE) {
+      child.remove();
+    } else if (child.nodeType === ELEMENT_NODE && isBlankable(child)) {
+      blankSubtree(child, direction);
+    }
+  });
+}
+
+function isBlankable(element) {
+  return element.namespaceURI !== SVG_NAMESPACE && !KEPT_UNRENDERED_TAGS.has(element.tagName);
+}
+
+// A text's stand-in: an invisible mark of the direction dir="auto" takes from
+// it, the direction of its first strong character (RLM for right-to-left, LRM
+// for left-to-right), or one space when it has none (digits, punctuation and
+// spaces are not strong).
+function blankText(data, direction = approximateTextDirection) {
+  const found = direction(String(data));
+  if (found === "rtl") return "\u200F";
+  return found === "ltr" ? "\u200E" : " ";
+}
+
+// "rtl", "ltr" or null (no strong character) for a text, by the browser's own
+// rules (Bidi_Class): a dir="auto" probe that is never attached, matched with
+// :dir(). A right-to-left letter added at the end tells a text without a strong
+// character from a left-to-right one. Where :dir() is not supported, by script.
+function browserTextDirection(doc) {
+  let probe = null;
+  return (data) => {
+    try {
+      if (!probe) {
+        probe = doc.createElement("div");
+        probe.setAttribute("dir", "auto");
+      }
+      probe.textContent = data;
+      if (probe.matches(":dir(rtl)")) return "rtl";
+      probe.textContent = `${data}\u05D0`;
+      return probe.matches(":dir(rtl)") ? null : "ltr";
+    } catch (_) {
+      return approximateTextDirection(data);
+    }
+  };
+}
+
+// By script: letters of right-to-left scripts are right-to-left, other letters
+// left-to-right. Close to the browser's rules, not the same.
+const STRONG_CHARACTER = /[\p{L}\p{Nl}\u0640\u200E\u200F\u061C]/u;
+const RIGHT_TO_LEFT = /[\p{Script=Hebrew}\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}\p{Script=Samaritan}\p{Script=Mandaic}\p{Script=Adlam}\p{Script=Hanifi_Rohingya}\u0640\u200F\u061C]/u;
+
+function approximateTextDirection(data) {
+  const strong = String(data).match(STRONG_CHARACTER);
+  if (!strong) return null;
+  return RIGHT_TO_LEFT.test(strong[0]) ? "rtl" : "ltr";
+}
+
+const ELEMENT_NODE = 1;
+const TEXT_NODE = 3;
+const COMMENT_NODE = 8;
+
+// A <template>'s content is never rendered, wherever the template is, and
+// selectors never reach into it (#122).
+function clearTemplateContents(templates) {
+  Array.from(templates).forEach((template) => {
+    if (template.content && typeof template.content.replaceChildren === "function") template.content.replaceChildren();
+  });
+}
+
+// Comments are never rendered (#122); with or without them, selectors match
+// the same.
+function removeComments(node) {
+  Array.from(node.childNodes).forEach((child) => {
+    if (child.nodeType === COMMENT_NODE) child.remove();
+    else if (child.nodeType === ELEMENT_NODE) removeComments(child);
+  });
+}
+
+// "element" when the page does not render the element (display:none),
+// "contents" when it renders the element's box but not what is inside
+// (content-visibility: hidden, as hidden="until-found" gives), else null.
+// content-visibility skips the contents only of some boxes: not of
+// display:contents, inline, table, table-row, table-caption or ruby ones
+// (checked in Chrome). Only the displays it was seen to skip count, and a child
+// the browser says is shown (checkVisibility) means it did not; anything else
+// keeps its contents, as the screen may show them.
+const CONTENT_SKIPPING_DISPLAYS = new Set(["block", "flow-root", "list-item", "inline-block", "flex", "inline-flex", "grid", "inline-grid", "table-cell"]);
+
+function hiddenPart(element, computedStyle = (node) => window.getComputedStyle(node)) {
+  const style = computedStyle(element);
+  if (style.display === "none") return "element";
+  if (style.contentVisibility !== "hidden" || !CONTENT_SKIPPING_DISPLAYS.has(style.display)) return null;
+  const shownChild = Array.from(element.children || []).some((child) => typeof child.checkVisibility === "function" && child.checkVisibility());
+  return shownChild ? null : "contents";
 }
 
 function visibleBackground(value) {
@@ -1227,7 +1387,7 @@ function base64Encode(value) {
   return btoa(binary);
 }
 
-return { captureScreenshot, uncapturedTouching, snapshotBodyOffsetStyle, byteLength, base64Encode };
+return { captureScreenshot, uncapturedTouching, blankUnrenderedElements, blankText, browserTextDirection, approximateTextDirection, clearTemplateContents, removeComments, hiddenPart, snapshotBodyOffsetStyle, byteLength, base64Encode };
 })();
 // --- widget/src/payload.js ---
 const __pl_widget_src_payload = (() => {

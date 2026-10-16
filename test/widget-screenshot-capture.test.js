@@ -13,6 +13,8 @@ function installPage({ bodyStyle, bodyInlineStyle = null, scrollX = 0, scrollY =
     tagName: "BODY",
     children: bodyChildren,
     getAttribute: (name) => (name === "style" ? bodyInlineStyle : null),
+    // The snapshot pairs the page's elements with the clone's (#122).
+    querySelectorAll: () => [],
     cloneNode: () => ({ childNodes: [], querySelectorAll: () => [] })
   };
   const documentElement = {
