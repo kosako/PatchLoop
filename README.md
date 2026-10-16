@@ -246,6 +246,7 @@ feedback は組み込みの `node:sqlite`（`server/feedback.db`）に保存し�
 - `MAX_FEEDBACK_COUNT` env（または config の `maxFeedbackCount`、デフォルト `100000`）を超えると新規保存を `507` で拒否します。import の追加件数には、保存済みIDとbundle内の重複IDを含めません。`SCREENSHOT_DISK_MAX_BYTES` env（または config の `screenshotDiskMaxBytes`、デフォルト `500000000`）を超える screenshot 書き込みも `507` で拒否します（起動時にディスク使用量を実測し、保存・削除で追跡）
 - `RECEIVER_TOKEN` env（または config の `receiverToken`）を設定すると、操作系 endpoint（`POST /import` / `POST /feedback/:id/status` / `DELETE /feedback/:id` / `POST /feedback/:id/github-issue`）と閲覧系 endpoint（`GET /`（inbox）/ `GET /feedback.json` / `GET /screenshots/:file`）に認証を必須にします。API からは `Authorization: Bearer <token>`、ブラウザからは inbox のログインフォーム（`GET /login`）に同じ token を入力します。ログイン後は HMAC 派生値の HttpOnly cookie（有効期限 7 日、`SameSite=Lax`、`publicBaseUrl` が `https://` のとき `Secure` 付き）でセッションが維持され、生 token はブラウザに保存されません。token を変更すると全端末のセッションが即失効します。未設定ならローカルは認証なしで動作します（widget の `POST /feedback` と `GET /widget.js` は設定時も常に公開。widget の status 照会 `POST /feedback-status` は既定では設定時に無くなる）
 - `STATUS_LOOKUP` env（または config の `statusLookup`）で、widget の status 照会 `POST /feedback-status` を開くかを決めます。未設定（config では `null`）なら `RECEIVER_TOKEN` が無いときだけ開きます。`1` / `true` にすると token があっても開きます（受信箱に token を付けたまま、手元だけで使うとき。届く人は feedback の id を知っていれば status を読めるので、起動ログに警告が出ます）。`0` / `false` にすると常に閉じます
+- `LOG_COMMENTS` env（または config の `logComments`）を `1` / `true` にすると、受信・取り込みのログ（`received feedback` / `imported feedback`）にコメントの先頭 60 字を出します。既定は `false` で、ログには feedback の id と結果だけを出します（ログは端末の履歴や、配置先のログの仕組みなど、受信箱より広く残りうるため）。起動ログの `comment log:` で今の設定が分かります
 - `INGEST_KEYS` env（カンマ区切り）または config の `ingestKeys`（配列）を設定すると、widget の投稿（`POST /feedback`）に `X-PatchLoop-Ingest-Key` ヘッダーの一致を必須にします（不一致・欠落は `401`）。config では `"key文字列"` に加えて `{ "key": "...", "projectId": "..." }` 形式で **key と projectId を紐付け**でき、紐付いた key での投稿は payload の `projectId` 詐称を `403` で拒否し、省略時は key の projectId を補完します。キーはデモページに埋め込まれる公開キーで、秘密による認証ではありません（プロジェクト識別・spam 抑止・ローテーション失効が目的）。未設定なら従来通り誰でも投稿できます
 - `ALLOWED_ORIGINS` env（または config の `allowedOrigins`、env はカンマ区切り・config は配列）を設定すると、widget の投稿と status 照会（`POST /feedback` / `POST /feedback-status`）の CORS を許可 origin（`scheme://host[:port]` の完全一致）に制限します。JSON POST はブラウザで preflight され、リスト外の `Origin` を持つ投稿は受信側でも 403 で拒否します。`Origin` のない CLI/API 投稿は引き続き利用できます（ingest key の要否は別途設定します）。未設定なら従来通り全 origin 許可（`*`）で、起動ログに警告が出ます。CORS ヘッダーが付くのは `POST /feedback` と `POST /feedback-status` のみで、inbox・操作系・screenshot は同一オリジン利用のため CORS 自体を返しません。受信した feedback には `received: { origin, originAllowed }` が保存され、inbox の raw payload から確認できます（Origin ヘッダーは偽装可能なため参考情報です）
 - JSON 操作（`POST /feedback`、`POST /import`、status 更新、GitHub issue 作成）は `Content-Type: application/json` が必要です（charset 指定可）。空の GitHub 作成要求も `{}` を送ってください。未指定や他の形式は 415 で拒否します。通常投稿の status は `new` となり、受信時刻・連携結果・配送履歴は受信側が確定します。
@@ -255,6 +256,17 @@ feedback は組み込みの `node:sqlite`（`server/feedback.db`）に保存し�
 - `SLACK_TIMEOUT_MS` env で Slack 転送の timeout を変更できます（デフォルトは `5000`）
 
 `examples/plain-html/` はデフォルトで `http://localhost:4000/feedback` に送信する設定です。`python3 -m http.server 4173` でページを配信した状態で receiver も起動すると、コメントが inbox に届きます。
+
+### データの保持と削除
+
+保存期間の自動管理はまだありません。不要になったデータは、置き場所ごとに手で消してください。
+
+- 受信箱の feedback: card の「削除」（`DELETE /feedback/:id`）で、feedback とその画面画像を消します
+- receiver のデータ全体: receiver を止めてから、sqlite DB（`FEEDBACK_DB_PATH`）と画面画像の directory（`SCREENSHOT_DIR`）を消します。旧形式の `feedback.json`（`FEEDBACK_STORE_PATH`）と、同じ directory にある退避ファイル `feedback.json.migrated-*` / `feedback.json.corrupt-*` にも feedback（画面画像のデータを含むことがある）が残るので、あれば消します（旧形式の `feedback.json` を残したまま DB だけを消すと、次の起動で取り込み直されます）
+- 受け取った書き出しファイル（`*.patchloop-feedback.json`）: 取り込んだ後も手元に残るので、不要なら消します。画面画像を含みます
+- 端末（ブラウザ）の保存: widget のパネルの「この端末のコメントを消す」で、開いているページの分を消します。同じ project / demo のほかのページの分や、投稿者名・表示の設定も消すときは、ブラウザでそのサイトのデータ（localStorage）を消します
+- receiver の外に出たもの（Slack に送った通知、作った GitHub Issue）: receiver から消しても残るので、それぞれのサービスで消します
+- receiver のログ: 既定ではコメントの文を出しません（`LOG_COMMENTS`）。feedback の id と結果は出るので、ログを残す仕組みがあればそちらの保持期間に従います
 
 ### Receiver 設定ファイル
 
@@ -289,7 +301,7 @@ cp server/receiver.config.example.json server/receiver.config.json
 
 数値系の設定に不正な値（非数値や、上限系・`SLACK_TIMEOUT_MS` / `slackTimeoutMs`・`GITHUB_TIMEOUT_MS` / `githubTimeoutMs` での 0・負・小数）を与えた場合は、その値を無視してデフォルト（env が不正なら config の値）に戻し、起動ログに `ignored invalid setting ...` の警告を出します。timeout は正の整数だけを受け付け、デフォルトは Slack が `5000` ms、GitHub が `8000` ms です。実効値は起動時の `limits:` / `rate limit:` / `timeouts:` サマリ行で確認できます。
 
-`RECEIVER_TRUST_PROXY` / `trustProxy`、`STATUS_LOOKUP` / `statusLookup`、`SLACK_IMAGE_MODE` / `slackImageMode`、`GITHUB_REPO` / `githubRepo` も、不正な値を同じ警告で知らせ、env → config → デフォルトの順に有効な値を使います。空文字・空白だけの値は未設定として扱い、空の env は config を上書きしません。真偽値は `1` / `true` / `yes` / `on` と `0` / `false` / `no` / `off`（大文字小文字・前後の空白は無視）、config では JSON の `true` / `false` も受け付けます。画像モードは `auto` / `link` / `block` / `upload` / `off`、repository は `owner/name` の形です。デフォルトは順に `false`、`RECEIVER_TOKEN` が無いときだけ有効、`auto`、空（GitHub Issue 作成は無効）です。
+`RECEIVER_TRUST_PROXY` / `trustProxy`、`STATUS_LOOKUP` / `statusLookup`、`SLACK_IMAGE_MODE` / `slackImageMode`、`GITHUB_REPO` / `githubRepo`、`LOG_COMMENTS` / `logComments` も、不正な値を同じ警告で知らせ、env → config → デフォルトの順に有効な値を使います。空文字・空白だけの値は未設定として扱い、空の env は config を上書きしません。真偽値は `1` / `true` / `yes` / `on` と `0` / `false` / `no` / `off`（大文字小文字・前後の空白は無視）、config では JSON の `true` / `false` も受け付けます。画像モードは `auto` / `link` / `block` / `upload` / `off`、repository は `owner/name` の形です。デフォルトは順に `false`、`RECEIVER_TOKEN` が無いときだけ有効、`auto`、空（GitHub Issue 作成は無効）、`false` です。
 
 環境変数を指定した場合は設定ファイルより優先されます。たとえば一時的に Slack 転送を試す場合:
 

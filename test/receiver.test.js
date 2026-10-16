@@ -1680,8 +1680,73 @@ test("Slack fallback text escapes the comment like the blocks do (#150)", async 
   assert.equal(slack.requests[1].body.text, `PatchLoop feedback: ${"x".repeat(119)}&amp;…`);
 });
 
-test("received and imported feedback log one line per item even with newlines in id or comment (#150)", async (t) => {
+test("by default the log names received and imported feedback by id only, without its comment (#122)", async (t) => {
   const receiver = await startReceiver(t);
+  assert.match(receiver.logs, /\[PatchLoop receiver\] comment log: off\n/);
+  let stdout = "";
+  receiver.child.stdout.on("data", (chunk) => { stdout += chunk; });
+  const received = feedbackPayload("pl_quiet_log");
+  delete received.screenshot;
+  received.comment = "a comment that stays out of the log";
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, received)).status, 201);
+  const imported = { ...feedbackPayload("pl_quiet_import"), comment: "an imported comment that stays out too" };
+  delete imported.screenshot;
+  const importResponse = await postJson(`${receiver.baseUrl}/import`, { kind: "patchloop-feedback-bundle", version: 2, exportedAt: "2026-10-16T00:00:00.000Z", feedback: [imported] });
+  assert.equal(importResponse.status, 201);
+  const expected = ["[PatchLoop receiver] received feedback id=pl_quiet_log", "[PatchLoop receiver] imported feedback id=pl_quiet_import"];
+  const deadline = Date.now() + 5000;
+  while (!expected.every((line) => stdout.split("\n").includes(line)) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  for (const line of expected) assert.ok(stdout.split("\n").includes(line), line);
+  assert.doesNotMatch(stdout, /stays out/);
+});
+
+test("LOG_COMMENTS reads like the other switches: env over config, empty env leaves the config, a bad value warns (#122)", async (t) => {
+  const configDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-log-config-"));
+  t.after(() => fs.rm(configDir, { recursive: true, force: true }));
+  const cases = [
+    [{ logComments: true }, "", true],
+    [{ logComments: true }, "0", false],
+    [{ logComments: false }, "1", true],
+    [{ logComments: true }, "maybe", true],
+    [{ logComments: "maybe" }, "", false]
+  ];
+  for (const [index, [config, env, logged]] of cases.entries()) {
+    const configPath = path.join(configDir, `receiver-${index}.config.json`);
+    await fs.writeFile(configPath, JSON.stringify(config));
+    const receiver = await startReceiver(t, { PATCHLOOP_RECEIVER_CONFIG: configPath, LOG_COMMENTS: env });
+    const label = `${JSON.stringify(config)} LOG_COMMENTS=${JSON.stringify(env)}`;
+    assert.match(receiver.logs, logged ? /comment log: on/ : /comment log: off/, label);
+    const warned = env === "maybe" ? /ignored invalid setting LOG_COMMENTS \(env\): "maybe" — using true/
+      : config.logComments === "maybe" ? /ignored invalid setting logComments \(config\): "maybe" — using false/ : null;
+    if (warned) assert.match(receiver.logs, warned, label);
+    else assert.doesNotMatch(receiver.logs, /ignored invalid setting/, label);
+    let stdout = "";
+    receiver.child.stdout.on("data", (chunk) => { stdout += chunk; });
+    const payload = { ...feedbackPayload(`pl_log_switch_${index}`), comment: `switch comment ${index}` };
+    delete payload.screenshot;
+    assert.equal((await postJson(`${receiver.baseUrl}/feedback`, payload)).status, 201, label);
+    const line = `[PatchLoop receiver] received feedback id=${payload.id}${logged ? ` comment="switch comment ${index}"` : ""}`;
+    const deadline = Date.now() + 5000;
+    while (!stdout.split("\n").includes(line) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(stdout.split("\n").includes(line), `${label}: ${line}`);
+  }
+});
+
+test("a legacy store that is not valid JSON is set aside without quoting its text in the log (#122)", async (t) => {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-receiver-test-"));
+  const storePath = path.join(tempDir, "feedback.json");
+  await fs.writeFile(storePath, '[{"id": "pl_old", "comment": "quiet legacy comment" x}]');
+  t.after(() => fs.rm(tempDir, { recursive: true, force: true }));
+  const receiver = await startReceiver(t, { FEEDBACK_STORE_PATH: storePath, FEEDBACK_DB_PATH: path.join(tempDir, "feedback.db") });
+  assert.match(receiver.logs, /legacy feedback\.json corrupt \(not valid JSON\)/);
+  assert.doesNotMatch(receiver.logs, /quiet legacy comment/);
+});
+
+test("received and imported feedback log one line per item even with newlines in id or comment (#150)", async (t) => {
+  // The comment goes into the log only when asked for (#122).
+  const receiver = await startReceiver(t, { LOG_COMMENTS: "1" });
   let stdout = "";
   receiver.child.stdout.on("data", (chunk) => { stdout += chunk; });
 
@@ -2683,6 +2748,7 @@ async function startReceiver(t, extraEnv = {}) {
       GITHUB_TOKEN: "",
       GITHUB_REPO: "",
       STATUS_LOOKUP: "",
+      LOG_COMMENTS: "",
       PATCHLOOP_RECEIVER_CONFIG: path.join(tempDir, "missing-config.json"),
       ...extraEnv
     },
