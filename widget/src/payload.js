@@ -25,7 +25,8 @@ export function buildPayload(comment, reviewer, target, includeScreenshot = stat
       url: pageUrlForSharing(window.location.href, state.options.keepQueryParams),
       title: document.title
     },
-    sourceContext: state.options.sourceContext,
+    // Each comment's own copy: the rule is applied to it in place (#122).
+    sourceContext: state.options.sourceContext ? { ...state.options.sourceContext } : null,
     target: {
       kind: target.kind || "point",
       x: round(target.x),

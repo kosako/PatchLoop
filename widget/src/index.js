@@ -2,7 +2,7 @@ import { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarge
 import { pointAnchorOffsets, areaAnchorOffsets, geometryFromAnchor, viewportDiffersFromCreation } from "./anchoring.js";
 import { selectorFor, textFor } from "./selector.js";
 import { resolveSourceContext } from "./source-context.js";
-import { applyPageUrlRule, normalizeKeepQueryParams } from "./url.js";
+import { applyPageUrlRule, applySourceContextUrlRule, normalizeKeepQueryParams } from "./url.js";
 import { DEFAULTS, state } from "./state.js";
 import { buildPayload, buildRevision, outgoingPayload } from "./payload.js";
 import { uncapturedTouching } from "./screenshot.js";
@@ -53,6 +53,8 @@ function init(options = {}) {
   // built later carries the same provenance without re-reading the DOM.
   state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
   state.options.keepQueryParams = normalizeKeepQueryParams(state.options.keepQueryParams);
+  // Its URLs leave under page.url's rule (#122).
+  applySourceContextUrlRule(state.options.sourceContext, state.options.keepQueryParams);
   state.displayMode = loadDisplayMode();
   // Before anything renders: the panel counts the other pages against it.
   bindFeedbackScope();

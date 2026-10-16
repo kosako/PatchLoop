@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { applyPageUrlRule, normalizePageUrl, normalizeKeepQueryParams, pageUrlForSharing, samePersistedPage } = require("../widget/src/url.js");
+const { applyPageUrlRule, applySourceContextUrlRule, normalizePageUrl, normalizeKeepQueryParams, pageUrlForSharing, samePersistedPage, sourceUrlForSharing } = require("../widget/src/url.js");
 
 test("normalizePageUrl keeps origin and pathname, drops query and hash", () => {
   assert.equal(normalizePageUrl("https://demo.example/app?utm=x#sec"), "https://demo.example/app");
@@ -99,3 +99,56 @@ test("applyPageUrlRule leaves comments without a string page.url alone", () => {
   assert.equal(applyPageUrlRule(item, []), false);
   assert.equal(item.page.url, null);
 });
+
+// --- sourceContext URLs (#122) ---------------------------------------------
+
+test("sourceUrlForSharing applies page.url's rule to an absolute URL", () => {
+  const url = "https://user:pass@preview.example/app?token=abc&step=2#frag";
+  assert.equal(sourceUrlForSharing(url, []), "https://preview.example/app");
+  assert.equal(sourceUrlForSharing(url, ["step"]), "https://preview.example/app?step=2");
+});
+
+test("sourceUrlForSharing keeps a relative URL's path and listed query keys and drops its fragment", () => {
+  assert.equal(sourceUrlForSharing("/builds/42?token=abc&step=2#log", ["step"]), "/builds/42?step=2");
+  assert.equal(sourceUrlForSharing("builds/42?token=abc", []), "builds/42");
+  assert.equal(sourceUrlForSharing("builds/42#log", []), "builds/42");
+  assert.equal(sourceUrlForSharing("builds/42", []), "builds/42");
+});
+
+test("sourceUrlForSharing takes a protocol-relative URL as https, so credentials go too", () => {
+  assert.equal(sourceUrlForSharing("//user:pass@preview.example/app?token=abc", []), "//preview.example/app");
+  assert.equal(sourceUrlForSharing("\\\\user:pass@preview.example/app?token=abc", []), "//preview.example/app");
+  assert.equal(sourceUrlForSharing("ht\ttps://user:pass@preview.example/app?token=abc", []), "https://preview.example/app");
+});
+
+test("sourceUrlForSharing empties an absolute or protocol-relative URL that does not parse", () => {
+  for (const url of [
+    "https://user:pass@preview.example:bad/app?token=x#frag", "//user:pass@preview.example:bad/app", "http://[::1/app",
+    // As the URL parser reads them: tabs and newlines inside, controls and spaces at the ends.
+    "ht\ttps://user:pass@preview.example:bad/app?token=x", "\n https://user:pass@preview.example:bad/", " //user:pass@host:bad/", "\\\\user:pass@host:bad/"
+  ]) {
+    assert.equal(sourceUrlForSharing(url, ["token"]), "", url);
+  }
+  // A relative path that only looks odd stays a path.
+  assert.equal(sourceUrlForSharing("builds/a:b?step=1", ["step"]), "builds/a:b?step=1");
+});
+
+test("sourceUrlForSharing leaves what is not a URL string as it is", () => {
+  for (const value of [undefined, null, "", 42]) assert.equal(sourceUrlForSharing(value, []), value);
+});
+
+test("applyPageUrlRule also narrows the sourceContext URLs, and only those", () => {
+  const item = {
+    page: { url: "https://demo.example/flow?token=abc" },
+    sourceContext: { repo: "acme/shop", branch: "main", previewUrl: "https://preview.example/app?token=abc#x", buildUrl: "https://ci.example/b/1?step=2" }
+  };
+  assert.equal(applyPageUrlRule(item, ["step"]), true);
+  assert.deepEqual(item, {
+    page: { url: "https://demo.example/flow" },
+    sourceContext: { repo: "acme/shop", branch: "main", previewUrl: "https://preview.example/app", buildUrl: "https://ci.example/b/1?step=2" }
+  });
+  assert.equal(applyPageUrlRule(item, ["step"]), false);
+  assert.equal(applySourceContextUrlRule(null, []), false);
+  assert.equal(applyPageUrlRule({ sourceContext: { previewUrl: "https://preview.example/app" } }, []), false);
+});
+

@@ -94,3 +94,41 @@ test("a comment built before a re-init from a patchloop:feedback listener reache
   assert.equal(received, "https://demo.example/flow?step=2");
   assert.equal(JSON.parse(w.requests[0].body).page.url, "https://demo.example/flow?step=2");
 });
+
+// --- sourceContext URLs (#122) ---------------------------------------------
+
+const PREVIEW = "https://preview.example/app?step=2&share_token=abc#frag";
+
+test("sourceContext URLs leave under the same rule, from the init option or a meta tag", async () => {
+  const w = widgetHarness();
+  w.window.location.href = PAGE;
+  w.init({ keepQueryParams: ["step"], sourceContext: { repo: "acme/shop", previewUrl: PREVIEW, buildUrl: "/builds/9?share_token=abc" } });
+  await w.submit();
+  assert.deepEqual(JSON.parse(w.requests[0].body).sourceContext, { repo: "acme/shop", previewUrl: "https://preview.example/app?step=2", buildUrl: "/builds/9" });
+
+  const fromMeta = widgetHarness();
+  fromMeta.window.location.href = PAGE;
+  const meta = fromMeta.document.createElement("meta");
+  meta.setAttribute("name", "patchloop:preview-url");
+  meta.content = PREVIEW;
+  fromMeta.document.head.append(meta);
+  fromMeta.init({ keepQueryParams: ["step"] });
+  await fromMeta.submit();
+  assert.deepEqual(JSON.parse(fromMeta.requests[0].body).sourceContext, { previewUrl: "https://preview.example/app?step=2" });
+});
+
+test("a saved comment's sourceContext URLs are narrowed on load and in the export", async () => {
+  const w = widgetHarness();
+  w.window.location.href = PAGE;
+  w.init({ persistFeedback: true, deliveryMode: "download", keepQueryParams: ["step", "share_token"], sourceContext: { previewUrl: PREVIEW } });
+  await w.submit("Saved earlier");
+  assert.equal(w.api.getFeedback()[0].sourceContext.previewUrl, "https://preview.example/app?step=2&share_token=abc");
+  w.api.destroy();
+
+  w.init({ persistFeedback: true, deliveryMode: "download", keepQueryParams: ["step"] });
+  assert.equal(w.api.getFeedback()[0].sourceContext.previewUrl, "https://preview.example/app?step=2");
+  w.document.querySelector("[data-pl-download-all]").click();
+  const bundle = JSON.parse(await w.downloads[0].blob.text());
+  assert.equal(bundle.feedback[0].sourceContext.previewUrl, "https://preview.example/app?step=2");
+});
+
