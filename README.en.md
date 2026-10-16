@@ -263,7 +263,7 @@ On startup, an existing legacy `server/feedback.json` is migrated once into an e
 There is no automatic retention yet. Delete data you no longer need by hand, wherever it is:
 
 - Feedback in the inbox: the card's delete button (`DELETE /feedback/:id`) removes the feedback and its screenshot
-- All receiver data: stop the receiver, then delete the sqlite DB (`FEEDBACK_DB_PATH`) and the screenshot directory (`SCREENSHOT_DIR`)
+- All receiver data: stop the receiver, then delete the sqlite DB (`FEEDBACK_DB_PATH`) and the screenshot directory (`SCREENSHOT_DIR`). A legacy `feedback.json` (`FEEDBACK_STORE_PATH`) and the backups next to it, `feedback.json.migrated-*` / `feedback.json.corrupt-*`, hold feedback too (sometimes with screenshot data); delete them if present (a legacy `feedback.json` left behind with the DB gone is imported again on the next start)
 - Export files you received (`*.patchloop-feedback.json`): they stay where you saved them after the import; delete them when no longer needed. They include screenshots
 - What the browser keeps: the widget panel's “この端末のコメントを消す” removes the open page's comments. To remove the other pages of the same project / demo, the reviewer name and the display setting too, clear the site's data (localStorage) in the browser
 - What left the receiver (Slack notifications, GitHub Issues): deleting in the receiver does not remove them; delete them in each service

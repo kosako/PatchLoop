@@ -81,9 +81,12 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
       // Never discard an unreadable store silently: set it aside so a human
       // can recover it, then start from an empty database.
       const backup = `${legacyJsonPath}.corrupt-${Date.now()}`;
+      // A JSON syntax error quotes the text around it, which can be a comment
+      // (#122): name the kind of problem only.
+      const reason = error instanceof SyntaxError ? "not valid JSON" : error.message;
       try {
         fs.renameSync(legacyJsonPath, backup);
-        console.warn(`[PatchLoop store] legacy feedback.json corrupt (${error.message}); backed up to ${backup}`);
+        console.warn(`[PatchLoop store] legacy feedback.json corrupt (${reason}); backed up to ${backup}`);
       } catch (backupError) {
         console.warn(`[PatchLoop store] legacy feedback.json corrupt and backup failed: ${backupError.message}`);
       }

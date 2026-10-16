@@ -262,7 +262,7 @@ feedback は組み込みの `node:sqlite`（`server/feedback.db`）に保存し�
 保存期間の自動管理はまだありません。不要になったデータは、置き場所ごとに手で消してください。
 
 - 受信箱の feedback: card の「削除」（`DELETE /feedback/:id`）で、feedback とその画面画像を消します
-- receiver のデータ全体: receiver を止めてから、sqlite DB（`FEEDBACK_DB_PATH`）と画面画像の directory（`SCREENSHOT_DIR`）を消します
+- receiver のデータ全体: receiver を止めてから、sqlite DB（`FEEDBACK_DB_PATH`）と画面画像の directory（`SCREENSHOT_DIR`）を消します。旧形式の `feedback.json`（`FEEDBACK_STORE_PATH`）と、同じ directory にある退避ファイル `feedback.json.migrated-*` / `feedback.json.corrupt-*` にも feedback（画面画像のデータを含むことがある）が残るので、あれば消します（旧形式の `feedback.json` を残したまま DB だけを消すと、次の起動で取り込み直されます）
 - 受け取った書き出しファイル（`*.patchloop-feedback.json`）: 取り込んだ後も手元に残るので、不要なら消します。画面画像を含みます
 - 端末（ブラウザ）の保存: widget のパネルの「この端末のコメントを消す」で、開いているページの分を消します。同じ project / demo のほかのページの分や、投稿者名・表示の設定も消すときは、ブラウザでそのサイトのデータ（localStorage）を消します
 - receiver の外に出たもの（Slack に送った通知、作った GitHub Issue）: receiver から消しても残るので、それぞれのサービスで消します

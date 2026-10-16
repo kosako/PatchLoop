@@ -19,6 +19,7 @@
   "trustProxy": false,
   "receiverToken": "",
   "statusLookup": null,
+  "logComments": false,
   "allowedOrigins": [],
   "ingestKeys": [],
   "slackWebhookUrl": "",
