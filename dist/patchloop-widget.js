@@ -316,17 +316,21 @@ function keptQueryPairs(query, keepQueryParams) {
 // (#122): a preview's share link can carry a token as well, so they leave
 // under page.url's rule. They may be relative, as the page's URL never is:
 // one keeps its path and only the listed query keys, and loses its fragment;
-// a protocol-relative one is taken as https, which drops any credentials. One
-// with a scheme or "//" that does not parse returns "", as nothing in it can
-// be told safe to keep (it could hold credentials).
-const SCHEME_OR_AUTHORITY = /^([a-z][a-z0-9+.-]*:|\/\/)/i;
+// a protocol-relative one (// or \\, as the URL parser reads both) is taken
+// as https, which drops any credentials. One with a scheme or an authority
+// that does not parse returns "", as nothing in it can be told safe to keep (it
+// could hold credentials). Both are told after the parser's own clean-up: tabs
+// and newlines removed, control characters and spaces trimmed from the ends.
+const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+const AUTHORITY = /^[\\/]{2}/;
 
 function sourceUrlForSharing(url, keepQueryParams) {
   if (typeof url !== "string" || url === "") return url;
-  const protocolRelative = url.startsWith("//");
-  const absolute = pageUrlForSharing(protocolRelative ? `https:${url}` : url, keepQueryParams);
+  const cleaned = url.replace(/[\t\n\r]/g, "").replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "");
+  const protocolRelative = AUTHORITY.test(cleaned);
+  const absolute = pageUrlForSharing(protocolRelative ? `https://${cleaned.slice(2)}` : url, keepQueryParams);
   if (absolute) return protocolRelative ? absolute.slice("https:".length) : absolute;
-  if (SCHEME_OR_AUTHORITY.test(url)) return "";
+  if (SCHEME.test(cleaned) || protocolRelative) return "";
   const withoutFragment = url.split("#")[0];
   const question = withoutFragment.indexOf("?");
   if (question === -1) return withoutFragment;

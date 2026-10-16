@@ -117,10 +117,16 @@ test("sourceUrlForSharing keeps a relative URL's path and listed query keys and 
 
 test("sourceUrlForSharing takes a protocol-relative URL as https, so credentials go too", () => {
   assert.equal(sourceUrlForSharing("//user:pass@preview.example/app?token=abc", []), "//preview.example/app");
+  assert.equal(sourceUrlForSharing("\\\\user:pass@preview.example/app?token=abc", []), "//preview.example/app");
+  assert.equal(sourceUrlForSharing("ht\ttps://user:pass@preview.example/app?token=abc", []), "https://preview.example/app");
 });
 
 test("sourceUrlForSharing empties an absolute or protocol-relative URL that does not parse", () => {
-  for (const url of ["https://user:pass@preview.example:bad/app?token=x#frag", "//user:pass@preview.example:bad/app", "http://[::1/app"]) {
+  for (const url of [
+    "https://user:pass@preview.example:bad/app?token=x#frag", "//user:pass@preview.example:bad/app", "http://[::1/app",
+    // As the URL parser reads them: tabs and newlines inside, controls and spaces at the ends.
+    "ht\ttps://user:pass@preview.example:bad/app?token=x", "\n https://user:pass@preview.example:bad/", " //user:pass@host:bad/", "\\\\user:pass@host:bad/"
+  ]) {
     assert.equal(sourceUrlForSharing(url, ["token"]), "", url);
   }
   // A relative path that only looks odd stays a path.
