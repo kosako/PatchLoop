@@ -661,7 +661,10 @@ const state = {
   // Re-checks a delivery another tab may still be making, and when this tab
   // first saw each such delivery (monotonic); see settlePendingDeliveries.
   pendingCheckTimer: null,
-  pendingSeenAt: new Map()
+  pendingSeenAt: new Map(),
+  // Markers following content that moves under them (#213): the frame asked
+  // for, and until when (and at the latest) to keep following.
+  follow: { frame: null, until: 0, limit: 0 }
 };
 
 return { DEFAULTS, state };
@@ -2059,6 +2062,10 @@ let pendingInit = null;
 const captureEvents = typeof window.PointerEvent === "function"
   ? ["pointerdown", "pointermove", "pointerup"]
   : ["mousedown", "mousemove", "mouseup"];
+// What may move content under the markers (#213): any scroll (it does not
+// bubble, so it is caught on the way down), a wheel, the end of a drag and a
+// key; a move counts only while a button is held (see followDrag).
+const FOLLOW_EVENTS = ["scroll", "wheel", captureEvents[2], "keyup"];
 
 function init(options = {}) {
   cancelPendingInit();
@@ -2099,6 +2106,8 @@ function init(options = {}) {
   renderShell();
   bindGlobalCapture();
   restorePersistedFeedback();
+  // Restored markers inside a box scrolled away are hidden from the start (#213).
+  scheduleMarkerFollow();
   applyCollapseState();
   renderFeedbackList();
   refreshInboxStatuses();
@@ -2117,6 +2126,9 @@ function destroy() {
   document.removeEventListener("keydown", handleCaptureKeydown, true);
   document.removeEventListener("click", suppressDocumentClick, true);
   window.removeEventListener("resize", handleWindowResize);
+  FOLLOW_EVENTS.forEach((type) => document.removeEventListener(type, scheduleMarkerFollow, true));
+  document.removeEventListener(captureEvents[1], followDrag, true);
+  cancelMarkerFollow();
   window.visualViewport?.removeEventListener("resize", positionVisibleCommentForm);
   window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
@@ -2284,6 +2296,12 @@ function bindGlobalCapture() {
   document.addEventListener("keydown", handleCaptureKeydown, true);
   window.removeEventListener("resize", handleWindowResize);
   window.addEventListener("resize", handleWindowResize);
+  FOLLOW_EVENTS.forEach((type) => {
+    document.removeEventListener(type, scheduleMarkerFollow, true);
+    document.addEventListener(type, scheduleMarkerFollow, { capture: true, passive: true });
+  });
+  document.removeEventListener(captureEvents[1], followDrag, true);
+  document.addEventListener(captureEvents[1], followDrag, { capture: true, passive: true });
   window.visualViewport?.removeEventListener("resize", positionVisibleCommentForm);
   window.visualViewport?.addEventListener("resize", positionVisibleCommentForm);
   window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
@@ -3393,8 +3411,8 @@ function refreshTargetCoordinates(target, geometry) {
 // #155: a comment's target stays the record of when it was confirmed, so a
 // re-anchor works on a copy and only moves the marker; null when the element
 // cannot be resolved.
-function reanchoredTarget(target) {
-  const geometry = reanchorGeometry(target);
+function reanchoredTarget(target, element) {
+  const geometry = reanchorGeometry(target, element);
   if (!geometry) return null;
   const copy = { ...target, area: target.area && { ...target.area } };
   refreshTargetCoordinates(copy, geometry);
@@ -3423,19 +3441,24 @@ function assignPointFields(target, point) {
   target.documentY = round(point.documentY);
 }
 
-function repositionMarker(marker, target) {
-  if (!marker || !marker.node) return;
+// Returns whether the marker moved. origin: markerOrigin(), measured once by a
+// caller that places many markers.
+function repositionMarker(marker, target, origin = markerOrigin()) {
+  if (!marker || !marker.node) return false;
   const placement = storedPlacement(target);
-  if (!placement) return;
+  if (!placement) return false;
+  const style = marker.node.style;
+  const before = `${style.left} ${style.top} ${style.width} ${style.height}`;
   if (placement.kind === "area") {
-    Object.assign(marker.node.style, {
-      ...markerPosition(placement.pageLeftPx, placement.pageTopPx),
+    Object.assign(style, {
+      ...markerPosition(placement.pageLeftPx, placement.pageTopPx, origin),
       width: `${placement.widthPx}px`,
       height: `${placement.heightPx}px`
     });
-    return;
+  } else {
+    Object.assign(style, markerPosition(placement.pageX, placement.pageY, origin));
   }
-  Object.assign(marker.node.style, markerPosition(placement.pageX, placement.pageY));
+  return `${style.left} ${style.top} ${style.width} ${style.height}` !== before;
 }
 
 // #173: markers are position: absolute children of body, so their left/top
@@ -3450,12 +3473,16 @@ function repositionMarker(marker, target) {
 // keep a host ::before / ::after from growing it while it is measured.
 const ORIGIN_PROBE_STYLE = "all:initial!important;display:block!important;position:absolute!important;left:0!important;top:0!important;width:0!important;height:0!important;overflow:hidden!important";
 
-function markerPosition(pageX, pageY) {
+function markerOrigin() {
   const probe = document.createElement("div");
   probe.style.cssText = ORIGIN_PROBE_STYLE;
   document.body.append(probe);
   const origin = probe.getBoundingClientRect();
   probe.remove();
+  return origin;
+}
+
+function markerPosition(pageX, pageY, origin = markerOrigin()) {
   return { left: `${pageX - window.scrollX - origin.left}px`, top: `${pageY - window.scrollY - origin.top}px` };
 }
 
@@ -3467,6 +3494,144 @@ function setMarkerApproximate(marker, isApproximate) {
   } else {
     marker.node.removeAttribute("title");
   }
+}
+
+// #213: markers sit on the document, so a box that scrolls inside the page, or
+// content moved by a transform (a canvas panned with the wheel), leaves them
+// behind. After a scroll, a wheel, a drag or a key, markers are put back on
+// their elements every frame for as long as they move, and a marker whose
+// element has left the boxes it is seen through is hidden. Only the markers
+// move: the stored targets stay the record of when they were confirmed (#155).
+const FOLLOW_SETTLE_MS = 300;
+const FOLLOW_MOVING_MS = 150;
+const FOLLOW_MAX_MS = 2000;
+
+function followClock() {
+  return typeof window.performance?.now === "function" ? window.performance.now() : Date.now();
+}
+
+function followDrag(event) {
+  if (event.buttons & 1) scheduleMarkerFollow();
+}
+
+function scheduleMarkerFollow() {
+  if (state.feedbackMarkers.size === 0 && !state.pendingTarget?.markerNode) return;
+  const now = followClock();
+  state.follow.until = Math.max(state.follow.until, now + FOLLOW_SETTLE_MS);
+  state.follow.limit = now + FOLLOW_MAX_MS;
+  if (state.follow.frame == null) state.follow.frame = requestFollowFrame();
+}
+
+function requestFollowFrame() {
+  return typeof window.requestAnimationFrame === "function"
+    ? { raf: window.requestAnimationFrame(followMarkersFrame) }
+    : { timeout: window.setTimeout(followMarkersFrame, 16) };
+}
+
+function cancelMarkerFollow() {
+  const frame = state.follow.frame;
+  if (frame?.raf != null) window.cancelAnimationFrame?.(frame.raf);
+  if (frame?.timeout != null) window.clearTimeout(frame.timeout);
+  state.follow.frame = null;
+  state.follow.until = 0;
+}
+
+function followMarkersFrame() {
+  state.follow.frame = null;
+  if (!getRoot()) return;
+  const moved = followMarkers();
+  const now = followClock();
+  if (moved) state.follow.until = Math.min(state.follow.limit, Math.max(state.follow.until, now + FOLLOW_MOVING_MS));
+  if (now < state.follow.until) state.follow.frame = requestFollowFrame();
+}
+
+// Puts every marker on its element where the element can be found (else it
+// stays where it is), and hides the ones out of sight. Returns whether any moved.
+function followMarkers() {
+  const origin = markerOrigin();
+  let moved = false;
+  state.feedback.forEach((item) => {
+    const marker = state.feedbackMarkers.get(item.id);
+    if (!marker) return;
+    const element = markerAnchorElement(marker, item.target);
+    const target = element && reanchoredTarget(item.target, element);
+    if (target) moved = repositionMarker(marker, target, origin) || moved;
+    clipMarker(marker, element, item.id);
+  });
+  const pending = state.pendingTarget;
+  if (pending?.markerNode) {
+    const geometry = reanchorGeometry(pending, pending.anchorElement);
+    if (geometry) {
+      refreshTargetCoordinates(pending, geometry);
+      moved = repositionMarker({ node: pending.markerNode }, pending, origin) || moved;
+    }
+    clipMarker({ node: pending.markerNode }, pending.anchorElement, null);
+  }
+  return moved;
+}
+
+// The element a marker is placed on, kept with the marker while it stays in
+// the page so that following does not look it up every frame.
+function markerAnchorElement(marker, target) {
+  if (marker.anchorElement?.isConnected) return marker.anchorElement;
+  const element = elementForSelector(target?.anchor?.selector || target?.selector);
+  marker.anchorElement = element || null;
+  marker.clipBoxes = null;
+  return marker.anchorElement;
+}
+
+// The ancestors that cut off what overflows them (overflow other than
+// visible): the boxes the element is seen through. Not followed: a fixed or
+// absolutely placed element that escapes an ancestor's overflow.
+function clippingAncestors(element) {
+  const boxes = [];
+  if (!element || typeof window.getComputedStyle !== "function") return boxes;
+  for (let node = element.parentElement; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+    const style = window.getComputedStyle(node);
+    if (style && (style.overflowX !== "visible" || style.overflowY !== "visible")) boxes.push(node);
+  }
+  return boxes;
+}
+
+// Hides a pin whose point is outside the boxes its element is seen through,
+// and cuts an area down to them.
+function clipMarker(marker, element, feedbackId) {
+  if (!marker?.node) return;
+  if (!element) {
+    setMarkerClip(marker.node, false, "");
+    return;
+  }
+  if (marker.clipBoxes == null || marker.clipFor !== element) {
+    marker.clipBoxes = clippingAncestors(element);
+    marker.clipFor = element;
+  }
+  let box = null;
+  for (const node of marker.clipBoxes) {
+    const rect = node.getBoundingClientRect();
+    box = box
+      ? { left: Math.max(box.left, rect.left), top: Math.max(box.top, rect.top), right: Math.min(box.right, rect.right), bottom: Math.min(box.bottom, rect.bottom) }
+      : { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+  }
+  if (!box) {
+    setMarkerClip(marker.node, false, "");
+    return;
+  }
+  const rect = marker.node.getBoundingClientRect();
+  if (marker.node.matches("[data-patchloop-area]")) {
+    const inset = [box.top - rect.top, rect.right - box.right, rect.bottom - box.bottom, box.left - rect.left].map((value) => Math.max(0, value));
+    const outside = box.left >= rect.right || box.right <= rect.left || box.top >= rect.bottom || box.bottom <= rect.top;
+    setMarkerClip(marker.node, outside, inset.some((value) => value > 0) ? `inset(${inset.map((value) => `${Math.round(value)}px`).join(" ")})` : "");
+  } else {
+    const x = (rect.left + rect.right) / 2;
+    const y = (rect.top + rect.bottom) / 2;
+    setMarkerClip(marker.node, x < box.left || x > box.right || y < box.top || y > box.bottom, "");
+  }
+  if (marker.node.classList.contains("pl-marker-clipped") && feedbackId && getTooltip()?.dataset.feedbackId === feedbackId) hideTooltip();
+}
+
+function setMarkerClip(node, hidden, clipPath) {
+  node.classList.toggle("pl-marker-clipped", hidden);
+  if (node.style.clipPath !== clipPath) node.style.clipPath = clipPath;
 }
 
 function handleWindowResize() {
@@ -3503,6 +3668,7 @@ function reanchorAllMarkers() {
   }
 
   renderFeedbackList();
+  scheduleMarkerFollow();
 }
 
 function removeCommittedMarkers() {
@@ -4117,6 +4283,7 @@ function injectStyles() {
     .pl-feedback-active [data-patchloop-pin], .pl-feedback-active .pl-area button { pointer-events: none; }
     .pl-target-highlight { outline: 2px dashed #d1495b; outline-offset: 2px; }
     .pl-marker-approx { outline: 3px dashed #f2a33c !important; outline-offset: 2px; }
+    [data-patchloop-pin].pl-marker-clipped, [data-patchloop-area].pl-marker-clipped { visibility: hidden !important; }
     .pl-feedback-approx { color: #986000; font-weight: 900; cursor: help; margin-left: 2px; }
     .pl-feedback-active, .pl-feedback-active * { cursor: crosshair !important; }
     .pl-root :focus-visible, .pl-pin:focus-visible, .pl-area button:focus-visible { outline: 3px solid #168565; outline-offset: 3px; }

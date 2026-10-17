@@ -223,7 +223,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 
 `target.kind` は `point` または `area` です。範囲選択の場合は `target.area` に viewport 上の percentage (`x` / `y` / `width` / `height`) に加えて、`clientX/Y/Width/Height`、`pageX/Y`、`documentX/Y/Width/Height` のピクセル値も入ります。
 
-`target` の座標は、`environment.viewport` や画面画像と同じく、コメントを確定した時点の記録です。`clientX/clientY` はその時点の viewport 上の位置、`pageX/pageY` はスクロールを含む document 上の位置です。pin / area overlay は document 上に固定されるため、スクロールしても対象箇所に追従します。ウィンドウリサイズや reload でレイアウトが変わった場合は `target.selector` + `target.anchor` で marker を対象要素に置き直しますが、`target` の座標は書き換えません（保存・送信・書き出しの値は確定した時点のまま）。
+`target` の座標は、`environment.viewport` や画面画像と同じく、コメントを確定した時点の記録です。`clientX/clientY` はその時点の viewport 上の位置、`pageX/pageY` はスクロールを含む document 上の位置です。pin / area overlay は document 上に固定されるため、スクロールしても対象箇所に追従します。ページの中でスクロールする箱や、CSS の transform で動かすキャンバス（ホイールやドラッグで動く流れ図など）の中でも、スクロール・ホイール・ドラッグ・キー操作の後に、marker を `target.selector` + `target.anchor` で対象の要素に置き直します（場所を選んでコメントを書いている間の番号も同じ）。対象の要素が、スクロールする箱など（`overflow` が `visible` でない祖先）の見える範囲の外に出たら、pin は隠れ、area overlay は範囲の外の部分を切り取ります。範囲に戻れば出ます。対象の要素が見つからない marker と、固定や絶対配置で祖先の範囲の外に出る要素の marker は、この置き直しと切り取りの対象外です。ウィンドウリサイズや reload でレイアウトが変わった場合は `target.selector` + `target.anchor` で marker を対象要素に置き直しますが、`target` の座標は書き換えません（保存・送信・書き出しの値は確定した時点のまま）。
 
 ### 互換性
 
