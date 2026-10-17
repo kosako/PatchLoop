@@ -292,7 +292,8 @@ test("every text color of the widget meets 4.5:1 on the backgrounds it is shown 
   const exempt = new Set([".pl-actions [data-pl-download-all]:disabled"]);
   // Backgrounds no text is shown on.
   const withoutText = new Set([
-    // The handle fills the collapsed panel with a background of its own.
+    // The handle and the tuck button (#211) fill the collapsed panel with
+    // backgrounds of their own.
     ".pl-panel.pl-collapsed", ".pl-feedback-active .pl-panel.pl-collapsed",
     // The tint of a selection or an area; the area's number is its button.
     ".pl-selection", ".pl-area", ".pl-area.pl-marker-done", ".pl-area.pl-marker-dot:not(:hover):not(:focus-within)",
@@ -304,7 +305,7 @@ test("every text color of the widget meets 4.5:1 on the backgrounds it is shown 
   // text, or whose other text is checked on them below. Listed by name, so a
   // new box that sets both still fails until the text shown on it is checked.
   for (const selector of [
-    ".pl-handle", ".pl-handle.pl-mode-on", ".pl-panel.pl-collapsed .pl-handle", ".pl-mode",
+    ".pl-handle", ".pl-handle.pl-mode-on", ".pl-panel.pl-collapsed .pl-handle", ".pl-panel.pl-collapsed .pl-tuck", ".pl-tab", ".pl-mode",
     ".pl-actions button", ".pl-form-actions button", ".pl-actions [data-pl-download-all]", '.pl-form-actions button[type="submit"]',
     ".pl-delivery-settings input", ".pl-delivery-settings select", ".pl-feedback-actions button",
     ".pl-comment textarea", ".pl-comment input", ".pl-form-error", ".pl-tooltip", ".pl-pin", ".pl-area button",
@@ -317,6 +318,8 @@ test("every text color of the widget meets 4.5:1 on the backgrounds it is shown 
   check(".pl-handle", ".pl-handle:hover");
   check(".pl-handle.pl-mode-on", ".pl-handle.pl-mode-on:hover");
   check(".pl-panel.pl-collapsed .pl-handle", ".pl-panel.pl-collapsed .pl-handle.pl-mode-on");
+  check(".pl-panel.pl-collapsed .pl-tuck", ".pl-panel.pl-collapsed .pl-tuck.pl-mode-on");
+  check(".pl-tab", ".pl-tab.pl-mode-on");
   check(".pl-mode", '.pl-mode[aria-pressed="true"]');
   check(".pl-pin", ".pl-pin.pl-marker-done");
   check(".pl-area button", ".pl-area.pl-marker-done button");
