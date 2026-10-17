@@ -3334,7 +3334,17 @@ function buildAreaAnchor(startElement, rect) {
     Math.min(Math.max(rect.leftPx + rect.widthPx / 2, 0), window.innerWidth - 1),
     Math.min(Math.max(rect.topPx + rect.heightPx / 2, 0), window.innerHeight - 1)
   );
-  let anchorElement = anchorableElement(centerElement) || anchorableElement(startElement);
+  // A drag between items may centre on the box around them; an item it starts
+  // or ends on moves with the content where the box does not (#213).
+  const candidates = [
+    centerElement,
+    startElement,
+    document.elementFromPoint(
+      Math.min(Math.max(rect.leftPx + rect.widthPx - 1, 0), window.innerWidth - 1),
+      Math.min(Math.max(rect.topPx + rect.heightPx - 1, 0), window.innerHeight - 1)
+    )
+  ].map(anchorableElement).filter(Boolean);
+  let anchorElement = candidates.find((element) => !cutsOffContent(element)) || candidates[0] || null;
 
   let cursor = anchorElement;
   for (let depth = 0; cursor && depth < 6; depth++) {
@@ -3487,8 +3497,8 @@ function markerOrigin() {
   return origin;
 }
 
-function markerPosition(pageX, pageY, origin = markerOrigin()) {
-  return { left: `${pageX - window.scrollX - origin.left}px`, top: `${pageY - window.scrollY - origin.top}px` };
+function markerPosition(pageX, pageY, origin = markerOrigin(), scroll = { x: window.scrollX, y: window.scrollY }) {
+  return { left: `${pageX - scroll.x - origin.left}px`, top: `${pageY - scroll.y - origin.top}px` };
 }
 
 function setMarkerApproximate(marker, isApproximate) {
@@ -3559,6 +3569,7 @@ function followMarkersFrame() {
 // however many markers there are. Returns whether any moved.
 function followMarkers() {
   const origin = markerOrigin();
+  const scroll = { x: window.scrollX, y: window.scrollY };
   const boxRects = new Map();
   const plans = [];
   state.feedback.forEach((item) => {
@@ -3581,7 +3592,7 @@ function followMarkers() {
   }
   let moved = false;
   plans.forEach((plan) => {
-    moved = placeFollowedMarker(plan, origin) || moved;
+    moved = placeFollowedMarker(plan, origin, scroll) || moved;
   });
   return moved;
 }
@@ -3639,37 +3650,42 @@ function cutsOffContent(node) {
 // hidden; an area is cut down to the part in its box, or hidden when none is.
 // Hidden markers take no room (display: none), so a marker carried far off
 // does not stretch the page. Returns whether the marker moved.
-function placeFollowedMarker({ marker, feedbackId, placement, box }, origin) {
+// Writes only: the scroll and the origin come measured. An area cut down to
+// its box also cuts off its number where it no longer fits.
+function placeFollowedMarker({ marker, feedbackId, placement, box }, origin, scroll) {
   const node = marker.node;
   const style = node.style;
   const before = `${style.left} ${style.top} ${style.width} ${style.height}`;
   let hidden = false;
+  let cut = false;
   if (placement?.kind === "area") {
-    let left = placement.pageLeftPx - window.scrollX;
-    let top = placement.pageTopPx - window.scrollY;
-    let right = left + placement.widthPx;
-    let bottom = top + placement.heightPx;
+    const full = { left: placement.pageLeftPx - scroll.x, top: placement.pageTopPx - scroll.y };
+    full.right = full.left + placement.widthPx;
+    full.bottom = full.top + placement.heightPx;
+    let { left, top, right, bottom } = full;
     if (box) {
       left = Math.max(left, box.left);
       top = Math.max(top, box.top);
       right = Math.min(right, box.right);
       bottom = Math.min(bottom, box.bottom);
       hidden = right <= left || bottom <= top;
+      cut = !hidden && (left > full.left || top > full.top || right < full.right || bottom < full.bottom);
     }
     if (!hidden) {
       Object.assign(style, {
-        ...markerPosition(left + window.scrollX, top + window.scrollY, origin),
+        ...markerPosition(left + scroll.x, top + scroll.y, origin, scroll),
         width: `${right - left}px`,
         height: `${bottom - top}px`
       });
     }
   } else if (placement) {
-    const x = placement.pageX - window.scrollX;
-    const y = placement.pageY - window.scrollY;
+    const x = placement.pageX - scroll.x;
+    const y = placement.pageY - scroll.y;
     hidden = Boolean(box) && (x < box.left || x > box.right || y < box.top || y > box.bottom);
-    if (!hidden) Object.assign(style, markerPosition(placement.pageX, placement.pageY, origin));
+    if (!hidden) Object.assign(style, markerPosition(placement.pageX, placement.pageY, origin, scroll));
   }
   node.classList.toggle("pl-marker-clipped", hidden);
+  node.classList.toggle("pl-marker-cut", cut);
   if (hidden && feedbackId && getTooltip()?.dataset.feedbackId === feedbackId) hideTooltip();
   return `${style.left} ${style.top} ${style.width} ${style.height}` !== before;
 }
@@ -4326,6 +4342,7 @@ function injectStyles() {
     .pl-target-highlight { outline: 2px dashed #d1495b; outline-offset: 2px; }
     .pl-marker-approx { outline: 3px dashed #f2a33c !important; outline-offset: 2px; }
     [data-patchloop-pin].pl-marker-clipped, [data-patchloop-area].pl-marker-clipped { display: none !important; }
+    [data-patchloop-area].pl-marker-cut { overflow: hidden !important; }
     .pl-feedback-approx { color: #986000; font-weight: 900; cursor: help; margin-left: 2px; }
     .pl-feedback-active, .pl-feedback-active * { cursor: crosshair !important; }
     .pl-root :focus-visible, .pl-pin:focus-visible, .pl-area button:focus-visible { outline: 3px solid #168565; outline-offset: 3px; }

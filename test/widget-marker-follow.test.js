@@ -253,3 +253,34 @@ test("an area dragged across items of a scrolling box is anchored inside the box
   widget.api.destroy();
 });
 
+test("an area left as a thin strip at the box's edge cuts off its number too (#213)", async () => {
+  const { widget, offset, box } = page();
+  widget.init();
+  const css = widget.document.querySelector("[data-patchloop-style]").textContent;
+  assert.match(css, /\[data-patchloop-area\]\.pl-marker-cut \{ overflow: hidden !important; \}/);
+  await widget.submit("An area", { area: true });
+  const area = laidOut(widget.document.querySelector("[data-patchloop-area]"));
+  assert.equal(area.classList.contains("pl-marker-cut"), false);
+  // 4px of the area's 50 left in the box: the 30px number would stick out of it.
+  offset.y = -76;
+  widget.document.emit("scroll", { target: box });
+  await sleep(60);
+  assert.equal(`${at(area)} ${area.style.height}`, "20px 0px 4px");
+  assert.equal(area.classList.contains("pl-marker-cut"), true);
+  offset.y = 0;
+  widget.document.emit("scroll", { target: box });
+  await sleep(60);
+  assert.equal(area.classList.contains("pl-marker-cut"), false, "whole again: not cut");
+  widget.api.destroy();
+});
+
+test("a drag whose centre lands on the scrolling box itself is anchored to the item it starts on (#213)", async () => {
+  const { widget, box } = page();
+  // The area runs from (20, 30) to (100, 80): its centre (60, 55) falls in a gap, on the box.
+  widget.document.elementFromPoint = (x, y) => (x === 60 && y === 55 ? box : widget.target);
+  widget.init();
+  await widget.submit("Between items", { area: true });
+  assert.equal(widget.api.getFeedback()[0].target.anchor.selector, "#review-target");
+  widget.api.destroy();
+});
+
