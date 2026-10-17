@@ -327,3 +327,38 @@ test("the number of a place being commented on is placed and hidden by the same 
   widget.api.destroy();
 });
 
+test("a box that cuts off one axis only (overflow-x: clip) hides a marker gone out sideways, not one gone below it (#213)", async () => {
+  const { widget, offset, box } = page();
+  widget.window.getComputedStyle = (node) => (node === box ? { overflowX: "clip", overflowY: "visible" } : { overflowX: "visible", overflowY: "visible" });
+  widget.init();
+  await widget.submit("In a sideways box");
+  const pin = laidOut(widget.document.querySelector("[data-patchloop-pin]"));
+  offset.y = 500;
+  widget.document.emit("scroll", { target: box });
+  await sleep(60);
+  assert.equal(pin.classList.contains("pl-marker-clipped"), false, "below the box: still seen");
+  assert.equal(at(pin), "20px 530px");
+  offset.y = 0;
+  offset.x = 900;
+  widget.document.emit("scroll", { target: box });
+  await sleep(60);
+  assert.equal(pin.classList.contains("pl-marker-clipped"), true, "out to the side: hidden");
+  widget.api.destroy();
+});
+
+test("a drag with the middle or the right button moves the markers too (#213)", async () => {
+  const { widget, offset } = page({ scrolls: false });
+  widget.init();
+  await widget.submit("On a canvas");
+  const pin = laidOut(widget.document.querySelector("[data-patchloop-pin]"));
+  await sleep(500);
+  for (const [buttons, x] of [[4, 40], [2, 60]]) {
+    offset.x = x;
+    widget.document.emit("mousemove", { target: widget.target, buttons });
+    await sleep(60);
+    assert.equal(at(pin), `${20 + x}px 30px`, `buttons ${buttons}`);
+    await sleep(500);
+  }
+  widget.api.destroy();
+});
+

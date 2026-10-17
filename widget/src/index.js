@@ -1488,7 +1488,8 @@ function followClock() {
 }
 
 function followDrag(event) {
-  if (event.buttons & 1) scheduleMarkerFollow();
+  // Any button: a canvas may pan with the middle or the right one too.
+  if (event.buttons) scheduleMarkerFollow();
 }
 
 function scheduleMarkerFollow() {
@@ -1592,23 +1593,30 @@ function markerAnchorElement(marker, target) {
 
 // The part of the viewport where the element can be seen: the overlap of its
 // ancestors that cut off what overflows them (overflow other than visible),
-// or null when none does. The ancestors are found again once per following;
-// their boxes are measured once per frame however many markers share them.
-// Not followed: a fixed or absolutely placed element that escapes an
-// ancestor's overflow.
+// each on the axes it cuts off (overflow-x: clip with overflow-y: visible cuts
+// off sideways only); null when none does. The ancestors are found again once
+// per following; their boxes are measured once per frame however many
+// markers share them. Not followed: a fixed or absolutely placed element that
+// escapes an ancestor's overflow.
 function visibleBox(marker, element, boxRects) {
   if (marker.clipSession !== state.follow.session || marker.clipFor !== element) {
     marker.clipAncestors = clippingAncestors(element);
     marker.clipFor = element;
     marker.clipSession = state.follow.session;
   }
-  let box = null;
-  for (const node of marker.clipAncestors) {
+  if (marker.clipAncestors.length === 0) return null;
+  const box = { left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity };
+  for (const { node, x, y } of marker.clipAncestors) {
     if (!boxRects.has(node)) boxRects.set(node, node.getBoundingClientRect());
     const rect = boxRects.get(node);
-    box = box
-      ? { left: Math.max(box.left, rect.left), top: Math.max(box.top, rect.top), right: Math.min(box.right, rect.right), bottom: Math.min(box.bottom, rect.bottom) }
-      : { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+    if (x) {
+      box.left = Math.max(box.left, rect.left);
+      box.right = Math.min(box.right, rect.right);
+    }
+    if (y) {
+      box.top = Math.max(box.top, rect.top);
+      box.bottom = Math.min(box.bottom, rect.bottom);
+    }
   }
   return box;
 }
@@ -1616,17 +1624,24 @@ function visibleBox(marker, element, boxRects) {
 function clippingAncestors(element) {
   const ancestors = [];
   for (let node = element.parentElement; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
-    if (cutsOffContent(node)) ancestors.push(node);
+    const axes = cutOffAxes(node);
+    if (axes.x || axes.y) ancestors.push({ node, ...axes });
   }
   return ancestors;
 }
 
-// A box whose overflow is other than visible: it cuts off its content, which
-// may scroll or be moved inside it.
-function cutsOffContent(node) {
-  if (typeof window.getComputedStyle !== "function") return false;
+// The axes on which a box cuts off its content (overflow other than visible).
+function cutOffAxes(node) {
+  if (typeof window.getComputedStyle !== "function") return { x: false, y: false };
   const style = window.getComputedStyle(node);
-  return Boolean(style) && (style.overflowX !== "visible" || style.overflowY !== "visible");
+  return { x: Boolean(style) && style.overflowX !== "visible", y: Boolean(style) && style.overflowY !== "visible" };
+}
+
+// A box whose overflow is other than visible on some axis: it cuts off its
+// content, which may scroll or be moved inside it.
+function cutsOffContent(node) {
+  const axes = cutOffAxes(node);
+  return axes.x || axes.y;
 }
 
 // Writes what followMarkers worked out. A pin whose point is out of its box is
