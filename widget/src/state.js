@@ -70,6 +70,7 @@ export const state = {
   pendingCheckTimer: null,
   pendingSeenAt: new Map(),
   // Markers following content that moves under them (#213): the frame asked
-  // for, and until when (and at the latest) to keep following.
-  follow: { frame: null, until: 0, limit: 0 }
+  // for, until when (and at the latest) to keep following, and the count of
+  // followings, which tells when to look elements up again.
+  follow: { frame: null, until: 0, limit: 0, session: 0 }
 };

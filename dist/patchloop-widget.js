@@ -663,8 +663,9 @@ const state = {
   pendingCheckTimer: null,
   pendingSeenAt: new Map(),
   // Markers following content that moves under them (#213): the frame asked
-  // for, and until when (and at the latest) to keep following.
-  follow: { frame: null, until: 0, limit: 0 }
+  // for, until when (and at the latest) to keep following, and the count of
+  // followings, which tells when to look elements up again.
+  follow: { frame: null, until: 0, limit: 0, session: 0 }
 };
 
 return { DEFAULTS, state };
@@ -2080,6 +2081,7 @@ function init(options = {}) {
   }
   // Re-init while comment mode is on must not leave stale mode state
   // (crosshair cursor, active drag) behind the freshly rendered UI.
+  cancelMarkerFollow();
   state.active = false;
   document.documentElement.classList.remove("pl-feedback-active");
   state.drag = null;
@@ -3324,6 +3326,9 @@ function buildPointAnchor(element, point) {
 // From there, climb to the nearest anchorable ancestor that contains the
 // dragged rect: a tiny element under the center produces huge relative
 // offsets that blow up whenever its own size changes (e.g. text wrapping).
+// The climb stops below a box that cuts off its content (#213): what is in a
+// scrolling box or a panned canvas moves while the box stays, so an area
+// anchored to the box would be left behind.
 function buildAreaAnchor(startElement, rect) {
   const centerElement = document.elementFromPoint(
     Math.min(Math.max(rect.leftPx + rect.widthPx / 2, 0), window.innerWidth - 1),
@@ -3338,7 +3343,7 @@ function buildAreaAnchor(startElement, rect) {
       break;
     }
     const parent = anchorableElement(cursor.parentElement);
-    if (!parent) break;
+    if (!parent || cutsOffContent(parent)) break;
     cursor = parent;
     anchorElement = parent;
   }
@@ -3517,6 +3522,9 @@ function followDrag(event) {
 function scheduleMarkerFollow() {
   if (state.feedbackMarkers.size === 0 && !state.pendingTarget?.markerNode) return;
   const now = followClock();
+  // A new following looks the elements and the boxes they are seen through up
+  // again (see markerAnchorElement and visibleBox).
+  if (state.follow.frame == null) state.follow.session += 1;
   state.follow.until = Math.max(state.follow.until, now + FOLLOW_SETTLE_MS);
   state.follow.limit = now + FOLLOW_MAX_MS;
   if (state.follow.frame == null) state.follow.frame = requestFollowFrame();
@@ -3546,92 +3554,124 @@ function followMarkersFrame() {
 }
 
 // Puts every marker on its element where the element can be found (else it
-// stays where it is), and hides the ones out of sight. Returns whether any moved.
+// stays where it is), and hides the ones out of sight. Every measurement is
+// taken before the first marker is moved, so a frame lays the page out once
+// however many markers there are. Returns whether any moved.
 function followMarkers() {
   const origin = markerOrigin();
-  let moved = false;
+  const boxRects = new Map();
+  const plans = [];
   state.feedback.forEach((item) => {
     const marker = state.feedbackMarkers.get(item.id);
-    if (!marker) return;
+    if (!marker?.node) return;
     const element = markerAnchorElement(marker, item.target);
     const target = element && reanchoredTarget(item.target, element);
-    if (target) moved = repositionMarker(marker, target, origin) || moved;
-    clipMarker(marker, element, item.id);
+    plans.push({ marker, feedbackId: item.id, placement: target ? storedPlacement(target) : null, box: element ? visibleBox(marker, element, boxRects) : null });
   });
   const pending = state.pendingTarget;
   if (pending?.markerNode) {
+    if (pending.followMarker?.node !== pending.markerNode) pending.followMarker = { node: pending.markerNode };
     const geometry = reanchorGeometry(pending, pending.anchorElement);
-    if (geometry) {
-      refreshTargetCoordinates(pending, geometry);
-      moved = repositionMarker({ node: pending.markerNode }, pending, origin) || moved;
-    }
-    clipMarker({ node: pending.markerNode }, pending.anchorElement, null);
+    if (geometry) refreshTargetCoordinates(pending, geometry);
+    plans.push({
+      marker: pending.followMarker, feedbackId: null,
+      placement: geometry ? storedPlacement(pending) : null,
+      box: pending.anchorElement ? visibleBox(pending.followMarker, pending.anchorElement, boxRects) : null
+    });
   }
+  let moved = false;
+  plans.forEach((plan) => {
+    moved = placeFollowedMarker(plan, origin) || moved;
+  });
   return moved;
 }
 
-// The element a marker is placed on, kept with the marker while it stays in
-// the page so that following does not look it up every frame.
+// The element a marker is placed on, looked up again once per following (an
+// element may have been replaced) and kept for its frames.
 function markerAnchorElement(marker, target) {
-  if (marker.anchorElement?.isConnected) return marker.anchorElement;
-  const element = elementForSelector(target?.anchor?.selector || target?.selector);
-  marker.anchorElement = element || null;
-  marker.clipBoxes = null;
+  if (marker.anchorSession !== state.follow.session || !marker.anchorElement?.isConnected) {
+    marker.anchorElement = elementForSelector(target?.anchor?.selector || target?.selector);
+    marker.anchorSession = state.follow.session;
+  }
   return marker.anchorElement;
 }
 
-// The ancestors that cut off what overflows them (overflow other than
-// visible): the boxes the element is seen through. Not followed: a fixed or
-// absolutely placed element that escapes an ancestor's overflow.
-function clippingAncestors(element) {
-  const boxes = [];
-  if (!element || typeof window.getComputedStyle !== "function") return boxes;
-  for (let node = element.parentElement; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
-    const style = window.getComputedStyle(node);
-    if (style && (style.overflowX !== "visible" || style.overflowY !== "visible")) boxes.push(node);
-  }
-  return boxes;
-}
-
-// Hides a pin whose point is outside the boxes its element is seen through,
-// and cuts an area down to them.
-function clipMarker(marker, element, feedbackId) {
-  if (!marker?.node) return;
-  if (!element) {
-    setMarkerClip(marker.node, false, "");
-    return;
-  }
-  if (marker.clipBoxes == null || marker.clipFor !== element) {
-    marker.clipBoxes = clippingAncestors(element);
+// The part of the viewport where the element can be seen: the overlap of its
+// ancestors that cut off what overflows them (overflow other than visible),
+// or null when none does. The ancestors are found again once per following;
+// their boxes are measured once per frame however many markers share them.
+// Not followed: a fixed or absolutely placed element that escapes an
+// ancestor's overflow.
+function visibleBox(marker, element, boxRects) {
+  if (marker.clipSession !== state.follow.session || marker.clipFor !== element) {
+    marker.clipAncestors = clippingAncestors(element);
     marker.clipFor = element;
+    marker.clipSession = state.follow.session;
   }
   let box = null;
-  for (const node of marker.clipBoxes) {
-    const rect = node.getBoundingClientRect();
+  for (const node of marker.clipAncestors) {
+    if (!boxRects.has(node)) boxRects.set(node, node.getBoundingClientRect());
+    const rect = boxRects.get(node);
     box = box
       ? { left: Math.max(box.left, rect.left), top: Math.max(box.top, rect.top), right: Math.min(box.right, rect.right), bottom: Math.min(box.bottom, rect.bottom) }
       : { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
   }
-  if (!box) {
-    setMarkerClip(marker.node, false, "");
-    return;
-  }
-  const rect = marker.node.getBoundingClientRect();
-  if (marker.node.matches("[data-patchloop-area]")) {
-    const inset = [box.top - rect.top, rect.right - box.right, rect.bottom - box.bottom, box.left - rect.left].map((value) => Math.max(0, value));
-    const outside = box.left >= rect.right || box.right <= rect.left || box.top >= rect.bottom || box.bottom <= rect.top;
-    setMarkerClip(marker.node, outside, inset.some((value) => value > 0) ? `inset(${inset.map((value) => `${Math.round(value)}px`).join(" ")})` : "");
-  } else {
-    const x = (rect.left + rect.right) / 2;
-    const y = (rect.top + rect.bottom) / 2;
-    setMarkerClip(marker.node, x < box.left || x > box.right || y < box.top || y > box.bottom, "");
-  }
-  if (marker.node.classList.contains("pl-marker-clipped") && feedbackId && getTooltip()?.dataset.feedbackId === feedbackId) hideTooltip();
+  return box;
 }
 
-function setMarkerClip(node, hidden, clipPath) {
+function clippingAncestors(element) {
+  const ancestors = [];
+  for (let node = element.parentElement; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+    if (cutsOffContent(node)) ancestors.push(node);
+  }
+  return ancestors;
+}
+
+// A box whose overflow is other than visible: it cuts off its content, which
+// may scroll or be moved inside it.
+function cutsOffContent(node) {
+  if (typeof window.getComputedStyle !== "function") return false;
+  const style = window.getComputedStyle(node);
+  return Boolean(style) && (style.overflowX !== "visible" || style.overflowY !== "visible");
+}
+
+// Writes what followMarkers worked out. A pin whose point is out of its box is
+// hidden; an area is cut down to the part in its box, or hidden when none is.
+// Hidden markers take no room (display: none), so a marker carried far off
+// does not stretch the page. Returns whether the marker moved.
+function placeFollowedMarker({ marker, feedbackId, placement, box }, origin) {
+  const node = marker.node;
+  const style = node.style;
+  const before = `${style.left} ${style.top} ${style.width} ${style.height}`;
+  let hidden = false;
+  if (placement?.kind === "area") {
+    let left = placement.pageLeftPx - window.scrollX;
+    let top = placement.pageTopPx - window.scrollY;
+    let right = left + placement.widthPx;
+    let bottom = top + placement.heightPx;
+    if (box) {
+      left = Math.max(left, box.left);
+      top = Math.max(top, box.top);
+      right = Math.min(right, box.right);
+      bottom = Math.min(bottom, box.bottom);
+      hidden = right <= left || bottom <= top;
+    }
+    if (!hidden) {
+      Object.assign(style, {
+        ...markerPosition(left + window.scrollX, top + window.scrollY, origin),
+        width: `${right - left}px`,
+        height: `${bottom - top}px`
+      });
+    }
+  } else if (placement) {
+    const x = placement.pageX - window.scrollX;
+    const y = placement.pageY - window.scrollY;
+    hidden = Boolean(box) && (x < box.left || x > box.right || y < box.top || y > box.bottom);
+    if (!hidden) Object.assign(style, markerPosition(placement.pageX, placement.pageY, origin));
+  }
   node.classList.toggle("pl-marker-clipped", hidden);
-  if (node.style.clipPath !== clipPath) node.style.clipPath = clipPath;
+  if (hidden && feedbackId && getTooltip()?.dataset.feedbackId === feedbackId) hideTooltip();
+  return `${style.left} ${style.top} ${style.width} ${style.height}` !== before;
 }
 
 function handleWindowResize() {
@@ -3668,6 +3708,8 @@ function reanchorAllMarkers() {
   }
 
   renderFeedbackList();
+  // A resize may change what cuts the markers off: look it up again.
+  state.follow.session += 1;
   scheduleMarkerFollow();
 }
 
@@ -4283,7 +4325,7 @@ function injectStyles() {
     .pl-feedback-active [data-patchloop-pin], .pl-feedback-active .pl-area button { pointer-events: none; }
     .pl-target-highlight { outline: 2px dashed #d1495b; outline-offset: 2px; }
     .pl-marker-approx { outline: 3px dashed #f2a33c !important; outline-offset: 2px; }
-    [data-patchloop-pin].pl-marker-clipped, [data-patchloop-area].pl-marker-clipped { visibility: hidden !important; }
+    [data-patchloop-pin].pl-marker-clipped, [data-patchloop-area].pl-marker-clipped { display: none !important; }
     .pl-feedback-approx { color: #986000; font-weight: 900; cursor: help; margin-left: 2px; }
     .pl-feedback-active, .pl-feedback-active * { cursor: crosshair !important; }
     .pl-root :focus-visible, .pl-pin:focus-visible, .pl-area button:focus-visible { outline: 3px solid #168565; outline-offset: 3px; }
