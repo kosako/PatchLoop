@@ -284,3 +284,46 @@ test("a drag whose centre lands on the scrolling box itself is anchored to the i
   widget.api.destroy();
 });
 
+test("a drag from the box's gap back onto an item is anchored to the item it ends on (#213)", async () => {
+  const { widget, box } = page();
+  // Dragged from (100, 80), in a gap of the box, up to (20, 30) on the item:
+  // only the point it ends on is the item.
+  widget.document.elementFromPoint = (x, y) => (x === 20 && y === 30 ? widget.target : box);
+  widget.init();
+  widget.api.setFeedbackMode(true);
+  const document = widget.document;
+  document.emit("mousedown", { target: box, button: 0, clientX: 100, clientY: 80 });
+  document.emit("mousemove", { target: box, buttons: 1, clientX: 20, clientY: 30 });
+  document.emit("mouseup", { target: widget.target, button: 0, clientX: 20, clientY: 30 });
+  document.querySelector("[data-pl-comment-text]").value = "Dragged backwards";
+  document.querySelector("[data-pl-reviewer]").value = "Reviewer";
+  await Promise.all(document.querySelector("[data-pl-comment]").emit("submit"));
+  assert.equal(widget.api.getFeedback()[0].target.anchor.selector, "#review-target");
+  widget.api.destroy();
+});
+
+test("the number of a place being commented on is placed and hidden by the same element after it is replaced (#213)", async () => {
+  const { widget, box } = page();
+  widget.init();
+  widget.capture();
+  const pending = laidOut(widget.document.querySelector("[data-patchloop-pin]"));
+  // The page renders the item anew: same id, new element, the old one gone.
+  const fresh = widget.document.createElement("button");
+  fresh.id = "review-target";
+  const offset = { y: 0 };
+  fresh.getBoundingClientRect = () => ({ left: 0, top: offset.y, right: 200, bottom: offset.y + 100, width: 200, height: 100 });
+  widget.target.remove();
+  box.append(fresh);
+
+  offset.y = -120;
+  widget.document.emit("scroll", { target: box });
+  await sleep(60);
+  assert.equal(pending.classList.contains("pl-marker-clipped"), true, "the new element left the box: hidden");
+  offset.y = -10;
+  widget.document.emit("scroll", { target: box });
+  await sleep(60);
+  assert.equal(pending.classList.contains("pl-marker-clipped"), false);
+  assert.equal(at(pending), "20px 20px");
+  widget.api.destroy();
+});
+

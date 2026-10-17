@@ -383,7 +383,7 @@ function handleDocumentMouseUp(event) {
   let marker;
   if (state.drag.isDragging) {
     marker = addArea(rect);
-    const areaAnchor = buildAreaAnchor(target, rect);
+    const areaAnchor = buildAreaAnchor(target, rect, end);
     state.pendingTarget = {
       kind: "area",
       ...pointFromClient(rect.leftPx, rect.topPx, viewportMetrics()),
@@ -1287,20 +1287,24 @@ function buildPointAnchor(element, point) {
 // The climb stops below a box that cuts off its content (#213): what is in a
 // scrolling box or a panned canvas moves while the box stays, so an area
 // anchored to the box would be left behind.
-function buildAreaAnchor(startElement, rect) {
-  const centerElement = document.elementFromPoint(
-    Math.min(Math.max(rect.leftPx + rect.widthPx / 2, 0), window.innerWidth - 1),
-    Math.min(Math.max(rect.topPx + rect.heightPx / 2, 0), window.innerHeight - 1)
+function buildAreaAnchor(startElement, rect, end) {
+  const elementAt = (x, y) => document.elementFromPoint(
+    Math.min(Math.max(x, 0), window.innerWidth - 1),
+    Math.min(Math.max(y, 0), window.innerHeight - 1)
   );
+  const right = rect.leftPx + rect.widthPx - 1;
+  const bottom = rect.topPx + rect.heightPx - 1;
   // A drag between items may centre on the box around them; an item it starts
-  // or ends on moves with the content where the box does not (#213).
+  // or ends on, or one at a corner, moves with the content where the box does
+  // not (#213).
   const candidates = [
-    centerElement,
+    elementAt(rect.leftPx + rect.widthPx / 2, rect.topPx + rect.heightPx / 2),
     startElement,
-    document.elementFromPoint(
-      Math.min(Math.max(rect.leftPx + rect.widthPx - 1, 0), window.innerWidth - 1),
-      Math.min(Math.max(rect.topPx + rect.heightPx - 1, 0), window.innerHeight - 1)
-    )
+    end && elementAt(end.clientX, end.clientY),
+    elementAt(rect.leftPx, rect.topPx),
+    elementAt(right, rect.topPx),
+    elementAt(rect.leftPx, bottom),
+    elementAt(right, bottom)
   ].map(anchorableElement).filter(Boolean);
   let anchorElement = candidates.find((element) => !cutsOffContent(element)) || candidates[0] || null;
 
@@ -1384,8 +1388,8 @@ function refreshTargetCoordinates(target, geometry) {
 // #155: a comment's target stays the record of when it was confirmed, so a
 // re-anchor works on a copy and only moves the marker; null when the element
 // cannot be resolved.
-function reanchoredTarget(target, element) {
-  const geometry = reanchorGeometry(target, element);
+function reanchoredTarget(target) {
+  const geometry = reanchorGeometry(target);
   if (!geometry) return null;
   const copy = { ...target, area: target.area && { ...target.area } };
   refreshTargetCoordinates(copy, geometry);
@@ -1534,18 +1538,30 @@ function followMarkers() {
     const marker = state.feedbackMarkers.get(item.id);
     if (!marker?.node) return;
     const element = markerAnchorElement(marker, item.target);
-    const target = element && reanchoredTarget(item.target, element);
-    plans.push({ marker, feedbackId: item.id, placement: target ? storedPlacement(target) : null, box: element ? visibleBox(marker, element, boxRects) : null });
+    const geometry = element && geometryOn(item.target, element);
+    let placement = null;
+    if (geometry) {
+      const target = { ...item.target, area: item.target.area && { ...item.target.area } };
+      refreshTargetCoordinates(target, geometry);
+      placement = storedPlacement(target);
+    }
+    plans.push({ marker, feedbackId: item.id, placement, box: element ? visibleBox(marker, element, boxRects) : null });
   });
   const pending = state.pendingTarget;
   if (pending?.markerNode) {
     if (pending.followMarker?.node !== pending.markerNode) pending.followMarker = { node: pending.markerNode };
-    const geometry = reanchorGeometry(pending, pending.anchorElement);
+    // The element may have been replaced by one with the same selector.
+    if (!pending.anchorElement?.isConnected) {
+      const replaced = elementForSelector(pending.anchor?.selector || pending.selector);
+      if (replaced) pending.anchorElement = replaced;
+    }
+    const element = pending.anchorElement?.isConnected ? pending.anchorElement : null;
+    const geometry = element && geometryOn(pending, element);
     if (geometry) refreshTargetCoordinates(pending, geometry);
     plans.push({
       marker: pending.followMarker, feedbackId: null,
       placement: geometry ? storedPlacement(pending) : null,
-      box: pending.anchorElement ? visibleBox(pending.followMarker, pending.anchorElement, boxRects) : null
+      box: element ? visibleBox(pending.followMarker, element, boxRects) : null
     });
   }
   let moved = false;
@@ -1553,6 +1569,15 @@ function followMarkers() {
     moved = placeFollowedMarker(plan, origin, scroll) || moved;
   });
   return moved;
+}
+
+// Where a target's anchor puts it on the given element, without looking any
+// other element up: a marker is placed and cut off by the same element.
+function geometryOn(target, element) {
+  const anchor = target && target.anchor;
+  if (!anchor || numberOrNull(anchor.x) == null || numberOrNull(anchor.y) == null) return null;
+  const rect = elementRectOrNull(element);
+  return rect ? geometryFromAnchor(target.kind, anchor, rect, window.scrollX, window.scrollY) : null;
 }
 
 // The element a marker is placed on, looked up again once per following (an
