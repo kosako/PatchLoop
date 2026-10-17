@@ -1833,7 +1833,12 @@ test("every payload version is kept: a missing or null one as 1, past ones as se
   for (const [index, schemaVersion] of versions.entries()) {
     const payload = { ...feedbackPayload(`pl_version_${index}`), schemaVersion };
     if (schemaVersion === undefined) delete payload.schemaVersion;
-    if (schemaVersion === later) payload.laterField = { kept: true };
+    if (schemaVersion === later) {
+      payload.laterField = { kept: true };
+      // A field this receiver knows keeps the current handling: version 1 of
+      // screenshot.uncaptured keeps only its known fields.
+      payload.screenshot = { status: "failed", reason: "test", uncaptured: { version: 1, status: "failed", laterField: true } };
+    }
     assert.equal((await postJson(`${receiver.baseUrl}/feedback`, payload)).status, 201, String(schemaVersion));
   }
   const imported = await postJson(`${receiver.baseUrl}/import`, {
@@ -1845,11 +1850,14 @@ test("every payload version is kept: a missing or null one as 1, past ones as se
   const byId = Object.fromEntries((await readStoredFeedback(receiver.dbPath)).map((item) => [item.id, item]));
   assert.deepEqual(versions.map((_, index) => byId[`pl_version_${index}`].schemaVersion), [1, 1, 1, 2, 3, PAYLOAD_SCHEMA_VERSION, later]);
   for (const id of [`pl_version_${versions.length - 1}`, "pl_version_imported"]) assert.deepEqual(byId[id].laterField, { kept: true }, id);
+  assert.deepEqual(byId[`pl_version_${versions.length - 1}`].screenshot.uncaptured, { version: 1, status: "failed" });
 
   const inbox = await fetch(`${receiver.baseUrl}/`).then((response) => response.text());
   const notes = inbox.match(/<p class="format-note">[^<]*<\/p>/g) || [];
   assert.equal(notes.length, 2);
-  for (const note of notes) assert.ok(note.includes(`schemaVersion ${later}。この receiver が知っているのは ${PAYLOAD_SCHEMA_VERSION} まで`), note);
+  for (const note of notes) assert.ok(note.includes(`schemaVersion ${later}。この receiver が知っているのは ${PAYLOAD_SCHEMA_VERSION} まで`) && note.includes("「JSON データ」で確かめられます"), note);
+  // The unknown fields are there to check, in the card's JSON.
+  assert.match(inbox, /&quot;laterField&quot;/);
 
   for (const schemaVersion of ["4", 4.5]) {
     const rejected = await postJson(`${receiver.baseUrl}/feedback`, { ...feedbackPayload(`pl_version_bad_${typeof schemaVersion}`), schemaVersion });
@@ -1858,17 +1866,18 @@ test("every payload version is kept: a missing or null one as 1, past ones as se
   }
 });
 
-test("the ids a revision replaced, kept on the device only, are not stored when a producer sends them (#126)", async (t) => {
+test("marks kept on the device only (previousIds, localEdited) are not stored when a producer sends them (#126)", async (t) => {
   const receiver = await startReceiver(t);
-  const sent = { ...feedbackPayload("pl_previous_sent"), replaces: "pl_a", previousIds: ["pl_a"] };
+  const sent = { ...feedbackPayload("pl_previous_sent"), replaces: "pl_a", previousIds: ["pl_a"], localEdited: true };
   assert.equal((await postJson(`${receiver.baseUrl}/feedback`, sent)).status, 201);
   const imported = await postJson(`${receiver.baseUrl}/import`, {
     kind: "patchloop-feedback-bundle", version: EXPORT_BUNDLE_VERSION,
-    feedback: [{ ...feedbackPayload("pl_previous_imported"), replaces: "pl_b", previousIds: ["pl_b"] }]
+    feedback: [{ ...feedbackPayload("pl_previous_imported"), replaces: "pl_b", previousIds: ["pl_b"], localEdited: true }]
   });
   assert.equal(imported.status, 201);
   const stored = await readStoredFeedback(receiver.dbPath);
-  assert.deepEqual(stored.map((item) => [item.id, item.replaces, Object.hasOwn(item, "previousIds")]).sort(), [["pl_previous_imported", "pl_b", false], ["pl_previous_sent", "pl_a", false]]);
+  assert.deepEqual(stored.map((item) => [item.id, item.replaces, Object.hasOwn(item, "previousIds"), Object.hasOwn(item, "localEdited")]).sort(),
+    [["pl_previous_imported", "pl_b", false, false], ["pl_previous_sent", "pl_a", false, false]]);
 });
 
 test("GET /feedback.json filters by projectId, demoId, and status", async (t) => {

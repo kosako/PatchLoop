@@ -1308,9 +1308,11 @@ function normalizeFeedbackPayload(payload) {
   delete imported.exported;
   delete imported.exportedAt;
   delete imported.exportedFileName;
-  // The widget keeps the ids a revision replaced on the device only (#121)
-  // and does not send them; a producer that does must not store them (#126).
+  // Marks the widget keeps on the device only and must not be stored (#126):
+  // the ids a revision replaced (#121), and the edited-after-sending mark of
+  // comments saved before #121, which an older device may still send.
   delete imported.previousIds;
+  delete imported.localEdited;
   // A null schemaVersion is no version, read as 1 like a missing one (#126).
   if (imported.schemaVersion === null) delete imported.schemaVersion;
   // A malformed screenshot.uncaptured (#148) does not cost the feedback: it is

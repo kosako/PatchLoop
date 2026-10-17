@@ -350,11 +350,11 @@ function renderUncapturedNote(summary) {
   return `<p class="uncaptured-note">画像に写っていない要素が指摘箇所に重なっている可能性があります（番号は画像の点線の枠）: ${list}</p>`;
 }
 
-// A payload from a newer widget is stored as sent (#126): this inbox shows the
-// parts it knows and says that it may be leaving some out.
+// A payload from a newer widget is kept with the fields this receiver does not
+// know (#126): the card shows the ones it knows and says where the rest are.
 function renderNewerFormatNote(item) {
   if (!Number.isInteger(item.schemaVersion) || item.schemaVersion <= PAYLOAD_SCHEMA_VERSION) return "";
-  return `<p class="format-note">この receiver より新しい形式です（schemaVersion ${item.schemaVersion}。この receiver が知っているのは ${PAYLOAD_SCHEMA_VERSION} まで）。知らない項目は保存してありますが、この受信箱には表示していません。receiver を更新すると表示できます。</p>`;
+  return `<p class="format-note">この receiver より新しい形式です（schemaVersion ${item.schemaVersion}。この receiver が知っているのは ${PAYLOAD_SCHEMA_VERSION} まで）。知らない項目には専用の表示がありません。「詳細・連携情報」の「JSON データ」で確かめられます。</p>`;
 }
 
 // One line for the details, telling "none" apart from "not checked".
