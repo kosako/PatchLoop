@@ -163,6 +163,11 @@ function contrast(foreground, background) {
 // a declaration that is not "property: value", an unmatched brace or a rule
 // left open could each hide a declaration from the reading, so each fails
 // instead of being read differently from the browser.
+// Known limit (#209, review round 6): declarations are split at every ";" and
+// trimmed as JavaScript trims, not cut into CSS tokens, so a ";" inside
+// parentheses or brackets, or a space CSS does not count as one (U+00A0), is
+// still read differently from the browser. The check guards the CSS this
+// widget is written in, not CSS made to slip past it.
 function styleRules(widget) {
   const css = widget.document.querySelector("[data-patchloop-style]").textContent;
   assert.ok(!css.includes("\\"), "an escape in the widget CSS is not read by the contrast check");
