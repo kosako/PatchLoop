@@ -4,6 +4,7 @@ const { escapeHtml, FEEDBACK_STATUS_LABELS: STATUS_LABELS } = require("../shared
 const { FEEDBACK_STATUSES } = require("./store.js");
 const { feedbackForExport } = require("./feedback-export.js");
 const { summarizeUncaptured } = require("./uncaptured.js");
+const { PAYLOAD_SCHEMA_VERSION } = require("../shared/versions.js");
 
 const KIND_LABELS = { point: "ポイント", area: "範囲" };
 const UNCAPTURED_RELATION_LABELS = { "covers-target": "指摘箇所の最前面", "overlaps-target": "指摘箇所に重なる" };
@@ -95,6 +96,7 @@ function createInboxView(deps) {
             <p class="page-link">${safeLinkUrl(page.url) ? `<a href="${escapeHtml(safeLinkUrl(page.url))}" target="_blank" rel="noopener">${pageTitle || pageUrl}<span class="sr-only">（新しいタブで開く）</span></a>` : pageTitle || pageUrl}</p>
             ${renderRevisionNotes(item, revisionsOf.get(item.id) || [], presentIds)}
             ${renderUncapturedNote(uncaptured)}
+            ${renderNewerFormatNote(item)}
           </div>
           ${renderScreenshotPreview(screenshot)}
         </div>
@@ -346,6 +348,13 @@ function renderUncapturedNote(summary) {
     .map((region) => `${region.number}. ${escapeHtml(region.tag)}（${escapeHtml(region.kindName)}・${UNCAPTURED_RELATION_LABELS[region.relation]}）`)
     .join("、");
   return `<p class="uncaptured-note">画像に写っていない要素が指摘箇所に重なっている可能性があります（番号は画像の点線の枠）: ${list}</p>`;
+}
+
+// A payload from a newer widget is kept with the fields this receiver does not
+// know (#126): the card shows the ones it knows and says where the rest are.
+function renderNewerFormatNote(item) {
+  if (!Number.isInteger(item.schemaVersion) || item.schemaVersion <= PAYLOAD_SCHEMA_VERSION) return "";
+  return `<p class="format-note">この receiver より新しい形式です（schemaVersion ${item.schemaVersion}。この receiver が知っているのは ${PAYLOAD_SCHEMA_VERSION} まで）。知らない項目には専用の表示がありません。「詳細・連携情報」の「JSON データ」で確かめられます。</p>`;
 }
 
 // One line for the details, telling "none" apart from "not checked".

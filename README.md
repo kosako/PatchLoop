@@ -225,6 +225,33 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 
 `target` の座標は、`environment.viewport` や画面画像と同じく、コメントを確定した時点の記録です。`clientX/clientY` はその時点の viewport 上の位置、`pageX/pageY` はスクロールを含む document 上の位置です。pin / area overlay は document 上に固定されるため、スクロールしても対象箇所に追従します。ウィンドウリサイズや reload でレイアウトが変わった場合は `target.selector` + `target.anchor` で marker を対象要素に置き直しますが、`target` の座標は書き換えません（保存・送信・書き出しの値は確定した時点のまま）。
 
+### 互換性
+
+payload と書き出しファイルは、それぞれ版を持ちます。
+
+| payload の `schemaVersion` | 足された項目 |
+| --- | --- |
+| 1（`schemaVersion` の無い payload） | — |
+| 2 | `sourceContext` |
+| 3 | `screenshot.uncaptured` |
+| 4（今の widget） | `replaces` |
+
+| 書き出しファイルの `version` | `feedback` の形 |
+| --- | --- |
+| 1 | 1 件の object |
+| 2（今の widget） | 配列 |
+
+receiver は次のように扱います。
+
+- 過去の版の payload は、これからも受け付けます。`schemaVersion` が無いか `null` の payload は、1 として保存します。整数でない `schemaVersion` は 400 で断ります
+- この receiver より新しい版の payload も断りません。payload の直下の知らない項目は、送られたまま保存します。受信箱のカードには「この receiver より新しい形式」と出ます（知らない項目には専用の表示がなく、カードの「JSON データ」で確かめられます）
+- 知っている項目は、版によらず今の receiver の扱いのままです。形を確かめ（ほとんどの項目は崩れていれば 400 で断り、`screenshot.uncaptured` は feedback を保存したうえで `invalid` に置き換えます）、受け取るときに整える項目は整えます。たとえば `screenshot` の画像のデータはファイルに保存して置き換え、`screenshot.uncaptured` の `version` 1 は知っている項目だけを残すので、その中の知らない項目は保存されません
+- 次の項目は、送られても保存しません。receiver が持つ項目（`receivedAt`・`received`・`importedAt`・`source`・`statusUpdatedAt`・`integrations`）と、端末だけで使う印（`delivery`・`exported`・`exportedAt`・`exportedFileName`・`previousIds`・`localEdited`）です。`status` は、受け取りでは常に `new` から始まります（取り込みでは、書き出しファイルの値を残します）
+- 保存した記録は、新しい receiver に変えても書き換えません。読むときに今の形に合わせます（例: `screenshot.uncaptured`）
+- 書き出しファイルの知らない `version` は 400 で断ります。この receiver より新しい版のときは、receiver を更新するよう案内します
+
+payload の中の項目が、自分の版を持つこともあります。`screenshot.uncaptured` の `version`（今は 1）は `schemaVersion` とは別に数えます（上の項目の説明を参照）。
+
 ## ローカル receiver
 
 `endpoint` を指定すると、widget は payload をその URL に POST します。検証用のローカル receiver が同梱されています。

@@ -1439,6 +1439,26 @@ function base64Encode(value) {
 
 return { captureScreenshot, uncapturedTouching, blankUnrenderedElements, blankText, browserTextDirection, approximateTextDirection, clearTemplateContents, removeComments, hiddenPart, snapshotBodyOffsetStyle, byteLength, base64Encode };
 })();
+// --- shared/versions.js ---
+const __pl_shared_versions = (() => {
+// Versions of what the widget writes, shared with the receiver so that both
+// sides of a release agree on the newest one (#126). The compatibility rules
+// for each are in the README ("互換性" / "Compatibility").
+
+// The feedback payload's schemaVersion. Bump when the payload shape changes.
+// v1 is a payload without schemaVersion (the widget before v2).
+// v2 adds the optional sourceContext block (#96).
+// v3 adds screenshot.uncaptured (#148).
+// v4 adds replaces, on the revision of a comment edited after it left the
+// device (#121).
+const PAYLOAD_SCHEMA_VERSION = 4;
+
+// The version of the export bundle (the downloaded JSON file). v1 wrapped a
+// single feedback object; v2 carries an array (batch export).
+const EXPORT_BUNDLE_VERSION = 2;
+
+return { PAYLOAD_SCHEMA_VERSION, EXPORT_BUNDLE_VERSION };
+})();
 // --- widget/src/payload.js ---
 const __pl_widget_src_payload = (() => {
 const { round } = __pl_widget_src_geometry;
@@ -1446,15 +1466,7 @@ const { roundedAnchor } = __pl_widget_src_anchoring;
 const { state } = __pl_widget_src_state;
 const { captureScreenshot } = __pl_widget_src_screenshot;
 const { pageUrlForSharing } = __pl_widget_src_url;
-
-// Version of the feedback payload schema itself (distinct from the storage
-// envelope and export bundle versions). Bump when the payload shape changes
-// so the receiver can branch on it as the schema grows for team use.
-// v2 adds the optional sourceContext block (#96).
-// v3 adds screenshot.uncaptured (#148).
-// v4 adds replaces, on the revision of a comment edited after it left this
-// device (#121).
-const PAYLOAD_SCHEMA_VERSION = 4;
+const { PAYLOAD_SCHEMA_VERSION } = __pl_shared_versions;
 
 function buildPayload(comment, reviewer, target, includeScreenshot = state.options.captureScreenshot) {
   return {
@@ -2036,12 +2048,9 @@ const { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initia
 const { isLocallyEdited, pendingAge, receiverHasCopy } = __pl_widget_src_delivery_state;
 const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } = __pl_widget_src_persistence;
 const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } = __pl_shared_format;
+const { EXPORT_BUNDLE_VERSION } = __pl_shared_versions;
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
-// v2 carries an array of feedback (batch export). v1 wrapped a single
-// payload; the receiver still accepts that shape for files exported before
-// the switch to batch download.
-const EXPORT_VERSION = 2;
 // The receiver's answer is awaited this long. A delivery another tab of the
 // page started is taken as cut off only once it and a margin are over (#139).
 const FETCH_TIMEOUT_MS = 15000;
@@ -3003,7 +3012,7 @@ function downloadFeedbackItems(items, pages = []) {
 function buildFeedbackBundle(feedbackList, exportedAt) {
   return {
     kind: EXPORT_KIND,
-    version: EXPORT_VERSION,
+    version: EXPORT_BUNDLE_VERSION,
     exportedAt,
     projectId: state.options.projectId || "",
     demoId: state.options.demoId || "",

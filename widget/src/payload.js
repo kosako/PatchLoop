@@ -3,15 +3,7 @@ import { roundedAnchor } from "./anchoring.js";
 import { state } from "./state.js";
 import { captureScreenshot } from "./screenshot.js";
 import { pageUrlForSharing } from "./url.js";
-
-// Version of the feedback payload schema itself (distinct from the storage
-// envelope and export bundle versions). Bump when the payload shape changes
-// so the receiver can branch on it as the schema grows for team use.
-// v2 adds the optional sourceContext block (#96).
-// v3 adds screenshot.uncaptured (#148).
-// v4 adds replaces, on the revision of a comment edited after it left this
-// device (#121).
-const PAYLOAD_SCHEMA_VERSION = 4;
+import { PAYLOAD_SCHEMA_VERSION } from "../../shared/versions.js";
 
 export function buildPayload(comment, reviewer, target, includeScreenshot = state.options.captureScreenshot) {
   return {

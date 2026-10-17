@@ -10,12 +10,9 @@ import { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initi
 import { isLocallyEdited, pendingAge, receiverHasCopy } from "./delivery-state.js";
 import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } from "./persistence.js";
 import { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } from "../../shared/format.js";
+import { EXPORT_BUNDLE_VERSION } from "../../shared/versions.js";
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
-// v2 carries an array of feedback (batch export). v1 wrapped a single
-// payload; the receiver still accepts that shape for files exported before
-// the switch to batch download.
-const EXPORT_VERSION = 2;
 // The receiver's answer is awaited this long. A delivery another tab of the
 // page started is taken as cut off only once it and a margin are over (#139).
 const FETCH_TIMEOUT_MS = 15000;
@@ -977,7 +974,7 @@ function downloadFeedbackItems(items, pages = []) {
 function buildFeedbackBundle(feedbackList, exportedAt) {
   return {
     kind: EXPORT_KIND,
-    version: EXPORT_VERSION,
+    version: EXPORT_BUNDLE_VERSION,
     exportedAt,
     projectId: state.options.projectId || "",
     demoId: state.options.demoId || "",

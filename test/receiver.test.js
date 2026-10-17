@@ -11,6 +11,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const { DatabaseSync } = require("node:sqlite");
+const { PAYLOAD_SCHEMA_VERSION, EXPORT_BUNDLE_VERSION } = require("../shared/versions.js");
 
 const RECEIVER_PATH = path.resolve(__dirname, "../server/receive.js");
 
@@ -520,6 +521,22 @@ test("POST /import rejects unsupported bundle versions", async (t) => {
   assert.equal(response.body.ok, false);
   assert.match(response.body.error, /Unsupported PatchLoop bundle version: 999/);
   assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+});
+
+test("POST /import takes the bundle version the widget writes and says to update the receiver for a later one (#126)", async (t) => {
+  const receiver = await startReceiver(t);
+  const bundle = (version, id) => ({ kind: "patchloop-feedback-bundle", version, feedback: [feedbackPayload(id)] });
+  assert.equal((await postJson(`${receiver.baseUrl}/import`, bundle(EXPORT_BUNDLE_VERSION, "pl_bundle_current"))).status, 201);
+
+  const later = await postJson(`${receiver.baseUrl}/import`, bundle(EXPORT_BUNDLE_VERSION + 1, "pl_bundle_later"));
+  assert.equal(later.status, 400);
+  assert.equal(later.body.error, `Unsupported PatchLoop bundle version: ${EXPORT_BUNDLE_VERSION + 1}. This receiver reads versions up to ${EXPORT_BUNDLE_VERSION}; update the receiver to import this file`);
+  for (const version of [String(EXPORT_BUNDLE_VERSION), 0, 1.5]) {
+    const rejected = await postJson(`${receiver.baseUrl}/import`, bundle(version, `pl_bundle_bad_${String(version).replace(".", "_")}`));
+    assert.equal(rejected.status, 400, String(version));
+    assert.equal(rejected.body.error, `Unsupported PatchLoop bundle version: ${version}`, String(version));
+  }
+  assert.deepEqual((await readStoredFeedback(receiver.dbPath)).map((item) => item.id), ["pl_bundle_current"]);
 });
 
 test("POST /import stores every feedback in a v2 batch bundle", async (t) => {
@@ -1807,6 +1824,60 @@ test("schemaVersion is stored, defaulted for legacy payloads, and validated", as
   const rejected = await postJson(`${receiver.baseUrl}/feedback`, bad);
   assert.equal(rejected.status, 400);
   assert.match(rejected.body.error, /schemaVersion must be an integer/);
+});
+
+test("every payload version is kept: a missing or null one as 1, past ones as sent, a later one with its unknown fields and a note in the inbox (#126)", async (t) => {
+  const receiver = await startReceiver(t);
+  const later = PAYLOAD_SCHEMA_VERSION + 1;
+  const versions = [undefined, null, 1, 2, 3, PAYLOAD_SCHEMA_VERSION, later];
+  for (const [index, schemaVersion] of versions.entries()) {
+    const payload = { ...feedbackPayload(`pl_version_${index}`), schemaVersion };
+    if (schemaVersion === undefined) delete payload.schemaVersion;
+    if (schemaVersion === later) {
+      payload.laterField = { kept: true };
+      // A field this receiver knows keeps the current handling: version 1 of
+      // screenshot.uncaptured keeps only its known fields.
+      payload.screenshot = { status: "failed", reason: "test", uncaptured: { version: 1, status: "failed", laterField: true } };
+    }
+    assert.equal((await postJson(`${receiver.baseUrl}/feedback`, payload)).status, 201, String(schemaVersion));
+  }
+  const imported = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle", version: EXPORT_BUNDLE_VERSION,
+    feedback: [{ ...feedbackPayload("pl_version_imported"), schemaVersion: later, laterField: { kept: true } }]
+  });
+  assert.equal(imported.status, 201);
+
+  const byId = Object.fromEntries((await readStoredFeedback(receiver.dbPath)).map((item) => [item.id, item]));
+  assert.deepEqual(versions.map((_, index) => byId[`pl_version_${index}`].schemaVersion), [1, 1, 1, 2, 3, PAYLOAD_SCHEMA_VERSION, later]);
+  for (const id of [`pl_version_${versions.length - 1}`, "pl_version_imported"]) assert.deepEqual(byId[id].laterField, { kept: true }, id);
+  assert.deepEqual(byId[`pl_version_${versions.length - 1}`].screenshot.uncaptured, { version: 1, status: "failed" });
+
+  const inbox = await fetch(`${receiver.baseUrl}/`).then((response) => response.text());
+  const notes = inbox.match(/<p class="format-note">[^<]*<\/p>/g) || [];
+  assert.equal(notes.length, 2);
+  for (const note of notes) assert.ok(note.includes(`schemaVersion ${later}。この receiver が知っているのは ${PAYLOAD_SCHEMA_VERSION} まで`) && note.includes("「JSON データ」で確かめられます"), note);
+  // The unknown fields are there to check, in the card's JSON.
+  assert.match(inbox, /&quot;laterField&quot;/);
+
+  for (const schemaVersion of ["4", 4.5]) {
+    const rejected = await postJson(`${receiver.baseUrl}/feedback`, { ...feedbackPayload(`pl_version_bad_${typeof schemaVersion}`), schemaVersion });
+    assert.equal(rejected.status, 400);
+    assert.match(rejected.body.error, /schemaVersion must be an integer/);
+  }
+});
+
+test("marks kept on the device only (previousIds, localEdited) are not stored when a producer sends them (#126)", async (t) => {
+  const receiver = await startReceiver(t);
+  const sent = { ...feedbackPayload("pl_previous_sent"), replaces: "pl_a", previousIds: ["pl_a"], localEdited: true };
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, sent)).status, 201);
+  const imported = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle", version: EXPORT_BUNDLE_VERSION,
+    feedback: [{ ...feedbackPayload("pl_previous_imported"), replaces: "pl_b", previousIds: ["pl_b"], localEdited: true }]
+  });
+  assert.equal(imported.status, 201);
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.deepEqual(stored.map((item) => [item.id, item.replaces, Object.hasOwn(item, "previousIds"), Object.hasOwn(item, "localEdited")]).sort(),
+    [["pl_previous_imported", "pl_b", false, false], ["pl_previous_sent", "pl_a", false, false]]);
 });
 
 test("GET /feedback.json filters by projectId, demoId, and status", async (t) => {
