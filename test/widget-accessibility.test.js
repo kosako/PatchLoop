@@ -157,28 +157,42 @@ function contrast(foreground, background) {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-// The widget's rules in source order, each with the @media it sits in (null
-// outside any).
+// The widget's rules in source order, read as CSS reads them: comments
+// dropped, property names in lower case, background-color as background, and
+// the properties marked !important noted. Each rule carries the at-rule it
+// sits in (null outside any).
 function styleRules(widget) {
-  const css = widget.document.querySelector("[data-patchloop-style]").textContent;
+  const css = widget.document.querySelector("[data-patchloop-style]").textContent.replace(/\/\*[\s\S]*?\*\//g, "");
   const rules = [];
   const preludes = [];
   let start = 0;
   for (let index = 0; index < css.length; index += 1) {
     if (css[index] === "{") {
-      preludes.push(css.slice(start, index).trim());
+      const prelude = css.slice(start, index).trim();
+      // Not read: a rule nested in a rule (the outer declarations around it
+      // would be lost), and a statement such as @import before a rule.
+      assert.ok(!preludes.some((outer) => !outer.startsWith("@")), `${prelude}: nested rule not read by the contrast check`);
+      assert.ok(!prelude.includes(";"), `${prelude}: statement before a rule not read by the contrast check`);
+      preludes.push(prelude);
       start = index + 1;
     } else if (css[index] === "}") {
       const prelude = preludes.pop();
       if (!prelude.startsWith("@")) {
         const declarations = {};
+        const important = new Set();
         for (const part of css.slice(start, index).split(";")) {
           const colon = part.indexOf(":");
           if (colon === -1) continue;
-          const property = part.slice(0, colon).trim();
-          declarations[property === "background-color" ? "background" : property] = part.slice(colon + 1).trim();
+          const name = part.slice(0, colon).trim().toLowerCase();
+          const property = name === "background-color" ? "background" : name;
+          let value = part.slice(colon + 1).trim();
+          if (/!\s*important$/i.test(value)) {
+            important.add(property);
+            value = value.replace(/\s*!\s*important$/i, "");
+          }
+          declarations[property] = value;
         }
-        rules.push({ selector: prelude, declarations, media: preludes.findLast((outer) => outer.startsWith("@media")) ?? null });
+        rules.push({ selector: prelude, declarations, important, condition: preludes.findLast((outer) => outer.startsWith("@")) ?? null });
       }
       start = index + 1;
     }
@@ -206,13 +220,13 @@ function selectorList(prelude) {
   return selectors;
 }
 
-// What applies by selector outside @media: each selector of a list gets the
+// What applies by selector outside at-rules: each selector of a list gets the
 // rule, and a selector's rules are merged in source order, so a later rule's
 // color or background wins as in the page.
 function cascadedRules(rules) {
   const merged = new Map();
-  for (const { selector: prelude, declarations, media } of rules) {
-    if (media) continue;
+  for (const { selector: prelude, declarations, condition } of rules) {
+    if (condition) continue;
     for (const selector of selectorList(prelude)) merged.set(selector, { ...merged.get(selector), ...declarations });
   }
   return merged;
@@ -222,10 +236,27 @@ test("every text color of the widget meets 4.5:1 on the backgrounds it is shown 
   const widget = widgetHarness();
   widget.init();
   const allRules = styleRules(widget);
-  // A color or background that only some viewports get needs a check of its own.
-  for (const { selector, declarations, media } of allRules) {
-    if (media) assert.ok(!declarations.color && !declarations.background, `${selector} in ${media}: color or background not checked for contrast`);
-  }
+  // What sets the color of text or what is behind it. The checks below read
+  // plain color, background and opacity outside at-rules; anything else that
+  // could change the contrast fails here instead of passing unread.
+  const contrastProperties = ["color", "background", "background-image", "opacity", "filter", "backdrop-filter", "mix-blend-mode", "-webkit-text-fill-color", "all"];
+  const firstColored = allRules.findIndex(({ declarations }) => ["color", "background", "opacity"].some((property) => property in declarations));
+  allRules.forEach(({ selector, declarations, important, condition }, index) => {
+    for (const property of contrastProperties.filter((name) => name in declarations)) {
+      const where = `${selector} { ${property} }`;
+      assert.ok(!condition, `${where} in ${condition}: not checked for contrast`);
+      assert.ok(!important.has(property), `${where} with !important: not checked for contrast`);
+      if (property === "all") {
+        // The reset at the top, which every color below overrides.
+        assert.ok(index < firstColored, `${where} after a color: resets colors the checks do not follow`);
+      } else if (property === "opacity") {
+        // Disabled buttons are left out (WCAG), exported cards are composited below.
+        assert.ok([".pl-root button:disabled", ".pl-feedback-item-exported"].includes(selector), `${where}: not checked for contrast`);
+      } else {
+        assert.ok(["color", "background"].includes(property), `${where}: not computed by the contrast check`);
+      }
+    }
+  });
   const rules = cascadedRules(allRules);
   const checked = new Set();
   const backgrounds = new Set();
@@ -303,11 +334,6 @@ test("every text color of the widget meets 4.5:1 on the backgrounds it is shown 
     }
     if (rule.background) {
       assert.ok(backgrounds.has(selector) || exempt.has(selector) || withoutText.has(selector), `${selector}: background not checked for contrast`);
-    }
-    // Fading changes the contrast without a color: disabled buttons are left
-    // out (as above), exported cards are composited above.
-    if (rule.opacity !== undefined || rule.filter !== undefined) {
-      assert.ok([".pl-root button:disabled", ".pl-feedback-item-exported"].includes(selector), `${selector}: opacity or filter not checked for contrast`);
     }
   }
 });
