@@ -45,6 +45,26 @@ export function saveDisplayMode(mode) {
   }
 }
 
+// Whether the collapsed button is tucked into a small tab at the screen's edge
+// (#211), also a viewer preference kept per origin.
+const LAUNCHER_STORAGE_KEY = "patchloop:launcher";
+
+export function loadLauncher() {
+  try {
+    return window.localStorage.getItem(LAUNCHER_STORAGE_KEY) === "tab" ? "tab" : "button";
+  } catch (_) {
+    return "button";
+  }
+}
+
+export function saveLauncher(launcher) {
+  try {
+    window.localStorage.setItem(LAUNCHER_STORAGE_KEY, launcher);
+  } catch (_) {
+    // Storage can be unavailable in privacy-restricted contexts.
+  }
+}
+
 // Also notes which comments were in storage, for the merge with other tabs.
 export function loadPersistedFeedback() {
   const list = readPersistedFeedback();

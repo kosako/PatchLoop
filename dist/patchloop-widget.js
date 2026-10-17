@@ -637,6 +637,9 @@ const state = {
   commentReturnFocus: null,
   collapsed: true,
   displayMode: "normal",
+  // "button" (the collapsed panel's button) or "tab" (tucked into a small tab
+  // at the screen's edge, #211).
+  launcher: "button",
   // Inbox triage status (#147): { statuses: Map(id -> status), asked: Set(id) }
   // after a successful lookup, null otherwise. Kept in memory only.
   inboxStatus: null,
@@ -1726,6 +1729,26 @@ function saveDisplayMode(mode) {
   }
 }
 
+// Whether the collapsed button is tucked into a small tab at the screen's edge
+// (#211), also a viewer preference kept per origin.
+const LAUNCHER_STORAGE_KEY = "patchloop:launcher";
+
+function loadLauncher() {
+  try {
+    return window.localStorage.getItem(LAUNCHER_STORAGE_KEY) === "tab" ? "tab" : "button";
+  } catch (_) {
+    return "button";
+  }
+}
+
+function saveLauncher(launcher) {
+  try {
+    window.localStorage.setItem(LAUNCHER_STORAGE_KEY, launcher);
+  } catch (_) {
+    // Storage can be unavailable in privacy-restricted contexts.
+  }
+}
+
 // Also notes which comments were in storage, for the merge with other tabs.
 function loadPersistedFeedback() {
   const list = readPersistedFeedback();
@@ -2034,7 +2057,7 @@ function saveOtherPageFeedback(page) {
   }
 }
 
-return { FEEDBACK_STORAGE_VERSION, loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadPersistedFeedback, persistFeedbackList, syncPersistedFeedback, isOwnFeedbackKey, clearPersistedFeedback, bindFeedbackScope, serializeFeedbackForStorage, normalizePersistedFeedback, isMatchingFeedbackEnvelope, loadOtherPagesFeedback, isDemoFeedbackKey, saveOtherPageFeedback };
+return { FEEDBACK_STORAGE_VERSION, loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadLauncher, saveLauncher, loadPersistedFeedback, persistFeedbackList, syncPersistedFeedback, isOwnFeedbackKey, clearPersistedFeedback, bindFeedbackScope, serializeFeedbackForStorage, normalizePersistedFeedback, isMatchingFeedbackEnvelope, loadOtherPagesFeedback, isDemoFeedbackKey, saveOtherPageFeedback };
 })();
 const { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarget, rectFromStoredArea, round, numberOrNull } = __pl_widget_src_geometry;
 const { pointAnchorOffsets, areaAnchorOffsets, geometryFromAnchor, viewportDiffersFromCreation } = __pl_widget_src_anchoring;
@@ -2046,7 +2069,7 @@ const { buildPayload, buildRevision, outgoingPayload } = __pl_widget_src_payload
 const { uncapturedTouching } = __pl_widget_src_screenshot;
 const { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } = __pl_widget_src_inbox_status;
 const { isLocallyEdited, pendingAge, receiverHasCopy } = __pl_widget_src_delivery_state;
-const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } = __pl_widget_src_persistence;
+const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadLauncher, saveLauncher, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } = __pl_widget_src_persistence;
 const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } = __pl_shared_format;
 const { EXPORT_BUNDLE_VERSION } = __pl_shared_versions;
 
@@ -2091,6 +2114,7 @@ function init(options = {}) {
   // Its URLs leave under page.url's rule (#122).
   applySourceContextUrlRule(state.options.sourceContext, state.options.keepQueryParams);
   state.displayMode = loadDisplayMode();
+  state.launcher = loadLauncher();
   // Before anything renders: the panel counts the other pages against it.
   bindFeedbackScope();
   state.otherPages = null;
@@ -2163,6 +2187,7 @@ function renderShell() {
     <section class="pl-panel pl-collapsed" data-pl-panel aria-label="PatchLoop フィードバック">
       <header>
         <button type="button" class="pl-handle" data-pl-collapse aria-expanded="false" title="フィードバックを開く">フィードバック</button>
+        <button type="button" class="pl-tuck" data-pl-tuck aria-label="フィードバックのボタンを右端にしまう" title="右端にしまう">›</button>
         <strong class="pl-title">PatchLoop</strong>
       </header>
       <div class="pl-panel-body" data-pl-body>
@@ -2187,6 +2212,7 @@ function renderShell() {
         ${renderDeliverySettings()}
       </div>
     </section>
+    <button type="button" class="pl-tab" data-pl-tab aria-label="フィードバックのボタンを出す" title="フィードバックのボタンを出す" hidden>‹</button>
     <div class="pl-capture-guide" data-pl-capture-guide hidden><span>場所をクリック・タップして選択<small>Tab + Enter でも選べます</small></span><button type="button" data-pl-stop-capture>終了</button></div>
     <div class="pl-tooltip" id="pl-feedback-tooltip" role="tooltip" data-pl-tooltip hidden></div>
     <form class="pl-comment" data-pl-comment novalidate hidden>
@@ -2215,6 +2241,8 @@ function renderShell() {
   document.body.append(root);
 
   root.querySelector("[data-pl-collapse]").addEventListener("click", toggleCollapse);
+  root.querySelector("[data-pl-tuck]").addEventListener("click", () => setLauncher("tab"));
+  root.querySelector("[data-pl-tab]").addEventListener("click", () => setLauncher("button"));
   root.querySelector("[data-pl-mode]").addEventListener("click", toggleFeedbackMode);
   root.querySelector("[data-pl-stop-capture]")?.addEventListener("click", () => setFeedbackMode(false));
   root.querySelector("[data-pl-download-all]").addEventListener("click", downloadUnsentFeedback);
@@ -2475,8 +2503,7 @@ function setFeedbackMode(nextValue) {
   if (!root) return;
   state.active = nextValue;
   document.documentElement.classList.toggle("pl-feedback-active", state.active);
-  const handleBtn = root.querySelector("[data-pl-collapse]");
-  if (handleBtn) handleBtn.classList.toggle("pl-mode-on", state.active);
+  ["[data-pl-collapse]", "[data-pl-tuck]", "[data-pl-tab]"].forEach((selector) => root.querySelector(selector)?.classList.toggle("pl-mode-on", state.active));
   const modeBtn = root.querySelector("[data-pl-mode]");
   modeBtn.textContent = state.active ? "場所の選択を終了" : "コメントを追加";
   modeBtn.setAttribute("aria-pressed", String(state.active));
@@ -2489,7 +2516,7 @@ function setFeedbackMode(nextValue) {
     applyCollapseState();
     if (focusInPanelBody) root.querySelector("[data-pl-stop-capture]")?.focus({ preventScroll: true });
   } else if (focusInGuide) {
-    handleBtn?.focus({ preventScroll: true });
+    focusLauncher();
   }
   root.querySelector("[data-pl-help]").textContent = state.active ? "場所をクリック、または範囲をドラッグ。Tab で移動し Enter でも選べます。Esc で終了。" : "気になる場所を選んで、改善のヒントを残しましょう。";
   if (!state.active) {
@@ -2589,7 +2616,7 @@ function closeCommentForm() {
     returnFocus.focus({ preventScroll: true });
     if (document.activeElement === returnFocus) return;
   }
-  getRoot().querySelector("[data-pl-collapse]")?.focus({ preventScroll: true });
+  focusLauncher();
 }
 
 function handleCommentKeydown(event) {
@@ -3580,6 +3607,25 @@ function toggleCollapse() {
   state.collapsed = !state.collapsed;
   applyCollapseState();
   if (!state.collapsed) refreshInboxStatuses();
+  // Closed while tucked (#211): the button that had focus is gone with the panel.
+  else if (state.launcher === "tab") focusLauncher();
+}
+
+// Tucks the collapsed button into a small tab at the screen's edge, or brings
+// it back (#211), and keeps the choice on this device.
+function setLauncher(launcher) {
+  state.launcher = launcher;
+  saveLauncher(launcher);
+  applyCollapseState();
+  focusLauncher();
+}
+
+// What stands for the widget while the panel is closed: the tab when tucked,
+// else the panel's button.
+function focusLauncher() {
+  const root = getRoot();
+  const tucked = state.collapsed && state.launcher === "tab";
+  root?.querySelector(tucked ? "[data-pl-tab]" : "[data-pl-collapse]")?.focus({ preventScroll: true });
 }
 
 function applyCollapseState() {
@@ -3587,6 +3633,11 @@ function applyCollapseState() {
   if (!root) return;
   const panel = root.querySelector("[data-pl-panel]");
   if (panel) panel.classList.toggle("pl-collapsed", state.collapsed);
+  // Tucked (#211): only the tab shows while the panel is closed.
+  const tucked = state.collapsed && state.launcher === "tab";
+  if (panel) panel.hidden = tucked;
+  const tab = root.querySelector("[data-pl-tab]");
+  if (tab) tab.hidden = !tucked;
   const button = root.querySelector("[data-pl-collapse]");
   if (button) {
     button.setAttribute("aria-expanded", String(!state.collapsed));
@@ -3832,7 +3883,7 @@ async function retryFeedback(id) {
   saveFeedbackList();
   renderFeedbackList();
   showWidgetNotice(deliveryStatusText(item.delivery), item.delivery.ok === false);
-  getRoot()?.querySelector("[data-pl-collapse]")?.focus({ preventScroll: true });
+  focusLauncher();
 }
 
 function startEditFeedback(id) {
@@ -4066,7 +4117,7 @@ function injectStyles() {
     .pl-mode[aria-pressed="true"] { background: #b83d4d; border-color: #b83d4d; }
     .pl-panel.pl-collapsed { width: auto; min-width: 152px; border-radius: 999px; overflow: hidden; background: #0f7b63; border-color: #0f7b63; }
     .pl-feedback-active .pl-panel.pl-collapsed { background: #b83d4d; border-color: #b83d4d; }
-    .pl-panel.pl-collapsed header { padding: 0; min-height: 48px; border-bottom: 0; }
+    .pl-panel.pl-collapsed header { padding: 0; min-height: 48px; border-bottom: 0; gap: 0; }
     .pl-panel.pl-collapsed .pl-title,
     .pl-panel.pl-collapsed .pl-mode { display: none; }
     .pl-panel.pl-collapsed .pl-panel-body { display: none; }
@@ -4125,8 +4176,13 @@ function injectStyles() {
     .pl-capture-guide button { border: 1px solid #65716d; border-radius: 7px; background: #fff; color: #14211d; min-height: 36px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
     .pl-feedback-active [data-patchloop-root], .pl-feedback-active [data-patchloop-root] * { cursor: auto !important; }
     .pl-root button:disabled { cursor: wait; opacity: .55; }
-    .pl-panel.pl-collapsed .pl-handle { width: 100%; padding: 12px 22px; min-height: 48px; border-radius: 999px; color: #fff; background: #0f7b63; font-size: 13px; }
+    .pl-panel.pl-collapsed .pl-handle { flex: 1; padding: 12px 14px 12px 22px; min-height: 48px; border-radius: 0; color: #fff; background: #0f7b63; font-size: 13px; white-space: nowrap; }
     .pl-panel.pl-collapsed .pl-handle.pl-mode-on { background: #b83d4d; }
+    .pl-tuck { display: none; }
+    .pl-panel.pl-collapsed .pl-tuck { display: grid; place-items: center; width: 36px; min-width: 36px; min-height: 48px; padding: 0 6px 0 0; border: 0; border-left: 1px solid #3f9582; background: #0f7b63; color: #fff; font-size: 18px; font-weight: 700; line-height: 1; cursor: pointer; }
+    .pl-panel.pl-collapsed .pl-tuck.pl-mode-on { background: #b83d4d; border-left-color: #cd6f7b; }
+    .pl-tab { position: fixed; right: 0; bottom: max(20px, env(safe-area-inset-bottom)); display: grid; place-items: center; width: 36px; min-height: 48px; padding: 0; border: 0; border-radius: 10px 0 0 10px; background: #0f7b63; color: #fff; font-size: 18px; font-weight: 700; line-height: 1; cursor: pointer; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); }
+    .pl-tab.pl-mode-on { background: #b83d4d; }
     .pl-panel-body { padding-top: 18px; }
     .pl-compose { padding: 0 20px 18px; }
     .pl-compose p { padding: 10px 0 0; font-size: 11px; }
@@ -4157,6 +4213,7 @@ function injectStyles() {
     .pl-inbox-status-missing { border-color: #e2c48a; color: #785011; }
     @media (max-width: 480px) {
       .pl-root { right: 12px; bottom: max(12px, env(safe-area-inset-bottom)); }
+      .pl-tab { bottom: max(12px, env(safe-area-inset-bottom)); }
       .pl-panel { width: calc(100vw - 24px); }
       .pl-comment { padding: 18px; }
       .pl-comment textarea, .pl-comment input { font-size: 16px; }
