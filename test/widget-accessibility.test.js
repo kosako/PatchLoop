@@ -157,12 +157,17 @@ function contrast(foreground, background) {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-// The widget's rules in source order, read as CSS reads them: comments
-// dropped, property names in lower case, background-color as background, and
-// the properties marked !important noted. Each rule carries the at-rule it
-// sits in (null outside any).
+// The widget's rules in source order, each with the at-rule it sits in (null
+// outside any) and the properties marked !important. Only the plain CSS this
+// widget writes is read: an escape, a comment, a string of anything but words,
+// a declaration that is not "property: value", an unmatched brace or a rule
+// left open could each hide a declaration from the reading, so each fails
+// instead of being read differently from the browser.
 function styleRules(widget) {
-  const css = widget.document.querySelector("[data-patchloop-style]").textContent.replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = widget.document.querySelector("[data-patchloop-style]").textContent;
+  assert.ok(!css.includes("\\"), "an escape in the widget CSS is not read by the contrast check");
+  assert.ok(!css.includes("/*"), "a comment in the widget CSS is not read by the contrast check");
+  assert.ok(!/["']/.test(css.replace(/"[A-Za-z0-9 -]*"/g, "")), "a string other than plain words in the widget CSS is not read by the contrast check");
   const rules = [];
   const preludes = [];
   let start = 0;
@@ -176,20 +181,24 @@ function styleRules(widget) {
       preludes.push(prelude);
       start = index + 1;
     } else if (css[index] === "}") {
+      assert.ok(preludes.length > 0, "an unmatched } in the widget CSS is not read by the contrast check");
       const prelude = preludes.pop();
       if (!prelude.startsWith("@")) {
         const declarations = {};
         const important = new Set();
         for (const part of css.slice(start, index).split(";")) {
+          if (!part.trim()) continue;
           const colon = part.indexOf(":");
-          if (colon === -1) continue;
-          const name = part.slice(0, colon).trim().toLowerCase();
+          assert.ok(colon !== -1, `${prelude} { ${part.trim()} }: declaration not read by the contrast check`);
+          const name = part.slice(0, colon).trim();
+          assert.match(name, /^-{0,2}[a-z][a-z0-9-]*$/, `${prelude} { ${name} }: property name not read by the contrast check`);
           const property = name === "background-color" ? "background" : name;
           let value = part.slice(colon + 1).trim();
-          if (/!\s*important$/i.test(value)) {
+          if (/\s!important$/.test(value)) {
             important.add(property);
-            value = value.replace(/\s*!\s*important$/i, "");
+            value = value.slice(0, -"!important".length).trim();
           }
+          assert.ok(value && !value.includes("!"), `${prelude} { ${name} }: value not read by the contrast check`);
           declarations[property] = value;
         }
         rules.push({ selector: prelude, declarations, important, condition: preludes.findLast((outer) => outer.startsWith("@")) ?? null });
@@ -197,6 +206,7 @@ function styleRules(widget) {
       start = index + 1;
     }
   }
+  assert.ok(preludes.length === 0 && !css.slice(start).trim(), "a rule left open in the widget CSS is not read by the contrast check");
   return rules;
 }
 
@@ -240,6 +250,11 @@ test("every text color of the widget meets 4.5:1 on the backgrounds it is shown 
   // plain color, background and opacity outside at-rules; anything else that
   // could change the contrast fails here instead of passing unread.
   const contrastProperties = ["color", "background", "background-image", "opacity", "filter", "backdrop-filter", "mix-blend-mode", "-webkit-text-fill-color", "all"];
+  const resets = [
+    [".pl-root, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-selection]", "initial"],
+    [".pl-root *, [data-patchloop-area] *", "revert"],
+    [":is(.pl-root, .pl-root *, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-area] *, [data-patchloop-selection])::before, :is(.pl-root, .pl-root *, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-area] *, [data-patchloop-selection])::after", "revert"]
+  ];
   const firstColored = allRules.findIndex(({ declarations }) => ["color", "background", "opacity"].some((property) => property in declarations));
   allRules.forEach(({ selector, declarations, important, condition }, index) => {
     for (const property of contrastProperties.filter((name) => name in declarations)) {
@@ -247,8 +262,8 @@ test("every text color of the widget meets 4.5:1 on the backgrounds it is shown 
       assert.ok(!condition, `${where} in ${condition}: not checked for contrast`);
       assert.ok(!important.has(property), `${where} with !important: not checked for contrast`);
       if (property === "all") {
-        // The reset at the top, which every color below overrides.
-        assert.ok(index < firstColored, `${where} after a color: resets colors the checks do not follow`);
+        // Only the reset at the top, which every color below overrides.
+        assert.ok(resets.some(([reset, value]) => selector === reset && declarations.all === value) && index < firstColored, `${where}: resets colors the checks do not follow`);
       } else if (property === "opacity") {
         // Disabled buttons are left out (WCAG), exported cards are composited below.
         assert.ok([".pl-root button:disabled", ".pl-feedback-item-exported"].includes(selector), `${where}: not checked for contrast`);
