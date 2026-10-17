@@ -18,6 +18,9 @@ const EXPORT_KIND = "patchloop-feedback-bundle";
 const FETCH_TIMEOUT_MS = 15000;
 const STALE_PENDING_MS = FETCH_TIMEOUT_MS + 5000;
 let pendingInit = null;
+// The launcher chosen on this page (#211), kept over a re-init even where
+// storage cannot keep it; null until the viewer chooses.
+let launcherChosen = null;
 const captureEvents = typeof window.PointerEvent === "function"
   ? ["pointerdown", "pointermove", "pointerup"]
   : ["mousedown", "mousemove", "mouseup"];
@@ -53,7 +56,7 @@ function init(options = {}) {
   // Its URLs leave under page.url's rule (#122).
   applySourceContextUrlRule(state.options.sourceContext, state.options.keepQueryParams);
   state.displayMode = loadDisplayMode();
-  state.launcher = loadLauncher();
+  state.launcher = launcherChosen ?? loadLauncher();
   // Before anything renders: the panel counts the other pages against it.
   bindFeedbackScope();
   state.otherPages = null;
@@ -449,11 +452,14 @@ function setFeedbackMode(nextValue) {
   const guide = root.querySelector("[data-pl-capture-guide]");
   const focusInGuide = guide?.contains(document.activeElement);
   const focusInPanelBody = document.activeElement === modeBtn || root.querySelector("[data-pl-body]")?.contains(document.activeElement);
+  const panel = root.querySelector("[data-pl-panel]");
+  const focusInPanel = panel?.contains(document.activeElement);
   if (guide) guide.hidden = !state.active;
   if (state.active) {
     state.collapsed = true;
     applyCollapseState();
-    if (focusInPanelBody) root.querySelector("[data-pl-stop-capture]")?.focus({ preventScroll: true });
+    // Tucked (#211), the whole panel goes, its header with the button too.
+    if (focusInPanelBody || (panel?.hidden && focusInPanel)) root.querySelector("[data-pl-stop-capture]")?.focus({ preventScroll: true });
   } else if (focusInGuide) {
     focusLauncher();
   }
@@ -1553,6 +1559,7 @@ function toggleCollapse() {
 // Tucks the collapsed button into a small tab at the screen's edge, or brings
 // it back (#211), and keeps the choice on this device.
 function setLauncher(launcher) {
+  launcherChosen = launcher;
   state.launcher = launcher;
   saveLauncher(launcher);
   applyCollapseState();

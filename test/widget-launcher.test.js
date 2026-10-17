@@ -64,6 +64,12 @@ test("a tucked button stays tucked after a reload, and without storage it stays 
   assert.equal(shown(widget), "panel");
   parts(widget).tuck.click();
   assert.equal(shown(widget), "tab");
+  // The choice outlives a re-init on the same page, storage or not.
+  widget.init();
+  assert.equal(shown(widget), "tab");
+  widget.api.destroy();
+  widget.init();
+  assert.equal(shown(widget), "tab");
 });
 
 test("a marker opens the panel while tucked, and closing it goes back to the tab (#211)", async () => {
@@ -85,6 +91,19 @@ test("a marker opens the panel while tucked, and closing it goes back to the tab
   handle.click();
   assert.equal(shown(widget), "tab");
   assert.ok(widget.document.activeElement === tab, "focus moves to the tab when the panel closes");
+});
+
+test("choosing a place from the open panel while tucked moves focus off the hidden panel to the guide (#211)", async () => {
+  const widget = widgetHarness({ storage: new Map([[LAUNCHER_KEY, "tab"]]) });
+  widget.init();
+  await widget.submit("Point comment");
+  widget.api.setFeedbackMode(false);
+  const { handle } = parts(widget);
+  assert.equal(shown(widget), "panel");
+  handle.focus();
+  widget.api.setFeedbackMode(true);
+  assert.equal(shown(widget), "tab");
+  assert.ok(widget.document.activeElement === widget.document.querySelector("[data-pl-stop-capture]"), "focus moves to the guide's exit button");
 });
 
 test("while choosing a place, the tab and the tuck button take the mode's color, and Escape returns focus to the tab (#211)", () => {
