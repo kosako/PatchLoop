@@ -10,8 +10,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // The review target at a position that the test moves, inside a box that cuts
 // off what overflows it (overflow-y: auto) when `scrolls` is set.
-function page({ scrolls = true } = {}) {
-  const widget = widgetHarness();
+function page({ scrolls = true, harness = {} } = {}) {
+  const widget = widgetHarness(harness);
   const offset = { x: 0, y: 0 };
   widget.target.getBoundingClientRect = () => ({
     left: offset.x, top: offset.y, right: offset.x + 200, bottom: offset.y + 100, width: 200, height: 100
@@ -360,5 +360,24 @@ test("a drag with the middle or the right button moves the markers too (#213)", 
     await sleep(500);
   }
   widget.api.destroy();
+});
+
+test("a marker taken in from another tab while its element is out of the box is hidden from the start (#213)", async () => {
+  const storage = new Map();
+  const options = { persistFeedback: true, deliveryMode: "download" };
+  const { widget: here, offset } = page({ harness: { storage } });
+  here.init(options);
+  // Here the item has been scrolled out of the box.
+  offset.y = -120;
+  const { widget: other } = page({ harness: { storage } });
+  other.init(options);
+  await other.submit("From the other tab");
+  const key = [...storage.keys()].find((name) => name.startsWith("patchloop:feedback"));
+  here.window.emit("storage", { key });
+  const pin = laidOut(here.document.querySelector("[data-patchloop-pin]"));
+  await sleep(60);
+  assert.equal(pin.classList.contains("pl-marker-clipped"), true);
+  here.api.destroy();
+  other.api.destroy();
 });
 

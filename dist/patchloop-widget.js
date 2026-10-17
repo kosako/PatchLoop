@@ -3217,6 +3217,8 @@ function addCommittedMarker(item) {
   bindMarkerHover(marker, item.id);
   bindMarkerActivation(marker, item.id);
   setMarkerApproximate(marker, state.approximateIds.has(item.id));
+  // Placed where its element is; out of sight in a box, it is hidden (#213).
+  scheduleMarkerFollow();
 }
 
 // --- Other tabs of the page (#139) ---------------------------------------
