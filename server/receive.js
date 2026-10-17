@@ -1243,7 +1243,11 @@ function normalizeImportedBundle(body) {
   let feedback;
   if (body.kind === IMPORT_BUNDLE_KIND) {
     if (!SUPPORTED_IMPORT_BUNDLE_VERSIONS.has(body.version)) {
-      throw httpError(`Unsupported PatchLoop bundle version: ${body.version}`, 400);
+      // A later version is a file from a newer widget: say what to do (#126).
+      const newest = Math.max(...SUPPORTED_IMPORT_BUNDLE_VERSIONS);
+      const newer = Number.isInteger(body.version) && body.version > newest;
+      throw httpError(`Unsupported PatchLoop bundle version: ${body.version}${newer
+        ? `. This receiver reads versions up to ${newest}; update the receiver to import this file` : ""}`, 400);
     }
     // Each version pins its feedback shape, so a malformed producer (v1 array
     // or v2 single object) is rejected instead of silently reinterpreted.
@@ -1304,6 +1308,11 @@ function normalizeFeedbackPayload(payload) {
   delete imported.exported;
   delete imported.exportedAt;
   delete imported.exportedFileName;
+  // The widget keeps the ids a revision replaced on the device only (#121)
+  // and does not send them; a producer that does must not store them (#126).
+  delete imported.previousIds;
+  // A null schemaVersion is no version, read as 1 like a missing one (#126).
+  if (imported.schemaVersion === null) delete imported.schemaVersion;
   // A malformed screenshot.uncaptured (#148) does not cost the feedback: it is
   // replaced with an "invalid" record that later readers can rely on. It is
   // judged as parsed, since the clone above turns a non-finite number (1e400

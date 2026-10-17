@@ -225,6 +225,32 @@ Main payload fields:
 
 The `target` coordinates, like `environment.viewport` and the screenshot, record the moment the comment was confirmed. `clientX/clientY` are viewport coordinates at that moment, while `pageX/pageY` are document coordinates including scroll. Pins and area overlays are anchored to document coordinates so they stay attached to the target while scrolling. When a window resize or a reload reflows the layout, markers re-anchor to the target element via `target.selector` + `target.anchor`, but the `target` coordinates are not rewritten (what is saved, sent, and exported stays as confirmed).
 
+### Compatibility
+
+Payloads and export files each carry a version.
+
+| Payload `schemaVersion` | Field added |
+| --- | --- |
+| 1 (a payload without `schemaVersion`) | — |
+| 2 | `sourceContext` |
+| 3 | `screenshot.uncaptured` |
+| 4 (the current widget) | `replaces` |
+
+| Export file `version` | Shape of `feedback` |
+| --- | --- |
+| 1 | A single object |
+| 2 (the current widget) | An array |
+
+The receiver handles them as follows.
+
+- Payloads of past versions stay accepted. A payload without `schemaVersion`, or with `null`, is stored as version 1. A `schemaVersion` that is not an integer is refused with 400
+- A payload of a version newer than the receiver is not refused either: it is stored as sent, fields the receiver does not know included. Its card in the inbox says the format is newer than this receiver (the unknown fields are not shown). Fields the receiver knows are checked the same way whatever the version
+- These fields are not stored even when sent: the ones the receiver owns (`receivedAt`, `received`, `importedAt`, `source`, `statusUpdatedAt`, `integrations`) and the marks used on the device only (`delivery`, `exported`, `exportedAt`, `exportedFileName`, `previousIds`). `status` always starts as `new` on receipt (an import keeps the value in the export file)
+- Stored records are not rewritten when the receiver is updated; they are read into the current shape (for example `screenshot.uncaptured`)
+- An export file of an unknown `version` is refused with 400. When it is newer than the receiver, the error says to update the receiver
+
+A field inside the payload may carry its own version: the `version` of `screenshot.uncaptured` (1 for now) is counted apart from `schemaVersion` (see the field's description above).
+
 ## Local Receiver
 
 When `endpoint` is set, the widget POSTs the payload to that URL. A local receiver is bundled for testing.

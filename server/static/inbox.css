@@ -92,6 +92,7 @@ time { margin-left: auto; color: var(--muted); font-size: 11px; white-space: now
 .revision-note { margin: 10px 0 0; padding: 8px 10px; border-left: 3px solid #2f6f9f; border-radius: 4px; background: #eef5fb; color: #1d4566; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .revision-note a { color: inherit; font-weight: 700; }
 .uncaptured-note { margin: 10px 0 0; padding: 8px 10px; border-left: 3px solid #b7791f; border-radius: 4px; background: #fff8e7; color: #5c3d0a; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.format-note { margin: 10px 0 0; padding: 8px 10px; border-left: 3px solid #6b7570; border-radius: 4px; background: #f3f5f4; color: #33403a; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .card-actions { display: flex; align-items: center; gap: 16px; border-top: 1px solid #eef2ef; padding-top: 14px; }
 .status-control { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 11px; }
 .status-control select { min-height: 34px; padding: 5px 28px 5px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; }
