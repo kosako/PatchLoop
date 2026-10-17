@@ -661,7 +661,11 @@ const state = {
   // Re-checks a delivery another tab may still be making, and when this tab
   // first saw each such delivery (monotonic); see settlePendingDeliveries.
   pendingCheckTimer: null,
-  pendingSeenAt: new Map()
+  pendingSeenAt: new Map(),
+  // Markers following content that moves under them (#213): the frame asked
+  // for, until when (and at the latest) to keep following, and the count of
+  // followings, which tells when to look elements up again.
+  follow: { frame: null, until: 0, limit: 0, session: 0 }
 };
 
 return { DEFAULTS, state };
@@ -2059,6 +2063,10 @@ let pendingInit = null;
 const captureEvents = typeof window.PointerEvent === "function"
   ? ["pointerdown", "pointermove", "pointerup"]
   : ["mousedown", "mousemove", "mouseup"];
+// What may move content under the markers (#213): any scroll (it does not
+// bubble, so it is caught on the way down), a wheel, the end of a drag and a
+// key; a move counts only while a button is held (see followDrag).
+const FOLLOW_EVENTS = ["scroll", "wheel", captureEvents[2], "keyup"];
 
 function init(options = {}) {
   cancelPendingInit();
@@ -2073,6 +2081,7 @@ function init(options = {}) {
   }
   // Re-init while comment mode is on must not leave stale mode state
   // (crosshair cursor, active drag) behind the freshly rendered UI.
+  cancelMarkerFollow();
   state.active = false;
   document.documentElement.classList.remove("pl-feedback-active");
   state.drag = null;
@@ -2099,6 +2108,8 @@ function init(options = {}) {
   renderShell();
   bindGlobalCapture();
   restorePersistedFeedback();
+  // Restored markers inside a box scrolled away are hidden from the start (#213).
+  scheduleMarkerFollow();
   applyCollapseState();
   renderFeedbackList();
   refreshInboxStatuses();
@@ -2117,6 +2128,9 @@ function destroy() {
   document.removeEventListener("keydown", handleCaptureKeydown, true);
   document.removeEventListener("click", suppressDocumentClick, true);
   window.removeEventListener("resize", handleWindowResize);
+  FOLLOW_EVENTS.forEach((type) => document.removeEventListener(type, scheduleMarkerFollow, true));
+  document.removeEventListener(captureEvents[1], followDrag, true);
+  cancelMarkerFollow();
   window.visualViewport?.removeEventListener("resize", positionVisibleCommentForm);
   window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
@@ -2284,6 +2298,12 @@ function bindGlobalCapture() {
   document.addEventListener("keydown", handleCaptureKeydown, true);
   window.removeEventListener("resize", handleWindowResize);
   window.addEventListener("resize", handleWindowResize);
+  FOLLOW_EVENTS.forEach((type) => {
+    document.removeEventListener(type, scheduleMarkerFollow, true);
+    document.addEventListener(type, scheduleMarkerFollow, { capture: true, passive: true });
+  });
+  document.removeEventListener(captureEvents[1], followDrag, true);
+  document.addEventListener(captureEvents[1], followDrag, { capture: true, passive: true });
   window.visualViewport?.removeEventListener("resize", positionVisibleCommentForm);
   window.visualViewport?.addEventListener("resize", positionVisibleCommentForm);
   window.visualViewport?.removeEventListener("scroll", positionVisibleCommentForm);
@@ -2405,7 +2425,7 @@ function handleDocumentMouseUp(event) {
   let marker;
   if (state.drag.isDragging) {
     marker = addArea(rect);
-    const areaAnchor = buildAreaAnchor(target, rect);
+    const areaAnchor = buildAreaAnchor(target, rect, end);
     state.pendingTarget = {
       kind: "area",
       ...pointFromClient(rect.leftPx, rect.topPx, viewportMetrics()),
@@ -3197,6 +3217,8 @@ function addCommittedMarker(item) {
   bindMarkerHover(marker, item.id);
   bindMarkerActivation(marker, item.id);
   setMarkerApproximate(marker, state.approximateIds.has(item.id));
+  // Placed where its element is; out of sight in a box, it is hidden (#213).
+  scheduleMarkerFollow();
 }
 
 // --- Other tabs of the page (#139) ---------------------------------------
@@ -3306,12 +3328,29 @@ function buildPointAnchor(element, point) {
 // From there, climb to the nearest anchorable ancestor that contains the
 // dragged rect: a tiny element under the center produces huge relative
 // offsets that blow up whenever its own size changes (e.g. text wrapping).
-function buildAreaAnchor(startElement, rect) {
-  const centerElement = document.elementFromPoint(
-    Math.min(Math.max(rect.leftPx + rect.widthPx / 2, 0), window.innerWidth - 1),
-    Math.min(Math.max(rect.topPx + rect.heightPx / 2, 0), window.innerHeight - 1)
+// The climb stops below a box that cuts off its content (#213): what is in a
+// scrolling box or a panned canvas moves while the box stays, so an area
+// anchored to the box would be left behind.
+function buildAreaAnchor(startElement, rect, end) {
+  const elementAt = (x, y) => document.elementFromPoint(
+    Math.min(Math.max(x, 0), window.innerWidth - 1),
+    Math.min(Math.max(y, 0), window.innerHeight - 1)
   );
-  let anchorElement = anchorableElement(centerElement) || anchorableElement(startElement);
+  const right = rect.leftPx + rect.widthPx - 1;
+  const bottom = rect.topPx + rect.heightPx - 1;
+  // A drag between items may centre on the box around them; an item it starts
+  // or ends on, or one at a corner, moves with the content where the box does
+  // not (#213).
+  const candidates = [
+    elementAt(rect.leftPx + rect.widthPx / 2, rect.topPx + rect.heightPx / 2),
+    startElement,
+    end && elementAt(end.clientX, end.clientY),
+    elementAt(rect.leftPx, rect.topPx),
+    elementAt(right, rect.topPx),
+    elementAt(rect.leftPx, bottom),
+    elementAt(right, bottom)
+  ].map(anchorableElement).filter(Boolean);
+  let anchorElement = candidates.find((element) => !cutsOffContent(element)) || candidates[0] || null;
 
   let cursor = anchorElement;
   for (let depth = 0; cursor && depth < 6; depth++) {
@@ -3320,7 +3359,7 @@ function buildAreaAnchor(startElement, rect) {
       break;
     }
     const parent = anchorableElement(cursor.parentElement);
-    if (!parent) break;
+    if (!parent || cutsOffContent(parent)) break;
     cursor = parent;
     anchorElement = parent;
   }
@@ -3423,19 +3462,24 @@ function assignPointFields(target, point) {
   target.documentY = round(point.documentY);
 }
 
-function repositionMarker(marker, target) {
-  if (!marker || !marker.node) return;
+// Returns whether the marker moved. origin: markerOrigin(), measured once by a
+// caller that places many markers.
+function repositionMarker(marker, target, origin = markerOrigin()) {
+  if (!marker || !marker.node) return false;
   const placement = storedPlacement(target);
-  if (!placement) return;
+  if (!placement) return false;
+  const style = marker.node.style;
+  const before = `${style.left} ${style.top} ${style.width} ${style.height}`;
   if (placement.kind === "area") {
-    Object.assign(marker.node.style, {
-      ...markerPosition(placement.pageLeftPx, placement.pageTopPx),
+    Object.assign(style, {
+      ...markerPosition(placement.pageLeftPx, placement.pageTopPx, origin),
       width: `${placement.widthPx}px`,
       height: `${placement.heightPx}px`
     });
-    return;
+  } else {
+    Object.assign(style, markerPosition(placement.pageX, placement.pageY, origin));
   }
-  Object.assign(marker.node.style, markerPosition(placement.pageX, placement.pageY));
+  return `${style.left} ${style.top} ${style.width} ${style.height}` !== before;
 }
 
 // #173: markers are position: absolute children of body, so their left/top
@@ -3450,13 +3494,17 @@ function repositionMarker(marker, target) {
 // keep a host ::before / ::after from growing it while it is measured.
 const ORIGIN_PROBE_STYLE = "all:initial!important;display:block!important;position:absolute!important;left:0!important;top:0!important;width:0!important;height:0!important;overflow:hidden!important";
 
-function markerPosition(pageX, pageY) {
+function markerOrigin() {
   const probe = document.createElement("div");
   probe.style.cssText = ORIGIN_PROBE_STYLE;
   document.body.append(probe);
   const origin = probe.getBoundingClientRect();
   probe.remove();
-  return { left: `${pageX - window.scrollX - origin.left}px`, top: `${pageY - window.scrollY - origin.top}px` };
+  return origin;
+}
+
+function markerPosition(pageX, pageY, origin = markerOrigin(), scroll = { x: window.scrollX, y: window.scrollY }) {
+  return { left: `${pageX - scroll.x - origin.left}px`, top: `${pageY - scroll.y - origin.top}px` };
 }
 
 function setMarkerApproximate(marker, isApproximate) {
@@ -3467,6 +3515,221 @@ function setMarkerApproximate(marker, isApproximate) {
   } else {
     marker.node.removeAttribute("title");
   }
+}
+
+// #213: markers sit on the document, so a box that scrolls inside the page, or
+// content moved by a transform (a canvas panned with the wheel), leaves them
+// behind. After a scroll, a wheel, a drag or a key, markers are put back on
+// their elements every frame for as long as they move, and a marker whose
+// element has left the boxes it is seen through is hidden. Only the markers
+// move: the stored targets stay the record of when they were confirmed (#155).
+const FOLLOW_SETTLE_MS = 300;
+const FOLLOW_MOVING_MS = 150;
+const FOLLOW_MAX_MS = 2000;
+
+function followClock() {
+  return typeof window.performance?.now === "function" ? window.performance.now() : Date.now();
+}
+
+function followDrag(event) {
+  // Any button: a canvas may pan with the middle or the right one too.
+  if (event.buttons) scheduleMarkerFollow();
+}
+
+function scheduleMarkerFollow() {
+  if (state.feedbackMarkers.size === 0 && !state.pendingTarget?.markerNode) return;
+  const now = followClock();
+  // A new following looks the elements and the boxes they are seen through up
+  // again (see markerAnchorElement and visibleBox).
+  if (state.follow.frame == null) state.follow.session += 1;
+  state.follow.until = Math.max(state.follow.until, now + FOLLOW_SETTLE_MS);
+  state.follow.limit = now + FOLLOW_MAX_MS;
+  if (state.follow.frame == null) state.follow.frame = requestFollowFrame();
+}
+
+function requestFollowFrame() {
+  return typeof window.requestAnimationFrame === "function"
+    ? { raf: window.requestAnimationFrame(followMarkersFrame) }
+    : { timeout: window.setTimeout(followMarkersFrame, 16) };
+}
+
+function cancelMarkerFollow() {
+  const frame = state.follow.frame;
+  if (frame?.raf != null) window.cancelAnimationFrame?.(frame.raf);
+  if (frame?.timeout != null) window.clearTimeout(frame.timeout);
+  state.follow.frame = null;
+  state.follow.until = 0;
+}
+
+function followMarkersFrame() {
+  state.follow.frame = null;
+  if (!getRoot()) return;
+  const moved = followMarkers();
+  const now = followClock();
+  if (moved) state.follow.until = Math.min(state.follow.limit, Math.max(state.follow.until, now + FOLLOW_MOVING_MS));
+  if (now < state.follow.until) state.follow.frame = requestFollowFrame();
+}
+
+// Puts every marker on its element where the element can be found (else it
+// stays where it is), and hides the ones out of sight. Every measurement is
+// taken before the first marker is moved, so a frame lays the page out once
+// however many markers there are. Returns whether any moved.
+function followMarkers() {
+  const origin = markerOrigin();
+  const scroll = { x: window.scrollX, y: window.scrollY };
+  const boxRects = new Map();
+  const plans = [];
+  state.feedback.forEach((item) => {
+    const marker = state.feedbackMarkers.get(item.id);
+    if (!marker?.node) return;
+    const element = markerAnchorElement(marker, item.target);
+    const geometry = element && geometryOn(item.target, element);
+    let placement = null;
+    if (geometry) {
+      const target = { ...item.target, area: item.target.area && { ...item.target.area } };
+      refreshTargetCoordinates(target, geometry);
+      placement = storedPlacement(target);
+    }
+    plans.push({ marker, feedbackId: item.id, placement, box: element ? visibleBox(marker, element, boxRects) : null });
+  });
+  const pending = state.pendingTarget;
+  if (pending?.markerNode) {
+    if (pending.followMarker?.node !== pending.markerNode) pending.followMarker = { node: pending.markerNode };
+    // The element may have been replaced by one with the same selector.
+    if (!pending.anchorElement?.isConnected) {
+      const replaced = elementForSelector(pending.anchor?.selector || pending.selector);
+      if (replaced) pending.anchorElement = replaced;
+    }
+    const element = pending.anchorElement?.isConnected ? pending.anchorElement : null;
+    const geometry = element && geometryOn(pending, element);
+    if (geometry) refreshTargetCoordinates(pending, geometry);
+    plans.push({
+      marker: pending.followMarker, feedbackId: null,
+      placement: geometry ? storedPlacement(pending) : null,
+      box: element ? visibleBox(pending.followMarker, element, boxRects) : null
+    });
+  }
+  let moved = false;
+  plans.forEach((plan) => {
+    moved = placeFollowedMarker(plan, origin, scroll) || moved;
+  });
+  return moved;
+}
+
+// Where a target's anchor puts it on the given element, without looking any
+// other element up: a marker is placed and cut off by the same element.
+function geometryOn(target, element) {
+  const anchor = target && target.anchor;
+  if (!anchor || numberOrNull(anchor.x) == null || numberOrNull(anchor.y) == null) return null;
+  const rect = elementRectOrNull(element);
+  return rect ? geometryFromAnchor(target.kind, anchor, rect, window.scrollX, window.scrollY) : null;
+}
+
+// The element a marker is placed on, looked up again once per following (an
+// element may have been replaced) and kept for its frames.
+function markerAnchorElement(marker, target) {
+  if (marker.anchorSession !== state.follow.session || !marker.anchorElement?.isConnected) {
+    marker.anchorElement = elementForSelector(target?.anchor?.selector || target?.selector);
+    marker.anchorSession = state.follow.session;
+  }
+  return marker.anchorElement;
+}
+
+// The part of the viewport where the element can be seen: the overlap of its
+// ancestors that cut off what overflows them (overflow other than visible),
+// each on the axes it cuts off (overflow-x: clip with overflow-y: visible cuts
+// off sideways only); null when none does. The ancestors are found again once
+// per following; their boxes are measured once per frame however many
+// markers share them. Not followed: a fixed or absolutely placed element that
+// escapes an ancestor's overflow.
+function visibleBox(marker, element, boxRects) {
+  if (marker.clipSession !== state.follow.session || marker.clipFor !== element) {
+    marker.clipAncestors = clippingAncestors(element);
+    marker.clipFor = element;
+    marker.clipSession = state.follow.session;
+  }
+  if (marker.clipAncestors.length === 0) return null;
+  const box = { left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity };
+  for (const { node, x, y } of marker.clipAncestors) {
+    if (!boxRects.has(node)) boxRects.set(node, node.getBoundingClientRect());
+    const rect = boxRects.get(node);
+    if (x) {
+      box.left = Math.max(box.left, rect.left);
+      box.right = Math.min(box.right, rect.right);
+    }
+    if (y) {
+      box.top = Math.max(box.top, rect.top);
+      box.bottom = Math.min(box.bottom, rect.bottom);
+    }
+  }
+  return box;
+}
+
+function clippingAncestors(element) {
+  const ancestors = [];
+  for (let node = element.parentElement; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+    const axes = cutOffAxes(node);
+    if (axes.x || axes.y) ancestors.push({ node, ...axes });
+  }
+  return ancestors;
+}
+
+// The axes on which a box cuts off its content (overflow other than visible).
+function cutOffAxes(node) {
+  if (typeof window.getComputedStyle !== "function") return { x: false, y: false };
+  const style = window.getComputedStyle(node);
+  return { x: Boolean(style) && style.overflowX !== "visible", y: Boolean(style) && style.overflowY !== "visible" };
+}
+
+// A box whose overflow is other than visible on some axis: it cuts off its
+// content, which may scroll or be moved inside it.
+function cutsOffContent(node) {
+  const axes = cutOffAxes(node);
+  return axes.x || axes.y;
+}
+
+// Writes what followMarkers worked out. A pin whose point is out of its box is
+// hidden; an area is cut down to the part in its box, or hidden when none is.
+// Hidden markers take no room (display: none), so a marker carried far off
+// does not stretch the page. Returns whether the marker moved.
+// Writes only: the scroll and the origin come measured. An area cut down to
+// its box also cuts off its number where it no longer fits.
+function placeFollowedMarker({ marker, feedbackId, placement, box }, origin, scroll) {
+  const node = marker.node;
+  const style = node.style;
+  const before = `${style.left} ${style.top} ${style.width} ${style.height}`;
+  let hidden = false;
+  let cut = false;
+  if (placement?.kind === "area") {
+    const full = { left: placement.pageLeftPx - scroll.x, top: placement.pageTopPx - scroll.y };
+    full.right = full.left + placement.widthPx;
+    full.bottom = full.top + placement.heightPx;
+    let { left, top, right, bottom } = full;
+    if (box) {
+      left = Math.max(left, box.left);
+      top = Math.max(top, box.top);
+      right = Math.min(right, box.right);
+      bottom = Math.min(bottom, box.bottom);
+      hidden = right <= left || bottom <= top;
+      cut = !hidden && (left > full.left || top > full.top || right < full.right || bottom < full.bottom);
+    }
+    if (!hidden) {
+      Object.assign(style, {
+        ...markerPosition(left + scroll.x, top + scroll.y, origin, scroll),
+        width: `${right - left}px`,
+        height: `${bottom - top}px`
+      });
+    }
+  } else if (placement) {
+    const x = placement.pageX - scroll.x;
+    const y = placement.pageY - scroll.y;
+    hidden = Boolean(box) && (x < box.left || x > box.right || y < box.top || y > box.bottom);
+    if (!hidden) Object.assign(style, markerPosition(placement.pageX, placement.pageY, origin, scroll));
+  }
+  node.classList.toggle("pl-marker-clipped", hidden);
+  node.classList.toggle("pl-marker-cut", cut);
+  if (hidden && feedbackId && getTooltip()?.dataset.feedbackId === feedbackId) hideTooltip();
+  return `${style.left} ${style.top} ${style.width} ${style.height}` !== before;
 }
 
 function handleWindowResize() {
@@ -3503,6 +3766,9 @@ function reanchorAllMarkers() {
   }
 
   renderFeedbackList();
+  // A resize may change what cuts the markers off: look it up again.
+  state.follow.session += 1;
+  scheduleMarkerFollow();
 }
 
 function removeCommittedMarkers() {
@@ -4117,6 +4383,8 @@ function injectStyles() {
     .pl-feedback-active [data-patchloop-pin], .pl-feedback-active .pl-area button { pointer-events: none; }
     .pl-target-highlight { outline: 2px dashed #d1495b; outline-offset: 2px; }
     .pl-marker-approx { outline: 3px dashed #f2a33c !important; outline-offset: 2px; }
+    [data-patchloop-pin].pl-marker-clipped, [data-patchloop-area].pl-marker-clipped { display: none !important; }
+    [data-patchloop-area].pl-marker-cut { overflow: hidden !important; }
     .pl-feedback-approx { color: #986000; font-weight: 900; cursor: help; margin-left: 2px; }
     .pl-feedback-active, .pl-feedback-active * { cursor: crosshair !important; }
     .pl-root :focus-visible, .pl-pin:focus-visible, .pl-area button:focus-visible { outline: 3px solid #168565; outline-offset: 3px; }

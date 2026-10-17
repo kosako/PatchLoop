@@ -68,5 +68,9 @@ export const state = {
   // Re-checks a delivery another tab may still be making, and when this tab
   // first saw each such delivery (monotonic); see settlePendingDeliveries.
   pendingCheckTimer: null,
-  pendingSeenAt: new Map()
+  pendingSeenAt: new Map(),
+  // Markers following content that moves under them (#213): the frame asked
+  // for, until when (and at the latest) to keep following, and the count of
+  // followings, which tells when to look elements up again.
+  follow: { frame: null, until: 0, limit: 0, session: 0 }
 };
