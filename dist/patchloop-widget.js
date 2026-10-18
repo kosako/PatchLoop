@@ -424,6 +424,10 @@ function truncateText(value, max) {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
+function formatCount(count) {
+  return String(count).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
 function present(value) {
   return value === undefined || value === null || value === "" ? "?" : value;
 }
@@ -470,17 +474,26 @@ function formatTarget(target) {
   return `${target.kind || "point"} at ${present(target.clientX)},${present(target.clientY)}`;
 }
 
-return { FEEDBACK_STATUS_LABELS, safeFilePart, truncateText, present, escapeHtml, escapeXml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget };
+return { FEEDBACK_STATUS_LABELS, safeFilePart, truncateText, formatCount, present, escapeHtml, escapeXml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget };
 })();
 // --- widget/src/delivery-state.js ---
 const __pl_widget_src_delivery_state = (() => {
-// What a comment's delivery state says about the copy the receiver (or Slack)
-// holds.
+const { formatCount } = __pl_shared_format;
 
-// Whether the receiver may hold the comment: it took the post, or answered 409
-// (it already had that id), or Slack was posted to blind.
+// What a comment's delivery state says about the copy the receiver (or Slack)
+// holds, and what the list and the notices show and offer for it. What a
+// state means is decided only here, so a new state changes one place (#153).
+
+// Whether the receiver answered that it holds the comment: it took the post,
+// or refused it as an id it already had (409).
+function receiverAnswered(delivery) {
+  return delivery?.ok === true || delivery?.status === 409;
+}
+
+// Whether the receiver may hold the comment: it answered so, or Slack was
+// posted to blind.
 function receiverHasCopy(delivery) {
-  return delivery?.ok === true || delivery?.status === 409 || (delivery?.target === "slack-webhook" && delivery.ok === null);
+  return receiverAnswered(delivery) || (delivery?.target === "slack-webhook" && delivery.ok === null);
 }
 
 // Whether the comment here differs from what the receiver may hold: edited
@@ -494,6 +507,74 @@ function isLocallyEdited(item) {
   return Boolean(sent) && receiverHasCopy(item.delivery) && (sent.comment !== item.comment || sent.reviewer !== item.reviewer);
 }
 
+// Whether the comment has left this device: exported, or the receiver (or
+// Slack) may hold it, including a delivery cut off before its answer, or
+// edited here after it did (localEdited, before #121).
+function hasLeftDevice(item) {
+  return Boolean(item.exported || item.localEdited || item.delivery?.interrupted || receiverHasCopy(item.delivery));
+}
+
+// Whether a delivery is on its way, from this tab or another (#139): the
+// comment is neither edited nor deleted meanwhile, nor the list cleared.
+function isDelivering(item) {
+  return Boolean(item.delivery?.pending);
+}
+
+// A delivery given up before its answer (#139): the receiver may hold the
+// comment, or may not.
+function interruptedDelivery(delivery) {
+  return { ok: null, interrupted: true, target: delivery.target };
+}
+
+// Whether the delivery failed: its notice tells so as an error.
+function deliveryFailed(delivery) {
+  return delivery?.ok === false;
+}
+
+// A failed delivery, or an interrupted one to the receiver (Slack may have it
+// already), of a comment the receiver does not hold in another text.
+function canRetry(item) {
+  return Boolean((item.delivery?.ok === false || (item.delivery?.interrupted && item.delivery.target !== "slack-webhook")) && !isLocallyEdited(item) && item.delivery.status !== 409);
+}
+
+// The list's badge: its tone (the class it takes), its label, and whether its
+// title tells the result (deliveryStatusText). null without a delivery.
+function deliveryBadge(item) {
+  if (isLocallyEdited(item)) return { tone: "unknown", label: "ローカル変更・送信先には未反映", explained: false };
+  if (isDelivering(item)) return { tone: "unknown", label: "送信中…", explained: false };
+  if (!item.delivery) return null;
+  if (item.delivery.ok === null) return { tone: "unknown", label: "結果未確認", explained: true };
+  if (item.delivery.ok) return { tone: "ok", label: "送信済み", explained: true };
+  return { tone: "fail", label: "送信失敗", explained: true };
+}
+
+function tooLongToSendText(maxFieldLength) {
+  return `コメントか投稿者名が長すぎるため、送っていません。編集で ${formatCount(maxFieldLength)} 文字以内にしてから再送してください。`;
+}
+
+// What came of a delivery, for the notice and the badge's title.
+// maxFieldLength: the limit a comment held as too long is to fit (#196).
+function deliveryStatusText(delivery, maxFieldLength) {
+  if (!delivery) return "";
+  if (delivery.pending) return "送信しています…";
+  if (delivery.interrupted) return delivery.target === "slack-webhook"
+    ? "送信が中断されました。Slack 側で内容を確認してください。再送すると重複する可能性があります。"
+    : "送信が中断されたため、結果は未確認です。受信箱の内容を確認してから再送してください。";
+  if (delivery.tooLong) return tooLongToSendText(maxFieldLength);
+  if (delivery.target === "download") {
+    if (delivery.ok) return `downloaded ${delivery.fileName || ""}`.trim();
+    return `download failed: ${delivery.error || "unknown error"}`;
+  }
+  if (delivery.target === "slack-webhook") {
+    if (delivery.ok === null) return "Slack への送信を開始しました。ブラウザから送信結果は確認できません。";
+    if (delivery.ok) return "Slack に送信しました。";
+    return "Slack に送信できませんでした。送信先・設定を確認してください。";
+  }
+  if (delivery.ok) return "受信箱に送信しました。";
+  if (delivery.status === 409) return "同じ ID が受信済みです。受信箱の内容を確認してください。";
+  return "送信できませんでした。コメントはこの端末に残っています。送信先・接続を確認してください。";
+}
+
 // How long ago another tab's delivery started, as far as this tab can tell
 // (#139): from its start time when that is not ahead of this clock (now), else
 // (the clock was set back) from when this tab first saw it (seen), both on a
@@ -503,12 +584,12 @@ function pendingAge(startedAt, now, seen, monotonicNow) {
   return startedAt <= now ? now - startedAt : monotonicNow - seen;
 }
 
-return { receiverHasCopy, isLocallyEdited, pendingAge };
+return { receiverAnswered, receiverHasCopy, isLocallyEdited, hasLeftDevice, isDelivering, interruptedDelivery, deliveryFailed, canRetry, deliveryBadge, tooLongToSendText, deliveryStatusText, pendingAge };
 })();
 // --- widget/src/inbox-status.js ---
 const __pl_widget_src_inbox_status = (() => {
 const { FEEDBACK_STATUS_LABELS } = __pl_shared_format;
-const { isLocallyEdited } = __pl_widget_src_delivery_state;
+const { isLocallyEdited, receiverAnswered } = __pl_widget_src_delivery_state;
 // The inbox triage status of the comments this page sent (#147), asked from
 // the receiver's POST /feedback-status. The statuses only live in memory: they
 // are never written to the stored items, localStorage or exports, and when they
@@ -545,7 +626,7 @@ function statusLookupUrl(endpoint, baseUrl) {
 // Comments the receiver has: delivered, or refused as an id it already holds.
 function statusLookupIds(feedback) {
   return feedback
-    .filter((item) => item.delivery && (item.delivery.ok === true || item.delivery.status === 409))
+    .filter((item) => receiverAnswered(item.delivery))
     .slice(0, MAX_LOOKUP_IDS)
     .map((item) => item.id);
 }
@@ -700,11 +781,7 @@ function exceedsFieldLimit(item, limit = state.options.maxFieldLength) {
   return String(item?.comment ?? "").length > limit || String(item?.reviewer ?? "").length > limit;
 }
 
-function formatCount(count) {
-  return String(count).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-}
-
-return { normalizeMaxFieldLength, exceedsFieldLimit, formatCount };
+return { normalizeMaxFieldLength, exceedsFieldLimit };
 })();
 // --- widget/src/snapshot-css.js ---
 const __pl_widget_src_snapshot_css = (() => {
@@ -2101,14 +2178,14 @@ const { pointAnchorOffsets, areaAnchorOffsets, geometryFromAnchor, viewportDiffe
 const { selectorFor, textFor } = __pl_widget_src_selector;
 const { resolveSourceContext } = __pl_widget_src_source_context;
 const { applyPageUrlRule, applySourceContextUrlRule, normalizeKeepQueryParams } = __pl_widget_src_url;
-const { exceedsFieldLimit, formatCount, normalizeMaxFieldLength } = __pl_widget_src_field_limit;
+const { exceedsFieldLimit, normalizeMaxFieldLength } = __pl_widget_src_field_limit;
 const { DEFAULTS, state } = __pl_widget_src_state;
 const { buildPayload, buildRevision, outgoingPayload } = __pl_widget_src_payload;
 const { uncapturedTouching } = __pl_widget_src_screenshot;
 const { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } = __pl_widget_src_inbox_status;
-const { isLocallyEdited, pendingAge, receiverHasCopy } = __pl_widget_src_delivery_state;
+const { canRetry, deliveryBadge, deliveryFailed, deliveryStatusText, hasLeftDevice, interruptedDelivery, isDelivering, isLocallyEdited, pendingAge, receiverHasCopy, tooLongToSendText } = __pl_widget_src_delivery_state;
 const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadLauncher, saveLauncher, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } = __pl_widget_src_persistence;
-const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, FEEDBACK_STATUS_LABELS } = __pl_shared_format;
+const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, formatCount, FEEDBACK_STATUS_LABELS } = __pl_shared_format;
 const { EXPORT_BUNDLE_VERSION } = __pl_shared_versions;
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
@@ -2309,7 +2386,7 @@ function renderShell() {
   root.querySelector("[data-pl-download-all]").addEventListener("click", downloadUnsentFeedback);
   root.querySelector("[data-pl-download-again]")?.addEventListener("click", downloadAllFeedback);
   root.querySelector("[data-pl-clear]").addEventListener("click", () => {
-    if (state.feedback.some((item) => item.delivery?.pending)) return;
+    if (state.feedback.some(isDelivering)) return;
     if (window.confirm("この端末に保存したコメントをすべて消します。送信先の内容は削除されません。続けますか？")) clearPins();
   });
   root.querySelector("[data-pl-cancel]").addEventListener("click", cancelPendingComment);
@@ -2875,13 +2952,6 @@ async function submitComment(event) {
   await commitFeedback(buildPayload(comment, reviewer, state.pendingTarget, includeScreenshot), root);
 }
 
-// Whether the comment has left this device: exported, or the receiver (or
-// Slack) may hold it, including a delivery cut off before its answer, or
-// edited here after it did (localEdited, before #121).
-function hasLeftDevice(item) {
-  return Boolean(item.exported || item.localEdited || item.delivery?.interrupted || receiverHasCopy(item.delivery));
-}
-
 // Lists, saves, announces and delivers a new comment, or the revision of one
 // that has left this device (#121), which takes the original's place in the
 // list and on the page.
@@ -2918,7 +2988,7 @@ async function commitFeedback(payload, root, replacing = null) {
     if (!(await deliverFeedback(payload)) || getRoot() !== root) return;
     saveFeedbackList();
     renderFeedbackList();
-    showWidgetNotice(deliveryStatusText(payload.delivery), payload.delivery.ok === false);
+    showWidgetNotice(deliveryStatusText(payload.delivery, state.options.maxFieldLength), deliveryFailed(payload.delivery));
   } else if (state.options.deliveryMode === "download") {
     showWidgetNotice(replacing ? "変更を元のコメントの修正版として保存しました。「未送信を書き出す」から共有できます。" : "コメントを保存しました。「未送信を書き出す」から共有できます。");
   } else {
@@ -3017,14 +3087,14 @@ function settlePendingDeliveries() {
   let changed = false;
   let recheckIn = Infinity;
   state.feedback.forEach((item) => {
-    if (!item.delivery?.pending || state.deliveringIds.has(item.id)) return;
+    if (!isDelivering(item) || state.deliveringIds.has(item.id)) return;
     seenAt.set(item.id, state.pendingSeenAt.get(item.id) ?? monotonicNow);
     const age = pendingAge(item.delivery.startedAt, now, seenAt.get(item.id), monotonicNow);
     if (age < STALE_PENDING_MS) {
       recheckIn = Math.min(recheckIn, STALE_PENDING_MS - age);
       return;
     }
-    item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
+    item.delivery = interruptedDelivery(item.delivery);
     changed = true;
   });
   state.pendingSeenAt = seenAt;
@@ -3045,11 +3115,11 @@ function recheckPendingDeliveries() {
 // re-initialized, so they are saved as interrupted, and other tabs and the
 // next load show them so at once (#139).
 function abandonDeliveries() {
-  const abandoned = state.feedback.filter((item) => state.deliveringIds.has(item.id) && item.delivery?.pending);
+  const abandoned = state.feedback.filter((item) => state.deliveringIds.has(item.id) && isDelivering(item));
   state.deliveringIds = new Set();
   if (abandoned.length === 0) return;
   abandoned.forEach((item) => {
-    item.delivery = { ok: null, interrupted: true, target: item.delivery.target };
+    item.delivery = interruptedDelivery(item.delivery);
   });
   saveFeedbackList();
   // Shown so when the page comes back from the back/forward cache.
@@ -4118,7 +4188,7 @@ function renderFeedbackList() {
   if (count) count.textContent = String(state.feedback.length);
   const clear = root.querySelector("[data-pl-clear]");
   if (clear) clear.hidden = state.feedback.length === 0;
-  if (clear) clear.disabled = state.feedback.some((item) => item.delivery?.pending);
+  if (clear) clear.disabled = state.feedback.some(isDelivering);
   // A comment focused from its marker, or one of its buttons, stays focused
   // across the re-render below, which replaces every list item (a delivery
   // reply, re-anchoring, another tab's save).
@@ -4134,17 +4204,9 @@ function renderFeedbackList() {
     .map((item, i) => {
       const num = state.feedback.length - i;
       const kind = (item.target && item.target.kind) || "point";
-      const delivery = isLocallyEdited(item)
-        ? '<span class="pl-feedback-status pl-feedback-status-unknown">ローカル変更・送信先には未反映</span>'
-        : item.delivery?.pending
-          ? '<span class="pl-feedback-status pl-feedback-status-unknown">送信中…</span>'
-        : item.delivery
-        ? item.delivery.ok === null
-          ? `<span class="pl-feedback-status pl-feedback-status-unknown" title="${escapeHtml(deliveryStatusText(item.delivery))}">結果未確認</span>`
-          : item.delivery.ok
-            ? `<span class="pl-feedback-status pl-feedback-status-ok" title="${escapeHtml(deliveryStatusText(item.delivery))}">送信済み</span>`
-            : `<span class="pl-feedback-status pl-feedback-status-fail" title="${escapeHtml(deliveryStatusText(item.delivery))}">送信失敗</span>`
-        : "";
+      const badge = deliveryBadge(item);
+      const title = badge?.explained ? ` title="${escapeHtml(deliveryStatusText(item.delivery, state.options.maxFieldLength))}"` : "";
+      const delivery = badge ? `<span class="pl-feedback-status pl-feedback-status-${badge.tone}"${title}>${badge.label}</span>` : "";
       const approximate = state.approximateIds.has(item.id)
         ? `<span class="pl-feedback-approx" title="${APPROXIMATE_TEXTS[state.approximateIds.get(item.id)]}">≈</span>`
         : "";
@@ -4160,8 +4222,8 @@ function renderFeedbackList() {
           </div>
           <div class="pl-feedback-actions">
             ${canRetry(item) ? '<button type="button" data-pl-retry>再送</button>' : ""}
-            <button type="button" data-pl-edit title="この端末のコメントを編集"${item.delivery?.pending ? " disabled" : ""}>編集</button>
-            <button type="button" data-pl-delete title="この端末のコメントを削除"${item.delivery?.pending ? " disabled" : ""}>削除</button>
+            <button type="button" data-pl-edit title="この端末のコメントを編集"${isDelivering(item) ? " disabled" : ""}>編集</button>
+            <button type="button" data-pl-delete title="この端末のコメントを削除"${isDelivering(item) ? " disabled" : ""}>削除</button>
           </div>
         </article>
       `;
@@ -4259,37 +4321,6 @@ function handleVisibilityChange() {
   if (document.visibilityState === "visible") refreshInboxStatuses();
 }
 
-// A failed delivery, or an interrupted one to the receiver (Slack may have it
-// already), of a comment the receiver does not hold in another text.
-function canRetry(item) {
-  return (item.delivery?.ok === false || (item.delivery?.interrupted && item.delivery.target !== "slack-webhook")) && !isLocallyEdited(item) && item.delivery.status !== 409;
-}
-
-function tooLongToSendText() {
-  return `コメントか投稿者名が長すぎるため、送っていません。編集で ${formatCount(state.options.maxFieldLength)} 文字以内にしてから再送してください。`;
-}
-
-function deliveryStatusText(delivery) {
-  if (!delivery) return "";
-  if (delivery.pending) return "送信しています…";
-  if (delivery.interrupted) return delivery.target === "slack-webhook"
-    ? "送信が中断されました。Slack 側で内容を確認してください。再送すると重複する可能性があります。"
-    : "送信が中断されたため、結果は未確認です。受信箱の内容を確認してから再送してください。";
-  if (delivery.tooLong) return tooLongToSendText();
-  if (delivery.target === "download") {
-    if (delivery.ok) return `downloaded ${delivery.fileName || ""}`.trim();
-    return `download failed: ${delivery.error || "unknown error"}`;
-  }
-  if (delivery.target === "slack-webhook") {
-    if (delivery.ok === null) return "Slack への送信を開始しました。ブラウザから送信結果は確認できません。";
-    if (delivery.ok) return "Slack に送信しました。";
-    return "Slack に送信できませんでした。送信先・設定を確認してください。";
-  }
-  if (delivery.ok) return "受信箱に送信しました。";
-  if (delivery.status === 409) return "同じ ID が受信済みです。受信箱の内容を確認してください。";
-  return "送信できませんでした。コメントはこの端末に残っています。送信先・接続を確認してください。";
-}
-
 function renumberMarkers() {
   const ordered = state.feedback.slice().reverse();
   ordered.forEach((item, i) => {
@@ -4337,7 +4368,7 @@ async function retryFeedback(id) {
   // saying the receiver may hold it, so a later edit still goes as a revision
   // (#121). deliverFeedback checks again as it leaves.
   if (exceedsFieldLimit(item)) {
-    showWidgetNotice(tooLongToSendText(), true);
+    showWidgetNotice(tooLongToSendText(state.options.maxFieldLength), true);
     return;
   }
   item.delivery = pendingDelivery();
@@ -4347,7 +4378,7 @@ async function retryFeedback(id) {
   if (!(await deliverFeedback(item)) || getRoot() !== root) return;
   saveFeedbackList();
   renderFeedbackList();
-  showWidgetNotice(deliveryStatusText(item.delivery), item.delivery.ok === false);
+  showWidgetNotice(deliveryStatusText(item.delivery, state.options.maxFieldLength), deliveryFailed(item.delivery));
   focusLauncher();
 }
 
