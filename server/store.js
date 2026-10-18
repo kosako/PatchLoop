@@ -18,6 +18,10 @@
 //                                    provider result, preserving all other fields
 //   delete(id)         -> item|null returns the removed item (callers may ignore it)
 //   count()            -> number
+//   sessionGeneration() -> number  the inbox sessions' generation (#162), 0 until a
+//                                    first logout; kept across restarts
+//   advanceSessionGeneration() -> number  moves it on by one (a logout ends every
+//                                    session) and returns the new one
 //   close()
 // Exported FEEDBACK_STATUSES is the shared status allowlist used by the receiver.
 //
@@ -147,6 +151,18 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
     ).run(cols.id, cols.project_id, cols.demo_id, cols.status, cols.received_at, JSON.stringify(item));
   }
 
+  // A value that is not a count (edited by hand) stops the receiver rather than
+  // letting sessions of an unknown generation pass.
+  function readSessionGeneration() {
+    const row = db.prepare("SELECT value FROM store_metadata WHERE key = 'session_generation'").get();
+    if (!row) return 0;
+    const generation = Number(row.value);
+    if (!/^\d+$/.test(row.value) || !Number.isSafeInteger(generation)) {
+      throw new Error("store_metadata session_generation is not a non-negative integer");
+    }
+    return generation;
+  }
+
   // No await between reading and writing: each mutation uses the latest row
   // without yielding to other requests. A networked backend must provide the
   // same atomic read-modify-write guarantee using a transaction.
@@ -264,6 +280,18 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
 
     async count() {
       return db.prepare("SELECT COUNT(*) AS n FROM feedback").get().n;
+    },
+
+    async sessionGeneration() {
+      return readSessionGeneration();
+    },
+
+    async advanceSessionGeneration() {
+      db.prepare(
+        "INSERT INTO store_metadata (key, value) VALUES ('session_generation', '1') "
+        + "ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)"
+      ).run();
+      return readSessionGeneration();
     },
 
     async close() {

@@ -2340,7 +2340,8 @@ test("login form issues a session cookie that unlocks the inbox (no raw token in
   assert.match(await failed.text(), /aria-invalid="true"/);
 
   // The correct token redirects to the inbox with an HttpOnly session cookie
-  // that is derived (expiry + HMAC) — the raw token never reaches the browser.
+  // that is derived (generation + expiry + HMAC) — the raw token never reaches
+  // the browser.
   const login = await fetch(`${receiver.baseUrl}/login`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -2350,7 +2351,7 @@ test("login form issues a session cookie that unlocks the inbox (no raw token in
   assert.equal(login.status, 303);
   assert.equal(login.headers.get("location"), "/");
   const setCookie = login.headers.get("set-cookie");
-  assert.match(setCookie, /^patchloop_session=\d+\.[0-9a-f]{64}; Max-Age=604800; Path=\/; HttpOnly; SameSite=Lax$/);
+  assert.match(setCookie, /^patchloop_session=0\.\d+\.[0-9a-f]{64}; Max-Age=604800; Path=\/; HttpOnly; SameSite=Lax$/);
   assert.doesNotMatch(setCookie, /s3cret/);
   const cookie = setCookie.split(";")[0];
 
@@ -2377,18 +2378,72 @@ test("login form issues a session cookie that unlocks the inbox (no raw token in
   const tampered = await fetch(`${receiver.baseUrl}/feedback.json`, { headers: { Cookie: `${cookie}ff` } });
   assert.equal(tampered.status, 401);
   const pastExpiry = Date.now() - 1000;
-  const expiredSignature = crypto.createHmac("sha256", "s3cret").update(String(pastExpiry)).digest("hex");
+  const expiredSignature = crypto.createHmac("sha256", "s3cret").update(`0.${pastExpiry}`).digest("hex");
   const expired = await fetch(`${receiver.baseUrl}/feedback.json`, {
-    headers: { Cookie: `patchloop_session=${pastExpiry}.${expiredSignature}` }
+    headers: { Cookie: `patchloop_session=0.${pastExpiry}.${expiredSignature}` }
   });
   assert.equal(expired.status, 401);
+  // A cookie of the form before #162 (no generation) does not pass, even with
+  // a valid signature over a future expiry.
+  const futureExpiry = Date.now() + 60_000;
+  const oldSignature = crypto.createHmac("sha256", "s3cret").update(String(futureExpiry)).digest("hex");
+  const oldForm = await fetch(`${receiver.baseUrl}/feedback.json`, {
+    headers: { Cookie: `patchloop_session=${futureExpiry}.${oldSignature}` }
+  });
+  assert.equal(oldForm.status, 401);
 
-  // Logout clears the cookie and returns to the login form.
+  // A logout that is not signed in (no cookie, as a cross-site form sends it)
+  // clears its cookie only: the session above still works.
+  const other = await sessionCookie(receiver.baseUrl, "s3cret");
+  const anonymous = await fetch(`${receiver.baseUrl}/logout`, { method: "POST", redirect: "manual" });
+  assert.equal(anonymous.status, 303);
+  assert.match(anonymous.headers.get("set-cookie"), /^patchloop_session=; Max-Age=0/);
+  assert.equal((await fetch(`${receiver.baseUrl}/feedback.json`, { headers: { Cookie: cookie } })).status, 200);
+
+  // Logout clears the cookie, returns to the login form, and ends every
+  // session (#162): this one and the other browser's.
   const logout = await fetch(`${receiver.baseUrl}/logout`, { method: "POST", headers: { Cookie: cookie }, redirect: "manual" });
   assert.equal(logout.status, 303);
   assert.equal(logout.headers.get("location"), "/login");
   assert.match(logout.headers.get("set-cookie"), /^patchloop_session=; Max-Age=0/);
+  for (const ended of [cookie, other]) {
+    assert.equal((await fetch(`${receiver.baseUrl}/feedback.json`, { headers: { Cookie: ended } })).status, 401);
+  }
+  const next = await sessionCookie(receiver.baseUrl, "s3cret");
+  assert.match(next, /^patchloop_session=1\./);
+  assert.equal((await fetch(`${receiver.baseUrl}/feedback.json`, { headers: { Cookie: next } })).status, 200);
 });
+
+test("a logout's end of the sessions holds across a restart, and later sessions keep working (#162)", async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-session-generation-"));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const env = { RECEIVER_TOKEN: "s3cret", FEEDBACK_DB_PATH: path.join(dataDir, "feedback.db") };
+  const first = await startReceiver(t, env);
+  const ended = await sessionCookie(first.baseUrl, "s3cret");
+  assert.equal((await fetch(`${first.baseUrl}/logout`, { method: "POST", headers: { Cookie: ended }, redirect: "manual" })).status, 303);
+  const kept = await sessionCookie(first.baseUrl, "s3cret");
+  first.child.kill();
+  await waitForExit(first.child);
+
+  const second = await startReceiver(t, env);
+  assert.equal((await fetch(`${second.baseUrl}/feedback.json`, { headers: { Cookie: ended } })).status, 401);
+  assert.equal((await fetch(`${second.baseUrl}/feedback.json`, { headers: { Cookie: kept } })).status, 200);
+  // The bearer token is not a session: a logout leaves it working.
+  assert.equal((await fetch(`${second.baseUrl}/logout`, { method: "POST", headers: { Cookie: kept }, redirect: "manual" })).status, 303);
+  assert.equal((await fetch(`${second.baseUrl}/feedback.json`, { headers: { Cookie: kept } })).status, 401);
+  assert.equal((await fetch(`${second.baseUrl}/feedback.json`, { headers: { Authorization: "Bearer s3cret" } })).status, 200);
+});
+
+async function sessionCookie(baseUrl, token) {
+  const login = await fetch(`${baseUrl}/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: `token=${encodeURIComponent(token)}`,
+    redirect: "manual"
+  });
+  assert.equal(login.status, 303);
+  return login.headers.get("set-cookie").split(";")[0];
+}
 
 test("CORS headers are scoped to the ingest route and honor the allowlist", async (t) => {
   const receiver = await startReceiver(t, { ALLOWED_ORIGINS: "http://demo.example, http://other.example/" });

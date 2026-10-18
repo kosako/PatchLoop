@@ -166,6 +166,30 @@ test("statusesFor returns the status of the ids that exist, in the order asked, 
   assert.deepEqual(await store.statusesFor(["missing"], { projectId: null }), []);
 });
 
+test("the session generation starts at 0, moves on by one, and is kept across a reopen (#162)", async (t) => {
+  const fixture = createFixture(t);
+  const store = await fixture.open();
+  assert.equal(await store.sessionGeneration(), 0);
+  assert.equal(await store.advanceSessionGeneration(), 1);
+  assert.equal(await store.advanceSessionGeneration(), 2);
+  assert.equal(await store.sessionGeneration(), 2);
+  await fixture.close(store);
+
+  const reopened = await fixture.open();
+  assert.equal(await reopened.sessionGeneration(), 2);
+  await fixture.close(reopened);
+
+  // A value that is not a count is not read as some generation.
+  const db = new DatabaseSync(fixture.dbPath);
+  try {
+    db.prepare("UPDATE store_metadata SET value = ? WHERE key = 'session_generation'").run("2x");
+  } finally {
+    db.close();
+  }
+  const corrupted = await fixture.open();
+  await assert.rejects(corrupted.sessionGeneration(), /session_generation is not a non-negative integer/);
+});
+
 function createFixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "patchloop-store-test-"));
   const config = {

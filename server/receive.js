@@ -75,7 +75,8 @@ const GITHUB_CONFIGURED = Boolean(GITHUB_TOKEN && GITHUB_REPO);
 // zero-config local dev (no auth) so existing local workflows keep working; set
 // it for public/shared deploys. The same token backs both the API bearer auth
 // and the inbox login form (a browser session holds an HMAC-derived cookie, not
-// the token itself, so rotating the token invalidates every session at once).
+// the token itself, so rotating the token invalidates every session at once, as
+// does a logout, #162).
 const RECEIVER_TOKEN = process.env.RECEIVER_TOKEN || config.receiverToken || "";
 // The widget's status lookup (POST /feedback-status, #147) answers anyone who
 // knows a feedback id, so by default it is open only on a receiver without
@@ -108,10 +109,13 @@ const ALLOWED_ORIGINS = normalizeStringList(process.env.ALLOWED_ORIGINS || confi
 const INGEST_KEYS = normalizeIngestKeys(process.env.INGEST_KEYS || config.ingestKeys);
 const INGEST_KEY_HEADER = "x-patchloop-ingest-key";
 // Browser sessions for the inbox: the cookie value is
-// "<expiresAtMs>.<HMAC(RECEIVER_TOKEN, expiresAtMs)>" — a derived credential,
-// never the raw token, valid for 7 days. Secure is tied to the deploy's public
-// URL: an https publicBaseUrl means TLS termination is in place, so the cookie
-// must not travel over plain http.
+// "<generation>.<expiresAtMs>.<HMAC(RECEIVER_TOKEN, "<generation>.<expiresAtMs>")>"
+// — a derived credential, never the raw token, valid for 7 days. A logout ends
+// every session at once (#162): it advances the generation the store keeps
+// (sessionGeneration, read at startup), and a cookie of another generation no
+// longer passes. Secure is tied to the deploy's public URL: an https
+// publicBaseUrl means TLS termination is in place, so the cookie must not
+// travel over plain http.
 const SESSION_COOKIE_NAME = "patchloop_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const SESSION_COOKIE_SECURE = PUBLIC_BASE_URL.startsWith("https://");
@@ -125,6 +129,9 @@ const SUPPORTED_IMPORT_BUNDLE_VERSIONS = new Set([1, 2]);
 const DEFAULT_SCHEMA_VERSION = 1;
 
 let store;
+// The inbox sessions' generation (#162), read from the store at startup and
+// advanced by a logout; see hasValidSessionCookie.
+let sessionGeneration = 0;
 // Running total of bytes under SCREENSHOT_DIR, seeded once at startup and kept
 // in sync on save/delete so the disk cap is O(1) per request (no per-write
 // directory scan).
@@ -184,10 +191,11 @@ function safeTokenEqual(provided, expected) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-// The signature covers the expiry, so a client cannot extend its own session,
-// and a forged cookie fails the HMAC check without knowledge of the token.
-function sessionSignature(expiresAtMs) {
-  return crypto.createHmac("sha256", RECEIVER_TOKEN).update(String(expiresAtMs)).digest("hex");
+// The signature covers the generation and the expiry, so a client can neither
+// extend its own session nor carry it past a logout, and a forged cookie fails
+// the HMAC check without knowledge of the token.
+function sessionSignature(generation, expiresAtMs) {
+  return crypto.createHmac("sha256", RECEIVER_TOKEN).update(`${generation}.${expiresAtMs}`).digest("hex");
 }
 
 function cookieValue(req, name) {
@@ -201,15 +209,15 @@ function cookieValue(req, name) {
   return "";
 }
 
+// A cookie of the form before #162 ("<expiresAtMs>.<signature>") has no
+// generation and does not pass: its browser logs in again.
 function hasValidSessionCookie(req) {
-  const raw = cookieValue(req, SESSION_COOKIE_NAME);
-  const separator = raw.indexOf(".");
-  if (separator === -1) return false;
-  const expiry = raw.slice(0, separator);
-  const signature = raw.slice(separator + 1);
-  if (!/^\d+$/.test(expiry) || !signature) return false;
+  const parts = cookieValue(req, SESSION_COOKIE_NAME).split(".");
+  if (parts.length !== 3) return false;
+  const [generation, expiry, signature] = parts;
+  if (generation !== String(sessionGeneration) || !/^\d+$/.test(expiry) || !signature) return false;
   if (Number(expiry) <= Date.now()) return false;
-  return safeTokenEqual(signature, sessionSignature(expiry));
+  return safeTokenEqual(signature, sessionSignature(generation, expiry));
 }
 
 // Resolves the request's ingest key header against the configured keys.
@@ -243,7 +251,7 @@ function sessionCookieAttributes() {
 
 function issueSessionCookie(res) {
   const expiresAtMs = Date.now() + SESSION_TTL_MS;
-  const value = `${expiresAtMs}.${sessionSignature(expiresAtMs)}`;
+  const value = `${sessionGeneration}.${expiresAtMs}.${sessionSignature(sessionGeneration, expiresAtMs)}`;
   res.setHeader("Set-Cookie", `${SESSION_COOKIE_NAME}=${value}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; ${sessionCookieAttributes()}`);
 }
 
@@ -459,6 +467,7 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 async function start() {
   store = createStore({ dbPath: DB_PATH, legacyJsonPath: LEGACY_STORE_PATH });
   await store.init();
+  sessionGeneration = await store.sessionGeneration();
   screenshotBytesUsed = await computeScreenshotDirBytes();
 
   // The configuration summary prints before listen so "listening" is the final
@@ -1486,9 +1495,22 @@ function handlePostLogin(req, res) {
   });
 }
 
-function handlePostLogout(req, res) {
+// A logout from a signed-in browser (or with the bearer token) ends every
+// session (#162), on the other browsers too: the store's generation advances.
+// One that is not signed in (an expired cookie, or a cross-site form, which
+// SameSite=Lax sends without the cookie) only clears its own cookie, so it
+// cannot sign everyone out.
+async function handlePostLogout(req, res) {
   req.resume();
   clearSessionCookie(res);
+  if (RECEIVER_TOKEN && isAuthorizedRequest(req)) {
+    try {
+      sessionGeneration = await store.advanceSessionGeneration();
+    } catch (error) {
+      respondError(res, error, "logout could not end the sessions");
+      return;
+    }
+  }
   redirect(res, RECEIVER_TOKEN ? "/login" : "/");
 }
 
