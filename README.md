@@ -263,7 +263,7 @@ payload の中の項目が、自分の版を持つこともあります。`scree
 node server/receive.js
 ```
 
-- `POST /feedback` で payload を受け取り、デフォルトでは `server/feedback.db`（sqlite）に保存します
+- `POST /feedback` で payload を受け取り、デフォルトでは `server/feedback.db`（sqlite）に保存します。応答は `{"ok": true, "id": "pl_..."}` だけで、保存件数や Slack への通知の結果は返しません（受信箱とログで見られます）。拒否するときは理由を `error` に入れて返します（`400` / `403` / `409` / `413` / `507` など）。画面画像のファイルや store への書き込みなど receiver 自身の失敗は、`500` と `"Internal Server Error"` だけを返し、中身（server の path など）はログにだけ出します
 - `POST /import` で download mode の JSON bundle（単一 feedback の v1 / 配列の v2 batch の両方）を読み込み、通常の inbox と同じ形式で保存します。重複 id はスキップし `imported` / `duplicates` / `failed` を返します
 - `GET /` で受信した feedback の一覧（inbox）を表示します
 - inbox のサイドバーに対応状況別の件数を表示します。検索・プロジェクト・対応状況で絞り込み、詳細条件で kind / demo / reviewer / source / Slack / GitHub も指定できます。変更・失敗時にも検索条件を保持します

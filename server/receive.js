@@ -675,7 +675,7 @@ function handlePostFeedback(req, res) {
       payload = normalizeFeedbackPayload(payload);
       enforceIngestProject(payload, req.patchloopIngestKey);
     } catch (error) {
-      respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
+      respondError(res, error, "feedback validation failed");
       return;
     }
 
@@ -684,7 +684,7 @@ function handlePostFeedback(req, res) {
     try {
       screenshot = saveScreenshot(payload.screenshot, payload.id);
     } catch (error) {
-      respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
+      respondError(res, error, `failed to save screenshot for feedback id=${logValue(payload.id)}`);
       return;
     }
 
@@ -721,7 +721,7 @@ function handlePostFeedback(req, res) {
       } catch (cleanupError) {
         console.warn("%s", `[PatchLoop receiver] failed to clean up screenshot for feedback id=${logValue(stored.id)}:`, cleanupError);
       }
-      respondJson(res, error.statusCode || 500, { ok: false, error: error.message });
+      respondError(res, error, `failed to store feedback id=${logValue(stored.id)}`);
       return;
     }
 
@@ -731,12 +731,9 @@ function handlePostFeedback(req, res) {
       ? ""
       : ` slack=${slack.status}`;
     console.log(`[PatchLoop receiver] received feedback id=${logValue(payload?.id || "?")}${commentLog(payload?.comment)}${slackLog}`);
-    respondJson(res, 201, {
-      ok: true,
-      id: payload?.id,
-      count: await store.count(),
-      slack
-    });
+    // Only that it landed (#161): the store's count and the Slack result are
+    // the operator's, in the inbox and the log, not the public ingest's.
+    respondJson(res, 201, { ok: true, id: payload.id });
   });
 }
 
@@ -751,7 +748,7 @@ function handlePostFeedbackStatus(req, res) {
       query = normalizeStatusQuery(body);
       enforceIngestProject(query, req.patchloopIngestKey);
     } catch (error) {
-      respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
+      respondError(res, error, "status query validation failed");
       return;
     }
     const statuses = await store.statusesFor(query.ids, { projectId: query.projectId });
@@ -1201,15 +1198,13 @@ function readRequestBody(req, res, onBody, { maxBytes = MAX_BODY_BYTES } = {}) {
     try {
       await onBody(Buffer.concat(chunks).toString("utf8"));
     } catch (error) {
-      if (!res.headersSent) {
-        respondJson(res, error.statusCode || 500, { ok: false, error: error.message });
-      }
+      if (!res.headersSent) respondError(res, error, "request failed");
     }
   });
 
   req.on("error", (error) => {
     if (aborted || res.headersSent) return;
-    respondJson(res, 500, { ok: false, error: error.message });
+    respondError(res, error, "request body failed");
   });
 }
 
@@ -1777,6 +1772,19 @@ function httpError(message, statusCode) {
   const error = new Error(message);
   error.statusCode = statusCode;
   return error;
+}
+
+// Answers a failed request (#161). An error the receiver raised on purpose
+// (httpError: the request, or a limit of its own) says what it is; any other
+// (the file system, the store) can name server paths and internals, so it goes
+// to the log with what failed (context), and the client gets a fixed text.
+function respondError(res, error, context) {
+  if (error.statusCode) {
+    respondJson(res, error.statusCode, { ok: false, error: error.message });
+    return;
+  }
+  console.error("%s", `[PatchLoop receiver] ${context}:`, error);
+  respondJson(res, 500, { ok: false, error: "Internal Server Error" });
 }
 
 function respondJson(res, status, body, headers) {

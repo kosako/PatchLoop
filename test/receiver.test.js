@@ -22,10 +22,8 @@ test("POST /feedback stores valid feedback and saves screenshot data URLs", asyn
   const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
 
   assert.equal(response.status, 201);
-  assert.equal(response.body.ok, true);
-  assert.equal(response.body.id, payload.id);
-  assert.equal(response.body.count, 1);
-  assert.deepEqual(response.body.slack, { status: "disabled" });
+  // Only that it landed (#161): neither the store's count nor the Slack result.
+  assert.deepEqual(response.body, { ok: true, id: payload.id });
 
   const stored = await readStoredFeedback(receiver.dbPath);
   assert.equal(stored.length, 1);
@@ -1464,7 +1462,8 @@ test("POST /feedback reports capacity database failures as server errors before 
     const rejected = feedbackPayload("pl_capacity_db_failure");
     const response = await postJson(`${receiver.baseUrl}/feedback`, rejected);
     assert.equal(response.status, 500);
-    assert.equal(response.body.ok, false);
+    // The store's own error stays in the log (#161).
+    assert.deepEqual(response.body, { ok: false, error: "Internal Server Error" });
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM unavailable_feedback").get().n, 1);
     assert.deepEqual(await fs.readdir(receiver.screenshotDir), files);
     db.exec("ALTER TABLE unavailable_feedback RENAME TO feedback");
@@ -1473,6 +1472,45 @@ test("POST /feedback reports capacity database failures as server errors before 
   } finally {
     db.close();
   }
+});
+
+test("POST /feedback answers a failure of its own with a fixed text, and logs what failed (#161)", async (t) => {
+  const receiver = await startReceiver(t);
+  let stderr = "";
+  receiver.child.stderr.on("data", (chunk) => { stderr += chunk; });
+
+  // The screenshot directory cannot be made: a file stands where it goes. The
+  // file system's error names that path.
+  await fs.writeFile(receiver.screenshotDir, "");
+  const unsaved = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_screenshot_dir_blocked"));
+  assert.equal(unsaved.status, 500);
+  assert.deepEqual(unsaved.body, { ok: false, error: "Internal Server Error" });
+  await fs.rm(receiver.screenshotDir);
+
+  // The store refuses the row for a reason of its own (not a duplicate id).
+  const db = new DatabaseSync(receiver.dbPath);
+  try {
+    db.exec("CREATE TRIGGER refuse_feedback BEFORE INSERT ON feedback BEGIN SELECT RAISE(ABORT, 'synthetic insert failure'); END");
+    const unstored = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_store_refused"));
+    assert.equal(unstored.status, 500);
+    assert.deepEqual(unstored.body, { ok: false, error: "Internal Server Error" });
+    db.exec("DROP TRIGGER refuse_feedback");
+  } finally {
+    db.close();
+  }
+  assert.deepEqual(await fs.readdir(receiver.screenshotDir), [], "the refused row's screenshot is removed");
+
+  // A refusal the receiver means still says why.
+  const duplicate = feedbackPayload("pl_after_failures");
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, duplicate)).status, 201);
+  const again = await postJson(`${receiver.baseUrl}/feedback`, duplicate);
+  assert.equal(again.status, 409);
+  assert.equal(again.body.error, "feedback id already exists: pl_after_failures");
+
+  receiver.child.kill();
+  await waitForExit(receiver.child);
+  assert.match(stderr, /failed to save screenshot for feedback id=pl_screenshot_dir_blocked:[^\n]*EEXIST/);
+  assert.match(stderr, /failed to store feedback id=pl_store_refused:[^\n]*synthetic insert failure/);
 });
 
 test("POST /feedback returns 507 once the stored feedback limit is reached", async (t) => {
@@ -2043,9 +2081,10 @@ for (const failure of ["duplicate", "database"]) {
       }
       const response = await postJson(`${receiver.baseUrl}/feedback`, rejected);
       assert.equal(response.status, failure === "duplicate" ? 409 : 500);
+      // The store's own error goes to the log only (#161).
       assert.deepEqual(response.body, {
         ok: false,
-        error: failure === "duplicate" ? `feedback id already exists: ${existing.id}` : "injected insert failure"
+        error: failure === "duplicate" ? `feedback id already exists: ${existing.id}` : "Internal Server Error"
       });
       assert.deepEqual(await readStoredFeedback(receiver.dbPath), before);
       assert.equal(slack.requests.length, 1);
@@ -2060,6 +2099,7 @@ for (const failure of ["duplicate", "database"]) {
       assert.match(errors.join(""), /failed to clean up screenshot/);
       assert.ok(errors.join("").includes(rejected.id));
       assert.ok(errors.join("").includes(blockedPath));
+      if (failure === "database") assert.match(errors.join(""), /failed to store feedback id=[^\n]*injected insert failure/);
     } finally {
       db.close();
     }
@@ -3063,7 +3103,6 @@ test("a truncated Slack webhook response does not strand feedback ingestion", as
   const receiver = await startReceiver(t, { SLACK_WEBHOOK_URL: slack.baseUrl, SLACK_TIMEOUT_MS: "100" });
   const response = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_truncated_slack"), {}, globalThis.AbortSignal.timeout(2000));
   assert.equal(response.status, 201);
-  assert.equal(response.body.slack.status, "failed");
   assert.equal((await readStoredFeedback(receiver.dbPath))[0].integrations.slack.status, "failed");
 });
 
@@ -3105,8 +3144,9 @@ for (const stage of ["init", "upload", "complete"]) {
     });
     const response = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload(`pl_slack_abort_${stage}`), {}, globalThis.AbortSignal.timeout(2000));
     assert.equal(response.status, 201);
-    assert.equal(response.body.slack.status, "failed");
-    assert.equal(response.body.slack.image.status, "failed");
+    const [stored] = await readStoredFeedback(receiver.dbPath);
+    assert.equal(stored.integrations.slack.status, "failed");
+    assert.equal(stored.integrations.slack.image.status, "failed");
   });
 }
 

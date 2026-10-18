@@ -263,7 +263,7 @@ When `endpoint` is set, the widget POSTs the payload to that URL. A local receiv
 node server/receive.js
 ```
 
-- Accepts payload at `POST /feedback`, storing it in `server/feedback.db` (sqlite) by default
+- Accepts payload at `POST /feedback`, storing it in `server/feedback.db` (sqlite) by default. The response is only `{"ok": true, "id": "pl_..."}`: the stored count and the result of the Slack notification are not returned (the inbox and the log show them). A refusal says why in `error` (`400` / `403` / `409` / `413` / `507` and so on). A failure of the receiver itself, such as writing the screenshot file or the store, returns `500` with `"Internal Server Error"` only, and its details (server paths and the like) go to the log only
 - Imports download-mode JSON bundles at `POST /import` (single v1 feedback or array-based v2 batch), storing them in the same inbox format. Duplicate ids are skipped, and the response returns `imported` / `duplicates` / `failed`
 - Renders an inbox of received feedback at `GET /`
 - The inbox has text search, project, and status filters, plus detailed filters for kind / demo / reviewer / source / Slack / GitHub
