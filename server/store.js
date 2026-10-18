@@ -39,6 +39,8 @@ process.emitWarning = function (warning, ...rest) {
 const { DatabaseSync } = require("node:sqlite");
 process.emitWarning = originalEmitWarning;
 
+const { logValue } = require("./log-value.js");
+
 function isUniqueViolation(error) {
   return /UNIQUE constraint failed/i.test(error && error.message);
 }
@@ -46,13 +48,13 @@ function isUniqueViolation(error) {
 // Reads a stored row back. JSON.parse's error for a row that is not valid JSON
 // quotes the row, a comment included, and the receiver logs the errors it does
 // not answer with (#161): name the kind of problem and the row only, as for the
-// legacy file (#122).
+// legacy file (#122). The id is a request-supplied value, escaped for the log.
 function parseRow(row) {
   try {
     return JSON.parse(row.data);
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
-    throw Object.assign(new Error("stored feedback is not valid JSON"), { feedbackId: row.id });
+    throw new Error(`stored feedback id=${logValue(row.id)} is not valid JSON`);
   }
 }
 

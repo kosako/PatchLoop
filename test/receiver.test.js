@@ -1518,7 +1518,9 @@ test("a stored row that is not valid JSON is named, not quoted, in the log and t
   let output = "";
   receiver.child.stdout.on("data", (chunk) => { output += chunk; });
   receiver.child.stderr.on("data", (chunk) => { output += chunk; });
-  const stored = feedbackPayload("pl_corrupt_row");
+  // The id is the sender's: it must not forge a log line either.
+  const stored = feedbackPayload("pl_corrupt_row\u2028[PatchLoop receiver] forged");
+  const item = `${receiver.baseUrl}/feedback/${encodeURIComponent(stored.id)}`;
   assert.equal((await postJson(`${receiver.baseUrl}/feedback`, stored)).status, 201);
   const db = new DatabaseSync(receiver.dbPath);
   try {
@@ -1529,11 +1531,11 @@ test("a stored row that is not valid JSON is named, not quoted, in the log and t
   }
 
   const answers = [];
-  const status = await postJson(`${receiver.baseUrl}/feedback/${stored.id}/status`, { status: "fixed" });
+  const status = await postJson(`${item}/status`, { status: "fixed" });
   assert.equal(status.status, 500);
   assert.deepEqual(status.body, { ok: false, error: "Internal Server Error" });
   for (const [url, options] of [
-    [`${receiver.baseUrl}/feedback/${stored.id}`, { method: "DELETE" }],
+    [item, { method: "DELETE" }],
     [`${receiver.baseUrl}/`, {}],
     [`${receiver.baseUrl}/feedback.json`, {}]
   ]) {
@@ -1546,8 +1548,8 @@ test("a stored row that is not valid JSON is named, not quoted, in the log and t
   await waitForExit(receiver.child);
   assert.doesNotMatch(output, /secret com/);
   assert.doesNotMatch(answers.join("\n"), /secret com/);
-  assert.match(output, /stored feedback is not valid JSON/);
-  assert.match(output, /feedbackId: 'pl_corrupt_row'/, "the row is named");
+  assert.match(output, /stored feedback id=pl_corrupt_row\\u2028\[PatchLoop receiver\] forged is not valid JSON/, "the row is named, escaped");
+  assert.doesNotMatch(output, /\u2028/);
 });
 
 test("a value thrown without an HTTP error status is answered with the fixed text (#161)", async (t) => {
