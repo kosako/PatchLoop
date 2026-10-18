@@ -1513,6 +1513,81 @@ test("POST /feedback answers a failure of its own with a fixed text, and logs wh
   assert.match(stderr, /failed to store feedback id=pl_store_refused:[^\n]*synthetic insert failure/);
 });
 
+test("a stored row that is not valid JSON is named, not quoted, in the log and the answers (#161)", async (t) => {
+  const receiver = await startReceiver(t);
+  let output = "";
+  receiver.child.stdout.on("data", (chunk) => { output += chunk; });
+  receiver.child.stderr.on("data", (chunk) => { output += chunk; });
+  const stored = feedbackPayload("pl_corrupt_row");
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, stored)).status, 201);
+  const db = new DatabaseSync(receiver.dbPath);
+  try {
+    // JSON.parse's error for this text quotes the comment.
+    db.prepare("UPDATE feedback SET data = ? WHERE id = ?").run('{"comment": secret comment text}', stored.id);
+  } finally {
+    db.close();
+  }
+
+  const answers = [];
+  const status = await postJson(`${receiver.baseUrl}/feedback/${stored.id}/status`, { status: "fixed" });
+  assert.equal(status.status, 500);
+  assert.deepEqual(status.body, { ok: false, error: "Internal Server Error" });
+  for (const [url, options] of [
+    [`${receiver.baseUrl}/feedback/${stored.id}`, { method: "DELETE" }],
+    [`${receiver.baseUrl}/`, {}],
+    [`${receiver.baseUrl}/feedback.json`, {}]
+  ]) {
+    const response = await fetch(url, options);
+    assert.equal(response.status, 500, url);
+    answers.push(await response.text());
+  }
+
+  receiver.child.kill();
+  await waitForExit(receiver.child);
+  assert.doesNotMatch(output, /secret com/);
+  assert.doesNotMatch(answers.join("\n"), /secret com/);
+  assert.match(output, /stored feedback is not valid JSON/);
+  assert.match(output, /feedbackId: 'pl_corrupt_row'/, "the row is named");
+});
+
+test("a value thrown without an HTTP error status is answered with the fixed text (#161)", async (t) => {
+  const fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-thrown-"));
+  t.after(() => fs.rm(fixtureDir, { recursive: true, force: true }));
+  const preload = path.join(fixtureDir, "throw-on-insert.cjs");
+  // The store throws what the id names; everything else in the child is real.
+  await fs.writeFile(preload, `
+    const store = require(${JSON.stringify(path.join(path.dirname(RECEIVER_PATH), "store.js"))});
+    const createStore = store.createStore;
+    store.createStore = (config) => {
+      const real = createStore(config);
+      const thrown = {
+        pl_throw_null: () => null,
+        pl_throw_text: () => "plain failure",
+        pl_throw_status_zero: () => Object.assign(new Error("status zero"), { statusCode: 0 }),
+        pl_throw_status_text: () => Object.assign(new Error("status as text"), { statusCode: "409" }),
+        pl_throw_status_ok: () => Object.assign(new Error("status ok"), { statusCode: 200 })
+      };
+      return { ...real, async insert(item) {
+        if (Object.hasOwn(thrown, item.id)) throw thrown[item.id]();
+        return real.insert(item);
+      } };
+    };
+  `);
+  const receiver = await startReceiver(t, { NODE_OPTIONS: `--require ${JSON.stringify(preload)}` });
+  let stderr = "";
+  receiver.child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const ids = ["pl_throw_null", "pl_throw_text", "pl_throw_status_zero", "pl_throw_status_text", "pl_throw_status_ok"];
+  for (const id of ids) {
+    const response = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload(id));
+    assert.equal(response.status, 500, id);
+    assert.deepEqual(response.body, { ok: false, error: "Internal Server Error" }, id);
+  }
+  assert.equal((await fetch(`${receiver.baseUrl}/healthz`)).status, 200);
+  receiver.child.kill();
+  await waitForExit(receiver.child);
+  for (const id of ids) assert.match(stderr, new RegExp(`failed to store feedback id=${id}:`), id);
+});
+
 test("POST /feedback returns 507 once the stored feedback limit is reached", async (t) => {
   const receiver = await startReceiver(t, { MAX_FEEDBACK_COUNT: "1" });
   const first = await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_cap_1"));

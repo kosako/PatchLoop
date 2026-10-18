@@ -1775,12 +1775,14 @@ function httpError(message, statusCode) {
 }
 
 // Answers a failed request (#161). An error the receiver raised on purpose
-// (httpError: the request, or a limit of its own) says what it is; any other
-// (the file system, the store) can name server paths and internals, so it goes
-// to the log with what failed (context), and the client gets a fixed text.
+// (httpError: the request, or a limit of its own, with an HTTP error status)
+// says what it is; any other (the file system, the store, or a value thrown
+// that is not an Error) can name server paths and internals, so it goes to the
+// log with what failed (context), and the client gets a fixed text.
 function respondError(res, error, context) {
-  if (error.statusCode) {
-    respondJson(res, error.statusCode, { ok: false, error: error.message });
+  const status = error?.statusCode;
+  if (Number.isInteger(status) && status >= 400 && status <= 599) {
+    respondJson(res, status, { ok: false, error: String(error.message) });
     return;
   }
   console.error("%s", `[PatchLoop receiver] ${context}:`, error);
