@@ -701,7 +701,6 @@ const DEFAULTS = {
   maxFieldLength: 20_000,
   persistFeedback: true,
   feedbackStorageKey: "patchloop:feedback",
-  position: "bottom-right",
   captureScreenshot: true,
   screenshotMaxBytes: 1_200_000,
   onSubmit: null
@@ -782,6 +781,24 @@ function exceedsFieldLimit(item, limit = state.options.maxFieldLength) {
 }
 
 return { normalizeMaxFieldLength, exceedsFieldLimit };
+})();
+// --- widget/src/delivery-mode.js ---
+const __pl_widget_src_delivery_mode = (() => {
+const { DEFAULTS } = __pl_widget_src_state;
+
+const DELIVERY_MODES = ["receiver", "slack-webhook", "download", "none"];
+
+// The `deliveryMode` init option (#164). Any other value is a configuration
+// mistake (a typo, most likely), so warn and use the default, as the widget
+// already sent such a comment to the receiver while its settings showed none.
+function normalizeDeliveryMode(value) {
+  if (value === undefined) return DEFAULTS.deliveryMode;
+  if (DELIVERY_MODES.includes(value)) return value;
+  console.warn(`[PatchLoop] deliveryMode must be one of ${DELIVERY_MODES.join(", ")}; using ${DEFAULTS.deliveryMode}`, value);
+  return DEFAULTS.deliveryMode;
+}
+
+return { normalizeDeliveryMode };
 })();
 // --- widget/src/snapshot-css.js ---
 const __pl_widget_src_snapshot_css = (() => {
@@ -2179,6 +2196,7 @@ const { selectorFor, textFor } = __pl_widget_src_selector;
 const { resolveSourceContext } = __pl_widget_src_source_context;
 const { applyPageUrlRule, applySourceContextUrlRule, normalizeKeepQueryParams } = __pl_widget_src_url;
 const { exceedsFieldLimit, normalizeMaxFieldLength } = __pl_widget_src_field_limit;
+const { normalizeDeliveryMode } = __pl_widget_src_delivery_mode;
 const { DEFAULTS, state } = __pl_widget_src_state;
 const { buildPayload, buildRevision, outgoingPayload } = __pl_widget_src_payload;
 const { uncapturedTouching } = __pl_widget_src_screenshot;
@@ -2236,6 +2254,7 @@ function init(options = {}) {
   state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
   state.options.keepQueryParams = normalizeKeepQueryParams(state.options.keepQueryParams);
   state.options.maxFieldLength = normalizeMaxFieldLength(state.options.maxFieldLength);
+  state.options.deliveryMode = normalizeDeliveryMode(state.options.deliveryMode);
   // Its URLs leave under page.url's rule (#122).
   applySourceContextUrlRule(state.options.sourceContext, state.options.keepQueryParams);
   state.displayMode = loadDisplayMode();
@@ -2314,7 +2333,7 @@ function renderShell() {
 
   const root = document.createElement("div");
   root.dataset.patchloopRoot = "true";
-  root.className = `pl-root pl-${state.options.position}`;
+  root.className = "pl-root";
   root.innerHTML = `
     <section class="pl-panel pl-collapsed" data-pl-panel aria-label="PatchLoop フィードバック">
       <header>
