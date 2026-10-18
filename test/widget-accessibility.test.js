@@ -333,7 +333,7 @@ test("every text color of the widget meets 4.5:1 on the backgrounds it is shown 
   for (const selector of [".pl-root", ".pl-panel p", ".pl-feedback-list-empty", ".pl-list-heading", ".pl-display-mode legend", ".pl-display-mode label", ".pl-panel .pl-other-pages"]) {
     check(selector, ".pl-panel");
   }
-  for (const selector of [".pl-root", ".pl-comment label", ".pl-form-heading span", ".pl-comment .pl-capture-note", ".pl-keyboard-hint"]) {
+  for (const selector of [".pl-root", ".pl-comment label", ".pl-form-heading span", ".pl-comment .pl-capture-note", ".pl-comment .pl-field-count", ".pl-keyboard-hint"]) {
     check(selector, ".pl-comment");
   }
   check(".pl-capture-guide small", ".pl-capture-guide");

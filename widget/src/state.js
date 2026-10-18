@@ -22,6 +22,9 @@ export const DEFAULTS = {
   showDeliverySettings: false,
   reviewer: "",
   reviewerStorageKey: "patchloop:reviewer",
+  // The longest comment and name, in string.length (#196). The receiver's
+  // default maxFieldLength; a receiver set otherwise needs the same value here.
+  maxFieldLength: 20_000,
   persistFeedback: true,
   feedbackStorageKey: "patchloop:feedback",
   position: "bottom-right",
