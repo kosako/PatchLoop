@@ -4,6 +4,7 @@ import { selectorFor, textFor } from "./selector.js";
 import { resolveSourceContext } from "./source-context.js";
 import { applyPageUrlRule, applySourceContextUrlRule, normalizeKeepQueryParams } from "./url.js";
 import { exceedsFieldLimit, normalizeMaxFieldLength } from "./field-limit.js";
+import { normalizeDeliveryMode } from "./delivery-mode.js";
 import { DEFAULTS, state } from "./state.js";
 import { buildPayload, buildRevision, outgoingPayload } from "./payload.js";
 import { uncapturedTouching } from "./screenshot.js";
@@ -61,6 +62,7 @@ function init(options = {}) {
   state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
   state.options.keepQueryParams = normalizeKeepQueryParams(state.options.keepQueryParams);
   state.options.maxFieldLength = normalizeMaxFieldLength(state.options.maxFieldLength);
+  state.options.deliveryMode = normalizeDeliveryMode(state.options.deliveryMode);
   // Its URLs leave under page.url's rule (#122).
   applySourceContextUrlRule(state.options.sourceContext, state.options.keepQueryParams);
   state.displayMode = loadDisplayMode();
@@ -139,7 +141,7 @@ function renderShell() {
 
   const root = document.createElement("div");
   root.dataset.patchloopRoot = "true";
-  root.className = `pl-root pl-${state.options.position}`;
+  root.className = "pl-root";
   root.innerHTML = `
     <section class="pl-panel pl-collapsed" data-pl-panel aria-label="PatchLoop フィードバック">
       <header>

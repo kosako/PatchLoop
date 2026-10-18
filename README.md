@@ -127,7 +127,7 @@ widget が対応するのは、デスクトップの Chrome と Edge（どちら
 - `maxFieldLength` (number, optional) — コメントと投稿者名の最大文字数。保存するときと同じく前後の空白を除き、receiver と同じく JavaScript の `string.length` で数えます。デフォルトは `20000` で、receiver の `maxFieldLength` / `MAX_FIELD_LENGTH` のデフォルトと同じです。超えると、入力しているうちに欄の下に文字数を出して知らせ、コメントを確定できません。端末に保存済みのコメントで超えているもの（上限を下げたときなど）は、再送も書き出しもせず、編集で短くするよう知らせます（書き出しは超えていないものだけを書き出します）。receiver の上限を変えたときは、この値も同じにしてください（揃えるのは埋め込み側の責任です。この値の方が大きいと、超えた分は receiver が `413` で拒否し、書き出したファイルは 1 件でも超えていれば取り込み全体が拒否されます）。正の整数でない値は console に警告してデフォルトを使います
 - `persistFeedback` (boolean, optional) — feedback list を `localStorage` に保存し、同じ project / demo / page URL の reload 後に復元するか。デフォルトは `true`
 - `feedbackStorageKey` (string, optional) — feedback list を保存する `localStorage` key のnamespace。デフォルトは `patchloop:feedback`。この値と project / demo / ページの origin + pathname ごとに保存先を分離します（query / hash は同じページとして扱います）。旧単一keyのデータはscopeが一致したときだけ移行し、新しい保存先へのコピーに失敗した場合は旧データを保持します
-- `deliveryMode` (`"receiver"` | `"slack-webhook"` | `"download"` | `"none"`, optional) — 送信方式。デフォルトは `"receiver"`
+- `deliveryMode` (`"receiver"` | `"slack-webhook"` | `"download"` | `"none"`, optional) — 送信方式。デフォルトは `"receiver"`。ほかの値は console に警告してデフォルトを使います
 - `endpoint` (string, optional) — payload を `POST` する URL。未設定なら送信しない
 - `ingestKey` (string, optional) — receiver に `X-PatchLoop-Ingest-Key` ヘッダーで送るプロジェクトごとの公開キー。receiver 側で `INGEST_KEYS` / `ingestKeys` を設定している場合は必須。ページに埋め込まれるため秘密ではなく、プロジェクト識別・無差別 spam の抑止・ローテーションによる失効が目的
 - `slackWebhookUrl` (string, optional) — `deliveryMode: "slack-webhook"` 時にブラウザから直接送る Slack Incoming Webhook URL

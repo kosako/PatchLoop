@@ -27,7 +27,6 @@ export const DEFAULTS = {
   maxFieldLength: 20_000,
   persistFeedback: true,
   feedbackStorageKey: "patchloop:feedback",
-  position: "bottom-right",
   captureScreenshot: true,
   screenshotMaxBytes: 1_200_000,
   onSubmit: null
