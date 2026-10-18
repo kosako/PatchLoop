@@ -826,6 +826,8 @@ async function fetchWithTimeout(url, options, read = (response) => response) {
 function restorePersistedFeedback() {
   removeCommittedMarkers();
   state.feedbackMarkers.clear();
+  // Noted again as the markers are made from the comments restored (#200).
+  state.approximateIds.clear();
   state.feedback = [];
 
   if (!state.options.persistFeedback) return;
@@ -1740,13 +1742,35 @@ const MISSING_RETRY_DELAYS_MS = [500, 1000, 1500];
 function scheduleMissingRetry(attempt = 0) {
   window.clearTimeout(state.missingRetryTimer);
   state.missingRetryTimer = null;
-  if (attempt >= MISSING_RETRY_DELAYS_MS.length) return;
-  if (![...state.approximateIds.values()].includes("missing")) return;
+  if (attempt >= MISSING_RETRY_DELAYS_MS.length || missingFeedback().length === 0) return;
   state.missingRetryTimer = window.setTimeout(() => {
     state.missingRetryTimer = null;
-    reanchorAllMarkers();
+    retryMissingMarkers();
     scheduleMissingRetry(attempt + 1);
   }, MISSING_RETRY_DELAYS_MS[attempt]);
+}
+
+// The comments listed now whose element could not be found.
+function missingFeedback() {
+  return state.feedback.filter((item) => state.approximateIds.get(item.id) === "missing");
+}
+
+// Re-anchors only the markers whose element is missing, as they are when the
+// try comes; the others stay where they are.
+function retryMissingMarkers() {
+  let found = false;
+  missingFeedback().forEach((item) => {
+    const target = reanchoredTarget(item.target);
+    if (!target) return;
+    const marker = state.feedbackMarkers.get(item.id);
+    repositionMarker(marker, target);
+    setMarkerApproximate(marker, noteApproximate(item, true));
+    found = true;
+  });
+  if (!found) return;
+  renderFeedbackList();
+  // A marker put back on its element may be out of sight in a box (#213).
+  scheduleMarkerFollow();
 }
 
 function handleWindowResize() {

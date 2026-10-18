@@ -80,10 +80,45 @@ test("a page that draws the element after the widget starts: the marker is place
   widget.init(options);
   assert.equal(approximate(widget), MISSING);
   await sleep(700);
+  // Drawn elsewhere than when the comment was made.
+  widget.target.getBoundingClientRect = () => ({ left: 100, top: 200, right: 300, bottom: 300, width: 200, height: 100 });
   widget.document.body.append(widget.target);
   await sleep(1100);
   assert.equal(approximate(widget), "", "found on a later try");
+  const pin = widget.document.querySelector("[data-patchloop-pin]");
+  assert.equal(`${pin.style.left} ${pin.style.top}`, "120px 230px", "put on the element");
+  const target = widget.api.getFeedback()[0].target;
+  assert.deepEqual([target.clientX, target.clientY], [20, 30], "the comment keeps the place as confirmed (#155)");
   widget.api.destroy();
+});
+
+test("tries are asked for only while a listed comment is missing, and none outlives a re-init or destroy (#200)", async () => {
+  const storage = new Map();
+  const options = { persistFeedback: true, deliveryMode: "download" };
+  const before = widgetHarness({ storage });
+  before.init(options);
+  await before.submit("Missing at first");
+  before.api.destroy();
+
+  const delays = [];
+  const timers = { setTimeout: (callback, ms) => { delays.push(ms); return setTimeout(callback, ms); }, clearTimeout };
+  const widget = widgetHarness({ storage, timers });
+  widget.target.remove();
+  widget.init(options);
+  const tries = () => delays.filter((ms) => ms === 500 || ms === 1000 || ms === 1500).length;
+  assert.equal(tries(), 1, "the first try is asked for");
+
+  // A re-init with nothing listed: no comment is missing, so no try.
+  widget.init({ deliveryMode: "download", persistFeedback: false });
+  assert.equal(tries(), 1);
+  await sleep(700);
+  assert.equal(tries(), 1, "the earlier try was dropped");
+
+  widget.init(options);
+  assert.equal(tries(), 2);
+  widget.api.destroy();
+  await sleep(700);
+  assert.equal(tries(), 2, "destroy drops it too");
 });
 
 test("the tries stop after the first seconds; a marker followed onto its element later loses the ≈ (#200)", async () => {
