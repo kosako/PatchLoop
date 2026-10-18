@@ -381,9 +381,7 @@ const server = http.createServer((req, res) => {
       }
       return;
     }
-    try {
-      matched.handler(req, res, match);
-    } catch (error) {
+    const fail = (error) => {
       req.resume();
       const invalidId = error instanceof URIError;
       if (!invalidId) console.error("[PatchLoop receiver] route handler failed:", error);
@@ -395,6 +393,14 @@ const server = http.createServer((req, res) => {
         ok: false,
         error: invalidId ? "Invalid feedback ID encoding" : "Internal Server Error"
       });
+    };
+    try {
+      // An async handler's failure is contained the same way, rather than left
+      // as an unhandled rejection that would stop the receiver (#162).
+      const pending = matched.handler(req, res, match);
+      if (pending && typeof pending.then === "function") pending.catch(fail);
+    } catch (error) {
+      fail(error);
     }
     return;
   }

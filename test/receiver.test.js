@@ -337,6 +337,48 @@ for (const headersSent of [false, true]) {
   });
 }
 
+for (const headersSent of [false, true]) {
+  test(`async route failures are logged and contained with headersSent=${headersSent} (#162)`, async (t) => {
+    const fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-async-route-fault-"));
+    t.after(() => fs.rm(fixtureDir, { recursive: true, force: true }));
+    const preload = path.join(fixtureDir, "fail-response.cjs");
+    // POST /logout is an async handler: its response failure must not become
+    // an unhandled rejection that stops the receiver.
+    await fs.writeFile(preload, `
+      const http = require("node:http");
+      const writeHead = http.ServerResponse.prototype.writeHead;
+      let faulted = false;
+      http.ServerResponse.prototype.writeHead = function (...args) {
+        if (!faulted && this.req.url === "/logout?fault=async") {
+          faulted = true;
+          if (${headersSent}) writeHead.apply(this, args);
+          throw new Error("Synthetic async route failure");
+        }
+        return writeHead.apply(this, args);
+      };
+    `);
+    const receiver = await startReceiver(t, { NODE_OPTIONS: `--require ${JSON.stringify(preload)}` });
+    let stderr = "";
+    receiver.child.stderr.on("data", (chunk) => { stderr += chunk; });
+    const target = `${receiver.baseUrl}/logout?fault=async`;
+    if (headersSent) {
+      await assert.rejects(async () => {
+        const response = await fetch(target, { method: "POST", redirect: "manual" });
+        await response.text();
+      });
+    } else {
+      const response = await fetch(target, { method: "POST", redirect: "manual" });
+      assert.equal(response.status, 500);
+      assert.deepEqual(await response.json(), { ok: false, error: "Internal Server Error" });
+    }
+    assert.equal((await fetch(`${receiver.baseUrl}/healthz`)).status, 200);
+    receiver.child.kill();
+    await waitForExit(receiver.child);
+    assert.match(stderr, /\[PatchLoop receiver\] route handler failed: Error: Synthetic async route failure/);
+    assert.doesNotMatch(stderr, /ERR_HTTP_HEADERS_SENT/);
+  });
+}
+
 test("Inbox rendering failures return 500 without stopping the receiver", async (t) => {
   const fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "patchloop-inbox-fault-"));
   t.after(() => fs.rm(fixtureDir, { recursive: true, force: true }));
@@ -2432,6 +2474,53 @@ test("a logout's end of the sessions holds across a restart, and later sessions 
   assert.equal((await fetch(`${second.baseUrl}/logout`, { method: "POST", headers: { Cookie: kept }, redirect: "manual" })).status, 303);
   assert.equal((await fetch(`${second.baseUrl}/feedback.json`, { headers: { Cookie: kept } })).status, 401);
   assert.equal((await fetch(`${second.baseUrl}/feedback.json`, { headers: { Authorization: "Bearer s3cret" } })).status, 200);
+});
+
+test("only a signed-in logout ends the sessions, and one that cannot save says so (#162)", async (t) => {
+  const receiver = await startReceiver(t, { RECEIVER_TOKEN: "s3cret" });
+  let stderr = "";
+  receiver.child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const reads = (cookie, headers = {}) => fetch(`${receiver.baseUrl}/feedback.json`, { headers: { ...(cookie ? { Cookie: cookie } : {}), ...headers } })
+    .then((response) => response.status);
+  const logout = (headers) => fetch(`${receiver.baseUrl}/logout`, { method: "POST", headers, redirect: "manual" });
+  const cookie = await sessionCookie(receiver.baseUrl, "s3cret");
+  const [, generation, expiry, signature] = /^patchloop_session=(\d+)\.(\d+)\.([0-9a-f]+)$/.exec(cookie);
+
+  // The signature covers the expiry (and the generation, below).
+  assert.equal(await reads(`patchloop_session=${generation}.${Number(expiry) + 1000}.${signature}`), 401);
+
+  // A logout with a cookie that does not pass is not signed in: nothing ends.
+  assert.equal((await logout({ Cookie: `${cookie}ff` })).status, 303);
+  assert.equal(await reads(cookie), 200);
+
+  // When the generation cannot be saved, the logout fails visibly and the
+  // sessions stay as they were (the cookie of this browser is still cleared).
+  const db = new DatabaseSync(receiver.dbPath);
+  try {
+    db.exec(`
+      CREATE TRIGGER refuse_insert BEFORE INSERT ON store_metadata BEGIN SELECT RAISE(ABORT, 'synthetic metadata failure'); END;
+      CREATE TRIGGER refuse_update BEFORE UPDATE ON store_metadata BEGIN SELECT RAISE(ABORT, 'synthetic metadata failure'); END;
+    `);
+    const failed = await logout({ Cookie: cookie });
+    assert.equal(failed.status, 500);
+    assert.deepEqual(await failed.json(), { ok: false, error: "Internal Server Error" });
+    assert.match(failed.headers.get("set-cookie"), /^patchloop_session=; Max-Age=0/);
+    assert.equal(await reads(cookie), 200);
+    db.exec("DROP TRIGGER refuse_insert; DROP TRIGGER refuse_update;");
+  } finally {
+    db.close();
+  }
+
+  // A logout with the bearer token is signed in too: it ends the sessions.
+  assert.equal((await logout({ Authorization: "Bearer s3cret" })).status, 303);
+  assert.equal(await reads(cookie), 401);
+  assert.equal(await reads(null, { Authorization: "Bearer s3cret" }), 200);
+  // An ended cookie given the generation now in force still fails its signature.
+  assert.equal(await reads(`patchloop_session=${Number(generation) + 1}.${expiry}.${signature}`), 401);
+
+  receiver.child.kill();
+  await waitForExit(receiver.child);
+  assert.match(stderr, /logout could not end the sessions:[^\n]*synthetic metadata failure/);
 });
 
 async function sessionCookie(baseUrl, token) {
