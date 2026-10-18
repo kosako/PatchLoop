@@ -26,6 +26,12 @@ const item = (delivery, extra = {}) => ({ id: "fb-1", ...SENT, ...(delivery === 
 const STATES = [
   { name: "no delivery", item: item(), badge: "none", retry: false, left: false, text: "" },
   { name: "exported, no delivery", item: item(undefined, { exported: true }), badge: "none", retry: false, left: true, text: "" },
+  // States the widget does not make itself (a saved list from elsewhere),
+  // kept as they were before #153: which check comes first matters here.
+  { name: "delivery null", item: item(null), badge: "none", retry: false, left: false, text: "" },
+  { name: "delivery without a result", item: item({}), badge: "fail|送信失敗|true", retry: false, left: false, text: "送信できませんでした。コメントはこの端末に残っています。送信先・接続を確認してください。" },
+  { name: "result unknown, nothing else", item: item({ ok: null }), badge: "unknown|結果未確認|true", retry: false, left: false, text: "送信できませんでした。コメントはこの端末に残っています。送信先・接続を確認してください。" },
+  { name: "on its way, edited after an export (localEdited)", item: item({ pending: true, target: "receiver", startedAt: 1 }, { localEdited: true }), badge: "unknown|ローカル変更・送信先には未反映|false", retry: false, left: true, delivering: true, text: "送信しています…" },
   { name: "on its way", item: item({ pending: true, target: "receiver", startedAt: 1 }), badge: "unknown|送信中…|false", retry: false, left: false, delivering: true, text: "送信しています…" },
   { name: "received", item: item({ ok: true, status: 201, sent: SENT }), badge: "ok|送信済み|true", retry: false, left: true, answered: true, text: "受信箱に送信しました。" },
   { name: "refused by the receiver", item: item({ ok: false, status: 500 }), badge: "fail|送信失敗|true", retry: true, left: false, failed: true, text: "送信できませんでした。コメントはこの端末に残っています。送信先・接続を確認してください。" },
