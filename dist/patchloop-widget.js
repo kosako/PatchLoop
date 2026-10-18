@@ -3078,6 +3078,14 @@ async function deliverFeedback(payload) {
   const deliveringIds = state.deliveringIds;
   deliveringIds.add(payload.id);
   applyPageUrlRule(payload, state.options.keepQueryParams);
+  // Checked again as it leaves, like page.url (#196): a patchloop:feedback
+  // listener or onSubmit may have changed it, or re-initialized with a lower
+  // limit. It stays here as not sent, to be shortened and resent.
+  if (exceedsFieldLimit(payload)) {
+    deliveringIds.delete(payload.id);
+    payload.delivery = { ok: false, tooLong: true, target: pendingDelivery().target };
+    return true;
+  }
   const sent = { comment: payload.comment, reviewer: payload.reviewer };
   let delivery;
   try {
@@ -4260,6 +4268,7 @@ function deliveryStatusText(delivery) {
   if (delivery.interrupted) return delivery.target === "slack-webhook"
     ? "送信が中断されました。Slack 側で内容を確認してください。再送すると重複する可能性があります。"
     : "送信が中断されたため、結果は未確認です。受信箱の内容を確認してから再送してください。";
+  if (delivery.tooLong) return `コメントか投稿者名が長すぎるため、送っていません。編集で ${formatCount(state.options.maxFieldLength)} 文字以内にしてから再送してください。`;
   if (delivery.target === "download") {
     if (delivery.ok) return `downloaded ${delivery.fileName || ""}`.trim();
     return `download failed: ${delivery.error || "unknown error"}`;
@@ -4315,11 +4324,6 @@ async function retryFeedback(id) {
   if (!item || !canRetry(item)) return;
   if (!shouldDeliverFeedback()) {
     showWidgetNotice("送信先・設定を確認してください。ファイル共有の場合は書き出しを使います。", true);
-    return;
-  }
-  // The receiver would refuse it again (#196).
-  if (exceedsFieldLimit(item)) {
-    showWidgetNotice(`コメントか投稿者名が ${formatCount(state.options.maxFieldLength)} 文字を超えているため、送れません。編集で短くしてから再送してください。`, true);
     return;
   }
   item.delivery = pendingDelivery();

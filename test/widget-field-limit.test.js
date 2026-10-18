@@ -36,6 +36,16 @@ const notice = (w) => w.document.querySelector("[data-pl-notice]");
 const listItem = (w, comment) => w.document.querySelectorAll("[data-feedback-id]")
   .find((node) => node.dataset.feedbackId === w.api.getFeedback().find((item) => item.comment === comment).id);
 const bundleAt = async (w, index) => JSON.parse(await w.downloads[index].blob.text());
+const NOT_SENT_10 = "コメントか投稿者名が長すぎるため、送っていません。編集で 10 文字以内にしてから再送してください。";
+
+async function submitAs(w, comment, reviewer) {
+  w.capture();
+  form(w).comment.value = comment;
+  form(w).reviewer.value = reviewer;
+  await confirm(w);
+}
+
+const retryOf = (w) => Promise.all(w.document.querySelector("[data-pl-list]").emit("click", { target: w.document.querySelector("[data-pl-retry]") }));
 
 test("a comment longer than the receiver takes is told while typing and cannot be confirmed (#196)", async () => {
   const w = widgetHarness();
@@ -217,16 +227,60 @@ test("a saved comment past the limit is not resent until it is shortened (#196)"
 
   const w = widgetHarness({ storage });
   w.init({ persistFeedback: true, maxFieldLength: 10 });
-  const retry = () => Promise.all(w.document.querySelector("[data-pl-list]").emit("click", { target: w.document.querySelector("[data-pl-retry]") }));
-  await retry();
+  await retryOf(w);
   assert.equal(w.requests.length, 0);
-  assert.equal(notice(w).textContent, "コメントか投稿者名が 10 文字を超えているため、送れません。編集で短くしてから再送してください。");
+  assert.equal(notice(w).textContent, NOT_SENT_10);
   assert.equal(notice(w).dataset.state, "error");
+  assert.equal(w.document.querySelector(".pl-feedback-status-fail").getAttribute("title"), NOT_SENT_10, "the list says why");
 
   listItem(w, "a".repeat(20)).querySelector("[data-pl-edit]").click();
   type(form(w).comment, "Shortened");
   await confirm(w);
-  await retry();
+  await retryOf(w);
   assert.equal(w.requests.length, 1);
   assert.equal(JSON.parse(w.requests[0].body).comment, "Shortened");
+});
+
+test("a saved comment whose name alone is past the limit is neither resent nor exported (#196)", async () => {
+  const storage = new Map();
+  const failed = widgetHarness({ storage, replies: [new Error("network")] });
+  failed.init({ persistFeedback: true });
+  await submitAs(failed, "Short", "n".repeat(20));
+  assert.equal(failed.api.getFeedback()[0].delivery.ok, false);
+  failed.api.destroy();
+  const w = widgetHarness({ storage });
+  w.init({ persistFeedback: true, maxFieldLength: 10 });
+  await retryOf(w);
+  assert.equal(w.requests.length, 0);
+  assert.equal(notice(w).textContent, NOT_SENT_10);
+
+  const downloadStorage = new Map();
+  const before = widgetHarness({ storage: downloadStorage });
+  before.init(DOWNLOAD);
+  await submitAs(before, "Long name", "n".repeat(20));
+  await submitAs(before, "Fits", "Rev");
+  before.api.destroy();
+  const exporting = widgetHarness({ storage: downloadStorage });
+  exporting.init({ ...DOWNLOAD, maxFieldLength: 10 });
+  exporting.document.querySelector("[data-pl-download-all]").click();
+  assert.deepEqual((await bundleAt(exporting, 0)).feedback.map((item) => item.comment), ["Fits"]);
+  const exported = Object.fromEntries(exporting.api.getFeedback().map((item) => [item.comment, Boolean(item.exported)]));
+  assert.deepEqual(exported, { "Long name": false, Fits: true });
+});
+
+test("a comment changed past the limit by onSubmit or a patchloop:feedback listener is not sent (#196)", async () => {
+  const w = widgetHarness();
+  w.init({ maxFieldLength: 10, onSubmit: (payload) => { payload.comment += "!"; } });
+  await w.submit("a".repeat(10));
+  assert.equal(w.requests.length, 0);
+  assert.equal(w.api.getFeedback()[0].delivery.tooLong, true);
+  assert.equal(notice(w).textContent, NOT_SENT_10);
+  assert.equal(notice(w).dataset.state, "error");
+
+  const listened = widgetHarness();
+  listened.init({ maxFieldLength: 10 });
+  listened.document.addEventListener("patchloop:feedback", (event) => { event.detail.reviewer = "n".repeat(11); });
+  await listened.submit("Fits");
+  assert.equal(listened.requests.length, 0);
+  assert.equal(notice(listened).textContent, NOT_SENT_10);
 });
