@@ -20,6 +20,10 @@ export function truncateText(value, max) {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
+export function formatCount(count) {
+  return String(count).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
 export function present(value) {
   return value === undefined || value === null || value === "" ? "?" : value;
 }

@@ -15,7 +15,3 @@ export function normalizeMaxFieldLength(value) {
 export function exceedsFieldLimit(item, limit = state.options.maxFieldLength) {
   return String(item?.comment ?? "").length > limit || String(item?.reviewer ?? "").length > limit;
 }
-
-export function formatCount(count) {
-  return String(count).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-}

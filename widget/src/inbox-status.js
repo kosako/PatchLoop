@@ -5,7 +5,7 @@
 // index.js does the request and the drawing.
 
 import { FEEDBACK_STATUS_LABELS } from "../../shared/format.js";
-import { isLocallyEdited } from "./delivery-state.js";
+import { isLocallyEdited, receiverAnswered } from "./delivery-state.js";
 
 export const FINISHED_STATUSES = ["fixed", "ignored"];
 // The receiver answers at most 200 ids per query; the newest comments go first.
@@ -36,7 +36,7 @@ export function statusLookupUrl(endpoint, baseUrl) {
 // Comments the receiver has: delivered, or refused as an id it already holds.
 export function statusLookupIds(feedback) {
   return feedback
-    .filter((item) => item.delivery && (item.delivery.ok === true || item.delivery.status === 409))
+    .filter((item) => receiverAnswered(item.delivery))
     .slice(0, MAX_LOOKUP_IDS)
     .map((item) => item.id);
 }
