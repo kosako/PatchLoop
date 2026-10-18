@@ -3142,6 +3142,9 @@ function downloadFeedbackItems(listed, pages = []) {
   try {
     const bundle = buildFeedbackBundle(items.map((item) => {
       const copy = outgoingPayload(item);
+      // Its delivery is this device's (the receiver drops it), and its sent
+      // text may be an older one, past the limit the comment now fits (#196).
+      delete copy.delivery;
       delete copy.exported;
       delete copy.exportedAt;
       delete copy.exportedFileName;

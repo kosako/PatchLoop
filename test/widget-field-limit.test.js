@@ -290,6 +290,27 @@ test("a saved comment whose name alone is past the limit is neither resent nor e
   assert.deepEqual(exported, { "Long name": false, Fits: true });
 });
 
+test("an export leaves out the delivery, whose sent text may be an older one past the limit (#196)", async () => {
+  const storage = new Map();
+  const sent = widgetHarness({ storage });
+  sent.init({ persistFeedback: true });
+  await sent.submit("a".repeat(20));
+  assert.equal(sent.api.getFeedback()[0].delivery.sent.comment, "a".repeat(20));
+  sent.api.destroy();
+  // Shortened in another tab while it was on its way: the sent text stays.
+  const key = [...storage.keys()].find((name) => name.startsWith("patchloop:feedback"));
+  const saved = JSON.parse(storage.get(key));
+  saved.feedback[0].comment = "Short";
+  storage.set(key, JSON.stringify(saved));
+
+  const w = widgetHarness({ storage });
+  w.init({ ...DOWNLOAD, maxFieldLength: 10 });
+  assert.equal(w.api.getFeedback()[0].delivery.sent.comment, "a".repeat(20));
+  w.document.querySelector("[data-pl-download-all]").click();
+  const [item] = (await bundleAt(w, 0)).feedback;
+  assert.deepEqual([item.comment, "delivery" in item], ["Short", false]);
+});
+
 test("a comment changed past the limit by onSubmit or a patchloop:feedback listener is not sent (#196)", async () => {
   const w = widgetHarness();
   w.init({ maxFieldLength: 10, onSubmit: (payload) => { payload.comment += "!"; } });
