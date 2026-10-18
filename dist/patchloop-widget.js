@@ -615,6 +615,9 @@ const DEFAULTS = {
   showDeliverySettings: false,
   reviewer: "",
   reviewerStorageKey: "patchloop:reviewer",
+  // The longest comment and name, in string.length (#196). The receiver's
+  // default maxFieldLength; a receiver set otherwise needs the same value here.
+  maxFieldLength: 20_000,
   persistFeedback: true,
   feedbackStorageKey: "patchloop:feedback",
   position: "bottom-right",
@@ -676,6 +679,32 @@ const state = {
 };
 
 return { DEFAULTS, state };
+})();
+// --- widget/src/field-limit.js ---
+const __pl_widget_src_field_limit = (() => {
+const { DEFAULTS, state } = __pl_widget_src_state;
+
+// The `maxFieldLength` init option (#196): a positive integer, counted as the
+// receiver counts (string.length). Anything else is a configuration mistake,
+// so warn and keep the receiver's default.
+function normalizeMaxFieldLength(value) {
+  if (value === undefined) return DEFAULTS.maxFieldLength;
+  if (Number.isSafeInteger(value) && value > 0) return value;
+  console.warn(`[PatchLoop] maxFieldLength must be a positive integer; using ${DEFAULTS.maxFieldLength}`, value);
+  return DEFAULTS.maxFieldLength;
+}
+
+// Whether the receiver would refuse the comment for its text or its name: it
+// refuses the post (413), and an import refuses the whole file for one.
+function exceedsFieldLimit(item, limit = state.options.maxFieldLength) {
+  return String(item?.comment ?? "").length > limit || String(item?.reviewer ?? "").length > limit;
+}
+
+function formatCount(count) {
+  return String(count).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+return { normalizeMaxFieldLength, exceedsFieldLimit, formatCount };
 })();
 // --- widget/src/snapshot-css.js ---
 const __pl_widget_src_snapshot_css = (() => {
@@ -2072,6 +2101,7 @@ const { pointAnchorOffsets, areaAnchorOffsets, geometryFromAnchor, viewportDiffe
 const { selectorFor, textFor } = __pl_widget_src_selector;
 const { resolveSourceContext } = __pl_widget_src_source_context;
 const { applyPageUrlRule, applySourceContextUrlRule, normalizeKeepQueryParams } = __pl_widget_src_url;
+const { exceedsFieldLimit, formatCount, normalizeMaxFieldLength } = __pl_widget_src_field_limit;
 const { DEFAULTS, state } = __pl_widget_src_state;
 const { buildPayload, buildRevision, outgoingPayload } = __pl_widget_src_payload;
 const { uncapturedTouching } = __pl_widget_src_screenshot;
@@ -2128,6 +2158,7 @@ function init(options = {}) {
   // built later carries the same provenance without re-reading the DOM.
   state.options.sourceContext = resolveSourceContext(state.options.sourceContext, document);
   state.options.keepQueryParams = normalizeKeepQueryParams(state.options.keepQueryParams);
+  state.options.maxFieldLength = normalizeMaxFieldLength(state.options.maxFieldLength);
   // Its URLs leave under page.url's rule (#122).
   applySourceContextUrlRule(state.options.sourceContext, state.options.keepQueryParams);
   state.displayMode = loadDisplayMode();
@@ -2241,14 +2272,20 @@ function renderShell() {
     <div class="pl-tooltip" id="pl-feedback-tooltip" role="tooltip" data-pl-tooltip hidden></div>
     <form class="pl-comment" data-pl-comment novalidate hidden>
       <div class="pl-form-heading"><strong data-pl-form-title>コメントを追加</strong><span>気づいたことを、ひとつずつ。</span></div>
-      <label>
-        コメント
-        <textarea data-pl-comment-text rows="4" placeholder="どこを、どう変えるとよくなりますか？" required aria-describedby="pl-form-error pl-uncaptured-hint"></textarea>
-      </label>
-      <label>
-        投稿者
-        <input data-pl-reviewer value="${escapeHtml(state.options.reviewer)}" placeholder="表示名" required aria-describedby="pl-form-error" />
-      </label>
+      <div class="pl-field">
+        <label>
+          コメント
+          <textarea data-pl-comment-text rows="4" placeholder="どこを、どう変えるとよくなりますか？" required aria-describedby="pl-form-error pl-comment-count pl-uncaptured-hint"></textarea>
+        </label>
+        <small class="pl-field-count" id="pl-comment-count" data-pl-comment-count hidden></small>
+      </div>
+      <div class="pl-field">
+        <label>
+          投稿者
+          <input data-pl-reviewer value="${escapeHtml(state.options.reviewer)}" placeholder="表示名" required aria-describedby="pl-form-error pl-reviewer-count" />
+        </label>
+        <small class="pl-field-count" id="pl-reviewer-count" data-pl-reviewer-count hidden></small>
+      </div>
       <label class="pl-screenshot-option" data-pl-screenshot-field><input type="checkbox" data-pl-include-screenshot${state.options.captureScreenshot ? " checked" : ""} />画面画像を含める</label>
       <p class="pl-capture-note" data-pl-capture-note>画像には画面外の内容が含まれる場合があります。機密情報のあるページでは外してください。</p>
       <p class="pl-uncaptured-hint" id="pl-uncaptured-hint" data-pl-uncaptured-hint hidden></p>
@@ -2279,8 +2316,8 @@ function renderShell() {
   root.querySelector("[data-pl-comment]").addEventListener("submit", submitComment);
   root.querySelector("[data-pl-comment]").addEventListener("keydown", handleCommentKeydown);
   root.querySelector("[data-pl-include-screenshot]").addEventListener("change", () => syncUncapturedHint(root.querySelector("[data-pl-comment]")));
-  root.querySelector("[data-pl-reviewer]").addEventListener("input", () => clearFormError(root.querySelector("[data-pl-comment]")));
-  root.querySelector("[data-pl-comment-text]").addEventListener("input", () => clearFormError(root.querySelector("[data-pl-comment]")));
+  root.querySelector("[data-pl-reviewer]").addEventListener("input", () => handleCommentInput(root.querySelector("[data-pl-comment]")));
+  root.querySelector("[data-pl-comment-text]").addEventListener("input", () => handleCommentInput(root.querySelector("[data-pl-comment]")));
   root.querySelector("[data-pl-list]").addEventListener("click", handleListClick);
   root.querySelector("[data-pl-display-mode]").addEventListener("change", handleDisplayModeChange);
   root.querySelector("[data-pl-delivery-settings]")?.addEventListener("input", handleDeliverySettingsInput);
@@ -2597,6 +2634,9 @@ function openCommentForm(point, options = {}) {
   if (options.reviewer != null) {
     reviewerEl.value = options.reviewer;
   }
+  // A saved comment or name may already be too long (#196).
+  const tooLong = syncFieldLimit(form);
+  if (tooLong) showFormError(form, fieldTooLongText(tooLong));
   positionCommentForm(form, point);
   commentEl.focus({ preventScroll: true });
 }
@@ -2717,6 +2757,50 @@ function clearFormError(form) {
   errorEl.hidden = true;
 }
 
+const LIMITED_FIELDS = [
+  { input: "[data-pl-comment-text]", count: "[data-pl-comment-count]", name: "コメント" },
+  { input: "[data-pl-reviewer]", count: "[data-pl-reviewer-count]", name: "投稿者名" }
+];
+
+// Typing clears the form's error, except that a comment or name longer than
+// the receiver takes says so while it is (#196). The alert is set when it
+// changes, not on every key, so a screen reader reads it once; the count
+// under the field follows the typing.
+function handleCommentInput(form) {
+  const tooLong = syncFieldLimit(form);
+  if (!tooLong) {
+    clearFormError(form);
+    return;
+  }
+  const message = fieldTooLongText(tooLong);
+  const errorEl = form.querySelector("[data-pl-form-error]");
+  if (errorEl.hidden || errorEl.textContent !== message) showFormError(form, message);
+}
+
+// Marks the fields longer than state.options.maxFieldLength, as saved (trimmed),
+// with their length under them, and returns the first of them, or null. The
+// length is beside the label, not in it, so it is not part of the field's name.
+function syncFieldLimit(form) {
+  const limit = state.options.maxFieldLength;
+  let first = null;
+  for (const field of LIMITED_FIELDS) {
+    const input = form.querySelector(field.input);
+    const count = form.querySelector(field.count);
+    const length = input.value.trim().length;
+    const tooLong = length > limit;
+    if (tooLong) input.setAttribute("aria-invalid", "true");
+    else input.removeAttribute("aria-invalid");
+    count.hidden = !tooLong;
+    count.textContent = tooLong ? `${formatCount(length)} / ${formatCount(limit)} 文字` : "";
+    if (tooLong && !first) first = field;
+  }
+  return first;
+}
+
+function fieldTooLongText(field) {
+  return `${field.name}が長すぎます。${formatCount(state.options.maxFieldLength)} 文字以内にしてください。`;
+}
+
 async function submitComment(event) {
   event.preventDefault();
 
@@ -2732,6 +2816,13 @@ async function submitComment(event) {
   if (!reviewer) {
     showFormError(form, "投稿者名を入力してください。");
     root.querySelector("[data-pl-reviewer]").focus();
+    return;
+  }
+  // The receiver would refuse it (#196), so it is neither listed nor sent.
+  const tooLong = syncFieldLimit(form);
+  if (tooLong) {
+    showFormError(form, fieldTooLongText(tooLong));
+    form.querySelector(tooLong.input).focus();
     return;
   }
   clearFormError(form);
@@ -2987,6 +3078,14 @@ async function deliverFeedback(payload) {
   const deliveringIds = state.deliveringIds;
   deliveringIds.add(payload.id);
   applyPageUrlRule(payload, state.options.keepQueryParams);
+  // Checked again as it leaves, like page.url (#196): a patchloop:feedback
+  // listener or onSubmit may have changed it, or re-initialized with a lower
+  // limit. It stays here as not sent, to be shortened and resent.
+  if (exceedsFieldLimit(payload)) {
+    deliveringIds.delete(payload.id);
+    payload.delivery = { ok: false, tooLong: true, target: pendingDelivery().target };
+    return true;
+  }
   const sent = { comment: payload.comment, reviewer: payload.reviewer };
   let delivery;
   try {
@@ -3026,14 +3125,26 @@ function downloadAllFeedback() {
 
 // pages: the other pages' saved data the items were read from, written back
 // with their exported marks (#197).
-function downloadFeedbackItems(items, pages = []) {
-  if (items.length === 0) return;
+function downloadFeedbackItems(listed, pages = []) {
+  if (listed.length === 0) return;
 
+  // An import refuses the whole file for one comment the receiver would refuse
+  // (#196): those stay here, unexported, until they are shortened.
+  const items = listed.filter((item) => !exceedsFieldLimit(item));
+  const left = listed.length - items.length;
+  const leftText = `コメントか投稿者名が ${formatCount(state.options.maxFieldLength)} 文字を超えている`;
+  if (items.length === 0) {
+    showWidgetNotice(`${leftText}ため、書き出せません。編集で短くしてください。`, true);
+    return;
+  }
   items.forEach((item) => applyPageUrlRule(item, state.options.keepQueryParams));
   const exportedAt = new Date().toISOString();
   try {
     const bundle = buildFeedbackBundle(items.map((item) => {
       const copy = outgoingPayload(item);
+      // Its delivery is this device's (the receiver drops it), and its sent
+      // text may be an older one, past the limit the comment now fits (#196).
+      delete copy.delivery;
       delete copy.exported;
       delete copy.exportedAt;
       delete copy.exportedFileName;
@@ -3063,7 +3174,8 @@ function downloadFeedbackItems(items, pages = []) {
     pages.filter((page) => page.feedback.some((item) => exported.has(item))).forEach(saveOtherPageFeedback);
     state.otherPages = null;
     renderFeedbackList();
-    showWidgetNotice("ファイルの保存を開始しました。保存できなかった場合は「全件を再ダウンロード」を使ってください。");
+    const started = "ファイルの保存を開始しました。保存できなかった場合は「全件を再ダウンロード」を使ってください。";
+    showWidgetNotice(left > 0 ? `${started}${left} 件は、${leftText}ため書き出していません。編集で短くしてから書き出してください。` : started, left > 0);
     console.info("[PatchLoop] batch download", items.length, link.download);
   } catch (error) {
     showWidgetNotice("ファイルを書き出せませんでした。もう一度お試しください。", true);
@@ -4153,12 +4265,17 @@ function canRetry(item) {
   return (item.delivery?.ok === false || (item.delivery?.interrupted && item.delivery.target !== "slack-webhook")) && !isLocallyEdited(item) && item.delivery.status !== 409;
 }
 
+function tooLongToSendText() {
+  return `コメントか投稿者名が長すぎるため、送っていません。編集で ${formatCount(state.options.maxFieldLength)} 文字以内にしてから再送してください。`;
+}
+
 function deliveryStatusText(delivery) {
   if (!delivery) return "";
   if (delivery.pending) return "送信しています…";
   if (delivery.interrupted) return delivery.target === "slack-webhook"
     ? "送信が中断されました。Slack 側で内容を確認してください。再送すると重複する可能性があります。"
     : "送信が中断されたため、結果は未確認です。受信箱の内容を確認してから再送してください。";
+  if (delivery.tooLong) return tooLongToSendText();
   if (delivery.target === "download") {
     if (delivery.ok) return `downloaded ${delivery.fileName || ""}`.trim();
     return `download failed: ${delivery.error || "unknown error"}`;
@@ -4214,6 +4331,13 @@ async function retryFeedback(id) {
   if (!item || !canRetry(item)) return;
   if (!shouldDeliverFeedback()) {
     showWidgetNotice("送信先・設定を確認してください。ファイル共有の場合は書き出しを使います。", true);
+    return;
+  }
+  // Before its state is touched (#196): a delivery that was cut off keeps
+  // saying the receiver may hold it, so a later edit still goes as a revision
+  // (#121). deliverFeedback checks again as it leaves.
+  if (exceedsFieldLimit(item)) {
+    showWidgetNotice(tooLongToSendText(), true);
     return;
   }
   item.delivery = pendingDelivery();
@@ -4494,6 +4618,8 @@ function injectStyles() {
     .pl-comment { position: fixed; z-index: 2147483001; width: min(360px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain; display: grid; gap: 14px; padding: 22px; background: #fff; border: 1px solid #d9e1dd; border-radius: 14px; box-shadow: 0 18px 70px rgba(20, 33, 29, 0.22); }
     .pl-comment label { display: grid; gap: 6px; color: #42584c; font-size: 12px; font-weight: 600; }
     .pl-comment textarea, .pl-comment input { width: 100%; border: 1px solid #ccd9d1; border-radius: 8px; padding: 10px 12px; background: #fff; color: #14211d; font: inherit; font-size: 14px; line-height: 1.6; resize: vertical; }
+    .pl-comment .pl-field { display: grid; gap: 6px; }
+    .pl-comment .pl-field-count { justify-self: end; color: #b83d4d; font-size: 12px; font-weight: 600; }
     .pl-form-error { margin: 0; padding: 10px 12px; border-radius: 6px; color: #b83d4d; background: #fff0f2; font-size: 12px; font-weight: 600; }
     .pl-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
     .pl-pin { position: absolute; z-index: 2147482999; transform: translate(-50%, -50%); width: 30px; height: 30px; min-width: 30px; min-height: 30px; max-width: 30px; max-height: 30px; box-sizing: border-box; display: grid; place-items: center; padding: 0; line-height: 1; border-radius: 50%; border: 3px solid #fff; background: #b83d4d; color: #fff; font: 900 13px/1 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; box-shadow: 0 12px 30px rgba(20, 33, 29, 0.25); cursor: pointer; }
