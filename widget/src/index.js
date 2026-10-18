@@ -2164,13 +2164,17 @@ function canRetry(item) {
   return (item.delivery?.ok === false || (item.delivery?.interrupted && item.delivery.target !== "slack-webhook")) && !isLocallyEdited(item) && item.delivery.status !== 409;
 }
 
+function tooLongToSendText() {
+  return `コメントか投稿者名が長すぎるため、送っていません。編集で ${formatCount(state.options.maxFieldLength)} 文字以内にしてから再送してください。`;
+}
+
 function deliveryStatusText(delivery) {
   if (!delivery) return "";
   if (delivery.pending) return "送信しています…";
   if (delivery.interrupted) return delivery.target === "slack-webhook"
     ? "送信が中断されました。Slack 側で内容を確認してください。再送すると重複する可能性があります。"
     : "送信が中断されたため、結果は未確認です。受信箱の内容を確認してから再送してください。";
-  if (delivery.tooLong) return `コメントか投稿者名が長すぎるため、送っていません。編集で ${formatCount(state.options.maxFieldLength)} 文字以内にしてから再送してください。`;
+  if (delivery.tooLong) return tooLongToSendText();
   if (delivery.target === "download") {
     if (delivery.ok) return `downloaded ${delivery.fileName || ""}`.trim();
     return `download failed: ${delivery.error || "unknown error"}`;
@@ -2226,6 +2230,13 @@ async function retryFeedback(id) {
   if (!item || !canRetry(item)) return;
   if (!shouldDeliverFeedback()) {
     showWidgetNotice("送信先・設定を確認してください。ファイル共有の場合は書き出しを使います。", true);
+    return;
+  }
+  // Before its state is touched (#196): a delivery that was cut off keeps
+  // saying the receiver may hold it, so a later edit still goes as a revision
+  // (#121). deliverFeedback checks again as it leaves.
+  if (exceedsFieldLimit(item)) {
+    showWidgetNotice(tooLongToSendText(), true);
     return;
   }
   item.delivery = pendingDelivery();

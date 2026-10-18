@@ -231,7 +231,7 @@ test("a saved comment past the limit is not resent until it is shortened (#196)"
   assert.equal(w.requests.length, 0);
   assert.equal(notice(w).textContent, NOT_SENT_10);
   assert.equal(notice(w).dataset.state, "error");
-  assert.equal(w.document.querySelector(".pl-feedback-status-fail").getAttribute("title"), NOT_SENT_10, "the list says why");
+  assert.deepEqual([w.api.getFeedback()[0].delivery.ok, w.api.getFeedback()[0].delivery.tooLong], [false, undefined], "its last delivery is kept");
 
   listItem(w, "a".repeat(20)).querySelector("[data-pl-edit]").click();
   type(form(w).comment, "Shortened");
@@ -239,6 +239,28 @@ test("a saved comment past the limit is not resent until it is shortened (#196)"
   await retryOf(w);
   assert.equal(w.requests.length, 1);
   assert.equal(JSON.parse(w.requests[0].body).comment, "Shortened");
+});
+
+test("a resend held back by the limit keeps a cut-off delivery, so the shortened edit still goes as a revision (#121, #196)", async () => {
+  const w = widgetHarness({ replies: [() => new Promise(() => {})] });
+  w.init({ persistFeedback: true });
+  w.submit("a".repeat(20));
+  w.api.destroy();
+  w.init({ persistFeedback: true, maxFieldLength: 10 });
+  const originalId = w.api.getFeedback()[0].id;
+  assert.equal(w.api.getFeedback()[0].delivery.interrupted, true);
+
+  await retryOf(w);
+  assert.equal(w.requests.length, 1, "not sent again");
+  assert.equal(notice(w).textContent, NOT_SENT_10);
+  assert.equal(w.api.getFeedback()[0].delivery.interrupted, true, "the receiver may still hold it");
+
+  listItem(w, "a".repeat(20)).querySelector("[data-pl-edit]").click();
+  type(form(w).comment, "Shortened");
+  await confirm(w);
+  assert.equal(w.requests.length, 2);
+  const sent = JSON.parse(w.requests[1].body);
+  assert.deepEqual([sent.comment, sent.replaces, sent.id === originalId], ["Shortened", originalId, false]);
 });
 
 test("a saved comment whose name alone is past the limit is neither resent nor exported (#196)", async () => {
@@ -276,6 +298,7 @@ test("a comment changed past the limit by onSubmit or a patchloop:feedback liste
   assert.equal(w.api.getFeedback()[0].delivery.tooLong, true);
   assert.equal(notice(w).textContent, NOT_SENT_10);
   assert.equal(notice(w).dataset.state, "error");
+  assert.equal(w.document.querySelector(".pl-feedback-status-fail").getAttribute("title"), NOT_SENT_10, "the list says why");
 
   const listened = widgetHarness();
   listened.init({ maxFieldLength: 10 });
