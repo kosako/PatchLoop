@@ -92,7 +92,7 @@ test("a page that draws the element after the widget starts: the marker is place
   widget.api.destroy();
 });
 
-test("tries are asked for only while a listed comment is missing, and none outlives a re-init or destroy (#200)", async () => {
+test("a try is waiting only while a listed comment is missing, and a re-init or destroy drops the waiting one (#200)", async () => {
   const storage = new Map();
   const options = { persistFeedback: true, deliveryMode: "download" };
   const before = widgetHarness({ storage });
@@ -100,25 +100,40 @@ test("tries are asked for only while a listed comment is missing, and none outli
   await before.submit("Missing at first");
   before.api.destroy();
 
-  const delays = [];
-  const timers = { setTimeout: (callback, ms) => { delays.push(ms); return setTimeout(callback, ms); }, clearTimeout };
+  // Timers that know which are still waiting.
+  const waiting = new Map();
+  const timers = {
+    setTimeout(callback, ms) {
+      const id = setTimeout(() => {
+        waiting.delete(id);
+        callback();
+      }, ms);
+      waiting.set(id, ms);
+      return id;
+    },
+    clearTimeout(id) {
+      waiting.delete(id);
+      clearTimeout(id);
+    }
+  };
+  const tries = () => [...waiting.values()].filter((ms) => ms === 500 || ms === 1000 || ms === 1500).length;
   const widget = widgetHarness({ storage, timers });
   widget.target.remove();
   widget.init(options);
-  const tries = () => delays.filter((ms) => ms === 500 || ms === 1000 || ms === 1500).length;
-  assert.equal(tries(), 1, "the first try is asked for");
+  assert.equal(tries(), 1, "a try waits for the missing element");
 
-  // A re-init with nothing listed: no comment is missing, so no try.
+  // A re-init with nothing listed drops the waiting try and asks for none.
   widget.init({ deliveryMode: "download", persistFeedback: false });
-  assert.equal(tries(), 1);
-  await sleep(700);
-  assert.equal(tries(), 1, "the earlier try was dropped");
+  assert.equal(tries(), 0);
 
   widget.init(options);
-  assert.equal(tries(), 2);
+  assert.equal(tries(), 1);
+  widget.init(options);
+  assert.equal(tries(), 1, "a re-init replaces the waiting try, it does not add one");
   widget.api.destroy();
-  await sleep(700);
-  assert.equal(tries(), 2, "destroy drops it too");
+  assert.equal(tries(), 0, "destroy drops it");
+  await sleep(600);
+  assert.equal(tries(), 0, "and none comes back");
 });
 
 test("the tries stop after the first seconds; a marker followed onto its element later loses the ≈ (#200)", async () => {
