@@ -69,7 +69,7 @@ script-tag widget:
 - Lightweight viewport screenshot snapshot (SVG) attached to each payload
 - `localStorage` persistence for the feedback list, including pin / area overlay restoration after reload
 - Markers re-anchor to their target element (via selector) on window resize, following layout reflows
-- When re-anchoring fails (element missing or hidden), markers go back to their stored position, with an approximate badge (≈) when the window size differs from when the comment was made
+- When re-anchoring fails (element missing, hidden or of no size), markers go back to their stored position with an approximate badge (≈, “対象の要素が見つからないため、保存した位置に表示しています”, i.e. the element was not found). For pages that draw their content after loading, a marker whose element is missing is tried again three times over the first 3 seconds, and the badge goes once the element is found. A comment made where there is no element to anchor to (on an element larger than the viewport, for example) gets the badge (“ウィンドウサイズが変わったため、位置が近似になっています”) only when the window size differs from when it was made
 - Optional `onSubmit(payload)` callback
 - Optional `endpoint` setting that POSTs payloads to the bundled local receiver
 - Optional Slack Incoming Webhook forwarding from the local receiver with screenshot links, image blocks, and optional file upload
@@ -214,7 +214,7 @@ Main payload fields:
 - `target.area`
 - `target.selector`
 - `target.text`
-- `target.anchor` — position inside the anchor element rect (percent) plus its `selector`; includes `width` / `height` for areas. Used to re-anchor markers on resize and reload. Areas anchor to the element under the area's center rather than the drag start. Elements larger than the viewport (`main`, `body`, …) are skipped because relative positions inside them are unstable; such markers keep their page pixels and show the approximate badge
+- `target.anchor` — position inside the anchor element rect (percent) plus its `selector`; includes `width` / `height` for areas. Used to re-anchor markers on resize and reload. Areas anchor to the element under the area's center rather than the drag start. Elements larger than the viewport (`main`, `body`, …) are skipped because relative positions inside them are unstable; such markers keep their page pixels and show the approximate badge (≈) only when the window size differs from when the comment was made
 - `environment.viewport`
 - `environment.browser`
 - `environment.language`

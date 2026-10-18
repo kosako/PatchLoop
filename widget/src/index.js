@@ -43,6 +43,7 @@ function init(options = {}) {
   // Re-init while comment mode is on must not leave stale mode state
   // (crosshair cursor, active drag) behind the freshly rendered UI.
   cancelMarkerFollow();
+  window.clearTimeout(state.missingRetryTimer);
   state.active = false;
   document.documentElement.classList.remove("pl-feedback-active");
   state.drag = null;
@@ -75,6 +76,7 @@ function init(options = {}) {
   applyCollapseState();
   renderFeedbackList();
   refreshInboxStatuses();
+  scheduleMissingRetry();
   return api;
 }
 
@@ -101,6 +103,7 @@ function destroy() {
   window.removeEventListener("pageshow", handlePageShow);
   window.clearTimeout(state.otherPagesTimer);
   window.clearTimeout(state.resizeTimer);
+  window.clearTimeout(state.missingRetryTimer);
   window.clearTimeout(state.pendingCheckTimer);
   resetInboxStatus();
   state.approximateIds.clear();
@@ -1184,7 +1187,7 @@ function addCommittedMarker(item) {
   state.feedbackMarkers.set(item.id, marker);
   bindMarkerHover(marker, item.id);
   bindMarkerActivation(marker, item.id);
-  setMarkerApproximate(marker, state.approximateIds.has(item.id));
+  setMarkerApproximate(marker, state.approximateIds.get(item.id) || null);
   // Placed where its element is; out of sight in a box, it is hidden (#213).
   scheduleMarkerFollow();
 }
@@ -1242,11 +1245,7 @@ function applyStorageChanges({ added, removed }) {
 function markerFromFeedback(item) {
   const stored = item?.target || {};
   const target = reanchoredTarget(stored);
-  if (target) {
-    state.approximateIds.delete(item.id);
-  } else if (viewportDiffersFromCreation(item, viewportMetrics())) {
-    state.approximateIds.add(item.id);
-  }
+  noteApproximate(item, Boolean(target));
 
   const placement = storedPlacement(target || stored);
   if (!placement) return null;
@@ -1475,11 +1474,34 @@ function markerPosition(pageX, pageY, origin = markerOrigin(), scroll = { x: win
   return { left: `${pageX - scroll.x - origin.left}px`, top: `${pageY - scroll.y - origin.top}px` };
 }
 
-function setMarkerApproximate(marker, isApproximate) {
+// Why a marker is only near its place (#200), shown on the marker and with
+// the ≈ in the list.
+const APPROXIMATE_TEXTS = {
+  missing: "対象の要素が見つからないため、保存した位置に表示しています",
+  viewport: "ウィンドウサイズが変わったため、位置が近似になっています"
+};
+
+// Notes why a comment's marker is not on its element, or that it is (#200):
+// a comment made on an element whose element cannot be found now (gone,
+// hidden or of no size) is "missing"; a comment made on no element (one
+// larger than the viewport) keeps its stored place, which only drifts when
+// the window size differs from when it was made.
+function noteApproximate(item, placedOnElement) {
+  let reason = null;
+  if (!placedOnElement) {
+    if (item?.target?.anchor) reason = "missing";
+    else if (viewportDiffersFromCreation(item, viewportMetrics())) reason = "viewport";
+  }
+  if (reason) state.approximateIds.set(item.id, reason);
+  else state.approximateIds.delete(item.id);
+  return reason;
+}
+
+function setMarkerApproximate(marker, reason) {
   if (!marker || !marker.node) return;
-  marker.node.classList.toggle("pl-marker-approx", Boolean(isApproximate));
-  if (isApproximate) {
-    marker.node.title = "ウィンドウサイズが変わったため、位置が近似になっています";
+  marker.node.classList.toggle("pl-marker-approx", Boolean(reason));
+  if (reason) {
+    marker.node.title = APPROXIMATE_TEXTS[reason];
   } else {
     marker.node.removeAttribute("title");
   }
@@ -1547,6 +1569,8 @@ function followMarkers() {
   const scroll = { x: window.scrollX, y: window.scrollY };
   const boxRects = new Map();
   const plans = [];
+  // Markers whose missing element has turned up (#200).
+  const found = [];
   state.feedback.forEach((item) => {
     const marker = state.feedbackMarkers.get(item.id);
     if (!marker?.node) return;
@@ -1557,6 +1581,7 @@ function followMarkers() {
       const target = { ...item.target, area: item.target.area && { ...item.target.area } };
       refreshTargetCoordinates(target, geometry);
       placement = storedPlacement(target);
+      if (state.approximateIds.get(item.id) === "missing") found.push({ marker, id: item.id });
     }
     plans.push({ marker, feedbackId: item.id, placement, box: element ? visibleBox(marker, element, boxRects) : null });
   });
@@ -1581,6 +1606,13 @@ function followMarkers() {
   plans.forEach((plan) => {
     moved = placeFollowedMarker(plan, origin, scroll) || moved;
   });
+  if (found.length) {
+    found.forEach(({ marker, id }) => {
+      state.approximateIds.delete(id);
+      setMarkerApproximate(marker, null);
+    });
+    renderFeedbackList();
+  }
   return moved;
 }
 
@@ -1700,6 +1732,23 @@ function placeFollowedMarker({ marker, feedbackId, placement, box }, origin, scr
   return `${style.left} ${style.top} ${style.width} ${style.height}` !== before;
 }
 
+// Pages that draw their content after the widget starts (#200): while a
+// marker's element cannot be found, re-anchoring is tried again a few times
+// over the first seconds, and the marker keeps its ≈ only if it stays missing.
+const MISSING_RETRY_DELAYS_MS = [500, 1000, 1500];
+
+function scheduleMissingRetry(attempt = 0) {
+  window.clearTimeout(state.missingRetryTimer);
+  state.missingRetryTimer = null;
+  if (attempt >= MISSING_RETRY_DELAYS_MS.length) return;
+  if (![...state.approximateIds.values()].includes("missing")) return;
+  state.missingRetryTimer = window.setTimeout(() => {
+    state.missingRetryTimer = null;
+    reanchorAllMarkers();
+    scheduleMissingRetry(attempt + 1);
+  }, MISSING_RETRY_DELAYS_MS[attempt]);
+}
+
 function handleWindowResize() {
   positionVisibleCommentForm();
   window.clearTimeout(state.resizeTimer);
@@ -1710,18 +1759,9 @@ function reanchorAllMarkers() {
   state.feedback.forEach((item) => {
     const marker = state.feedbackMarkers.get(item.id);
     const target = reanchoredTarget(item.target);
-    if (target) {
-      repositionMarker(marker, target);
-      state.approximateIds.delete(item.id);
-      setMarkerApproximate(marker, false);
-    } else {
-      // An earlier re-anchor may have moved it; fall back to the stored position.
-      repositionMarker(marker, item.target);
-      const isApproximate = viewportDiffersFromCreation(item, viewportMetrics());
-      if (isApproximate) state.approximateIds.add(item.id);
-      else state.approximateIds.delete(item.id);
-      setMarkerApproximate(marker, isApproximate);
-    }
+    // An earlier re-anchor may have moved it; else back to the stored position.
+    repositionMarker(marker, target || item.target);
+    setMarkerApproximate(marker, noteApproximate(item, Boolean(target)));
   });
 
   if (state.pendingTarget) {
@@ -1901,7 +1941,7 @@ function renderFeedbackList() {
             : `<span class="pl-feedback-status pl-feedback-status-fail" title="${escapeHtml(deliveryStatusText(item.delivery))}">送信失敗</span>`
         : "";
       const approximate = state.approximateIds.has(item.id)
-        ? '<span class="pl-feedback-approx" title="ウィンドウサイズが変わったため、位置が近似になっています">≈</span>'
+        ? `<span class="pl-feedback-approx" title="${APPROXIMATE_TEXTS[state.approximateIds.get(item.id)]}">≈</span>`
         : "";
       const exported = item.exported
         ? `<span class="pl-feedback-exported" title="${escapeHtml(`書き出し済み: ${item.exportedFileName || ""}`.trim())}">書き出し済み</span>`

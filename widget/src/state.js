@@ -38,8 +38,12 @@ export const state = {
   suppressNextClick: false,
   feedback: [],
   feedbackMarkers: new Map(),
-  approximateIds: new Set(),
+  // Comments whose marker is only near its place, with why (#200): "missing"
+  // (its element cannot be found) or "viewport" (the window size differs).
+  approximateIds: new Map(),
   resizeTimer: null,
+  // Tries again to place markers whose element is not drawn yet (#200).
+  missingRetryTimer: null,
   editingId: null,
   commentReturnFocus: null,
   collapsed: true,

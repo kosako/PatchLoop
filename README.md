@@ -69,7 +69,7 @@ script-tag widget:
 - viewport の lightweight screenshot snapshot（SVG）を payload に添付
 - feedback list の `localStorage` 永続化と reload 後の pin / area overlay 復元
 - ウィンドウリサイズ時は selector で対象要素を引き直し、pin / area を要素に追従して再配置
-- 再配置できない場合（要素が見つからない・非表示など）は保存した位置に置き、ウィンドウサイズがコメントを作ったときと違えば marker と一覧に近似表示（≈）
+- 再配置できない場合（要素が見つからない・非表示・大きさが 0 など）は保存した位置に置き、marker と一覧に近似表示（≈、「対象の要素が見つからないため、保存した位置に表示しています」）。読み込んだ後に要素を描くページのために、見つからない marker は読み込みから 3 秒の間に 3 回置き直しを試し、見つかれば ≈ を外します。要素の無いところ（viewport より大きい要素の上など）で作ったコメントは、ウィンドウサイズがコメントを作ったときと違うときだけ ≈（「ウィンドウサイズが変わったため、位置が近似になっています」）
 - 任意の `onSubmit(payload)` callback
 - 任意の `endpoint` 設定で payload を receiver に POST
 - ローカル receiver から任意の Slack Incoming Webhook へ、スクショリンク / image block / 任意の file upload 付きで転送
@@ -214,7 +214,7 @@ submit のたびに `document` で `patchloop:feedback` が発火し、`event.de
 - `target.area`
 - `target.selector`
 - `target.text`
-- `target.anchor` — アンカー要素 rect 内の相対位置（%）と `selector`。area の場合は `width` / `height` も含む。リサイズ・reload 時の要素への再アンカーに使用。area はドラッグ開始点ではなく範囲中心の要素にアンカーします。viewport より大きい要素（`main` / `body` 等）は相対位置が不安定なためアンカー対象にせず、その marker は従来座標（page px）固定 + 近似表示になります
+- `target.anchor` — アンカー要素 rect 内の相対位置（%）と `selector`。area の場合は `width` / `height` も含む。リサイズ・reload 時の要素への再アンカーに使用。area はドラッグ開始点ではなく範囲中心の要素にアンカーします。viewport より大きい要素（`main` / `body` 等）は相対位置が不安定なためアンカー対象にせず、その marker は従来座標（page px）に固定し、ウィンドウサイズがコメントを作ったときと違うときだけ近似表示（≈）になります
 - `environment.viewport`
 - `environment.browser`
 - `environment.language`
