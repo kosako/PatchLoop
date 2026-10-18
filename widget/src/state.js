@@ -44,6 +44,9 @@ export const state = {
   commentReturnFocus: null,
   collapsed: true,
   displayMode: "normal",
+  // "button" (the collapsed panel's button) or "tab" (tucked into a small tab
+  // at the screen's edge, #211).
+  launcher: "button",
   // Inbox triage status (#147): { statuses: Map(id -> status), asked: Set(id) }
   // after a successful lookup, null otherwise. Kept in memory only.
   inboxStatus: null,
