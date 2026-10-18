@@ -10,6 +10,7 @@ const { safeFilePart, truncateText, present, slackEscape, formatSlackCode, forma
 const { createStore, FEEDBACK_STATUSES } = require("./store.js");
 const { createInboxView } = require("./inbox-view.js");
 const { feedbackForExport } = require("./feedback-export.js");
+const { logValue } = require("./log-value.js");
 const { normalizeUncaptured, summarizeUncaptured } = require("./uncaptured.js");
 
 const CONFIG_PATH = process.env.PATCHLOOP_RECEIVER_CONFIG || path.join(__dirname, "receiver.config.json");
@@ -526,19 +527,6 @@ function warnIgnoredSetting(label, value, fallback) {
   console.warn(`[PatchLoop receiver] ignored invalid setting ${label}: ${JSON.stringify(String(value))} — using ${fallback}`);
 }
 
-// Request-supplied values (feedback ids, comments) go into one-line log
-// entries; escape newlines, control characters and quotes so a value cannot
-// split the entry or forge another one (#150). JSON.stringify leaves DEL, the
-// C1 controls (NEL among them) and the Unicode line/paragraph separators raw,
-// and log viewers can break lines on them, so escape those too. A "%c" in a
-// value still reaches console.*; calls that pass an Error after the message
-// pin the format string to "%s" so the value cannot swallow the Error.
-function logValue(value) {
-  return JSON.stringify(String(value))
-    .slice(1, -1)
-    .replace(/[\x7f-\x9f\u2028\u2029]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
-}
-
 // Number("") is 0 and Number("abc") is NaN; both would silently disable or
 // corrupt a limit, so blank settings are treated as unset and non-numeric ones
 // fall back with a startup warning (#99: a misconfig must be visible).
@@ -675,7 +663,7 @@ function handlePostFeedback(req, res) {
       payload = normalizeFeedbackPayload(payload);
       enforceIngestProject(payload, req.patchloopIngestKey);
     } catch (error) {
-      respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
+      respondError(res, error, "feedback validation failed");
       return;
     }
 
@@ -684,7 +672,7 @@ function handlePostFeedback(req, res) {
     try {
       screenshot = saveScreenshot(payload.screenshot, payload.id);
     } catch (error) {
-      respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
+      respondError(res, error, `failed to save screenshot for feedback id=${logValue(payload.id)}`);
       return;
     }
 
@@ -721,7 +709,7 @@ function handlePostFeedback(req, res) {
       } catch (cleanupError) {
         console.warn("%s", `[PatchLoop receiver] failed to clean up screenshot for feedback id=${logValue(stored.id)}:`, cleanupError);
       }
-      respondJson(res, error.statusCode || 500, { ok: false, error: error.message });
+      respondError(res, error, `failed to store feedback id=${logValue(stored.id)}`);
       return;
     }
 
@@ -731,12 +719,9 @@ function handlePostFeedback(req, res) {
       ? ""
       : ` slack=${slack.status}`;
     console.log(`[PatchLoop receiver] received feedback id=${logValue(payload?.id || "?")}${commentLog(payload?.comment)}${slackLog}`);
-    respondJson(res, 201, {
-      ok: true,
-      id: payload?.id,
-      count: await store.count(),
-      slack
-    });
+    // Only that it landed (#161): the store's count and the Slack result are
+    // the operator's, in the inbox and the log, not the public ingest's.
+    respondJson(res, 201, { ok: true, id: payload.id });
   });
 }
 
@@ -751,7 +736,7 @@ function handlePostFeedbackStatus(req, res) {
       query = normalizeStatusQuery(body);
       enforceIngestProject(query, req.patchloopIngestKey);
     } catch (error) {
-      respondJson(res, error.statusCode || 400, { ok: false, error: error.message });
+      respondError(res, error, "status query validation failed");
       return;
     }
     const statuses = await store.statusesFor(query.ids, { projectId: query.projectId });
@@ -1201,15 +1186,13 @@ function readRequestBody(req, res, onBody, { maxBytes = MAX_BODY_BYTES } = {}) {
     try {
       await onBody(Buffer.concat(chunks).toString("utf8"));
     } catch (error) {
-      if (!res.headersSent) {
-        respondJson(res, error.statusCode || 500, { ok: false, error: error.message });
-      }
+      if (!res.headersSent) respondError(res, error, "request failed");
     }
   });
 
   req.on("error", (error) => {
     if (aborted || res.headersSent) return;
-    respondJson(res, 500, { ok: false, error: error.message });
+    respondError(res, error, "request body failed");
   });
 }
 
@@ -1777,6 +1760,21 @@ function httpError(message, statusCode) {
   const error = new Error(message);
   error.statusCode = statusCode;
   return error;
+}
+
+// Answers a failed request (#161). An error the receiver raised on purpose
+// (httpError: the request, or a limit of its own, with an HTTP error status)
+// says what it is; any other (the file system, the store, or a value thrown
+// that is not an Error) can name server paths and internals, so it goes to the
+// log with what failed (context), and the client gets a fixed text.
+function respondError(res, error, context) {
+  const status = error?.statusCode;
+  if (Number.isInteger(status) && status >= 400 && status <= 599) {
+    respondJson(res, status, { ok: false, error: String(error.message) });
+    return;
+  }
+  console.error("%s", `[PatchLoop receiver] ${context}:`, error);
+  respondJson(res, 500, { ok: false, error: "Internal Server Error" });
 }
 
 function respondJson(res, status, body, headers) {

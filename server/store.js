@@ -39,8 +39,23 @@ process.emitWarning = function (warning, ...rest) {
 const { DatabaseSync } = require("node:sqlite");
 process.emitWarning = originalEmitWarning;
 
+const { logValue } = require("./log-value.js");
+
 function isUniqueViolation(error) {
   return /UNIQUE constraint failed/i.test(error && error.message);
+}
+
+// Reads a stored row back. JSON.parse's error for a row that is not valid JSON
+// quotes the row, a comment included, and the receiver logs the errors it does
+// not answer with (#161): name the kind of problem and the row only, as for the
+// legacy file (#122). The id is a request-supplied value, escaped for the log.
+function parseRow(row) {
+  try {
+    return JSON.parse(row.data);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    throw new Error(`stored feedback id=${logValue(row.id)} is not valid JSON`);
+  }
 }
 
 const FEEDBACK_STATUSES = ["new", "accepted", "fixed", "ignored"];
@@ -136,9 +151,9 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
   // without yielding to other requests. A networked backend must provide the
   // same atomic read-modify-write guarantee using a transaction.
   function updateRow(id, change) {
-    const row = db.prepare("SELECT data FROM feedback WHERE id = ?").get(String(id));
+    const row = db.prepare("SELECT id, data FROM feedback WHERE id = ?").get(String(id));
     if (!row) return null;
-    const updated = change(JSON.parse(row.data));
+    const updated = change(parseRow(row));
     const cols = extractColumns(updated);
     db.prepare(
       "UPDATE feedback SET project_id = ?, demo_id = ?, status = ?, received_at = ?, data = ? WHERE id = ?"
@@ -192,8 +207,8 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
     },
 
     async get(id) {
-      const row = db.prepare("SELECT data FROM feedback WHERE id = ?").get(String(id));
-      return row ? JSON.parse(row.data) : null;
+      const row = db.prepare("SELECT id, data FROM feedback WHERE id = ?").get(String(id));
+      return row ? parseRow(row) : null;
     },
 
     async list(filter = {}) {
@@ -212,8 +227,8 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
         params.push(String(filter.status));
       }
       const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
-      const rows = db.prepare(`SELECT data FROM feedback${where} ORDER BY seq DESC`).all(...params);
-      return rows.map((row) => JSON.parse(row.data));
+      const rows = db.prepare(`SELECT id, data FROM feedback${where} ORDER BY seq DESC`).all(...params);
+      return rows.map(parseRow);
     },
 
     // Reads only the id and status columns: the status lookup never touches
@@ -241,10 +256,10 @@ function createSqliteStore({ dbPath, legacyJsonPath }) {
     },
 
     async delete(id) {
-      const row = db.prepare("SELECT data FROM feedback WHERE id = ?").get(String(id));
+      const row = db.prepare("SELECT id, data FROM feedback WHERE id = ?").get(String(id));
       if (!row) return null;
       db.prepare("DELETE FROM feedback WHERE id = ?").run(String(id));
-      return JSON.parse(row.data);
+      return parseRow(row);
     },
 
     async count() {
