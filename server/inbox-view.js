@@ -4,6 +4,7 @@ const { escapeHtml, FEEDBACK_STATUS_LABELS: STATUS_LABELS } = require("../shared
 const { FEEDBACK_STATUSES } = require("./store.js");
 const { feedbackForExport } = require("./feedback-export.js");
 const { summarizeUncaptured } = require("./uncaptured.js");
+const { safeLinkUrl, formatScreenshotStatus } = require("./render-values.js");
 const { PAYLOAD_SCHEMA_VERSION } = require("../shared/versions.js");
 
 const KIND_LABELS = { point: "ポイント", area: "範囲" };
@@ -17,7 +18,7 @@ function displayDate(value) {
 }
 
 function createInboxView(deps) {
-  const { formatScreenshotStatus, safeLinkUrl, GITHUB_CONFIGURED, RECEIVER_TOKEN, MAX_BODY_BYTES, MAX_IMPORT_ITEMS } = deps;
+  const { GITHUB_CONFIGURED, authEnabled, MAX_BODY_BYTES, MAX_IMPORT_ITEMS } = deps;
   function feedbackStatusOf(item) {
     return FEEDBACK_STATUSES.includes(item.status) ? item.status : "new";
   }
@@ -151,7 +152,7 @@ function createInboxView(deps) {
       ${["", ...FEEDBACK_STATUSES].map((value) => `<button type="button" data-status-nav="${value}" aria-pressed="${value === ""}"><span>${STATUS_LABELS[value] || "すべて"}</span><span class="nav-count" data-status-count="${value}">${value ? items.filter((item) => feedbackStatusOf(item || {}) === value).length : items.length}</span></button>`).join("")}
     </nav>
     <div class="sidebar-footer"><p>気づきを、次の改善へ。</p><small>画面上のフィードバックを<br />確認して、修正につなげましょう。</small>
-    ${RECEIVER_TOKEN ? '<form class="logout-form" method="post" action="/logout"><button type="submit">ログアウト</button></form>' : ""}</div>
+    ${authEnabled ? '<form class="logout-form" method="post" action="/logout"><button type="submit">ログアウト</button></form>' : ""}</div>
   </aside>
   <main id="inbox" tabindex="-1">
   <header class="page-header">

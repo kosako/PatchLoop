@@ -5,10 +5,8 @@ const test = require("node:test");
 const { createInboxView } = require("../server/inbox-view.js");
 
 const { renderInbox } = createInboxView({
-  formatScreenshotStatus: (screenshot) => screenshot.status,
-  safeLinkUrl: (value) => /^https?:\/\//.test(String(value || "")) ? value : "",
   GITHUB_CONFIGURED: true,
-  RECEIVER_TOKEN: "synthetic-token"
+  authEnabled: true
 });
 
 function feedback(extra = {}) {
@@ -141,4 +139,11 @@ test("a stored replaces that is not a string does not break the card", () => {
   const html = renderInbox([feedback({ id: "odd", comment: "Kept", replaces: { toString: 1 } })]);
   assert.match(html, /data-status-select data-feedback-id="odd"/);
   assert.doesNotMatch(html, /修正版/);
+});
+
+test("the logout button shows only when the inbox has a login (#170)", () => {
+  const logout = 'action="/logout"';
+  assert.equal(renderInbox([feedback()]).includes(logout), true);
+  const withoutLogin = createInboxView({ GITHUB_CONFIGURED: true, authEnabled: false }).renderInbox([feedback()]);
+  assert.equal(withoutLogin.includes(logout), false);
 });

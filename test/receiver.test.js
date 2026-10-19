@@ -152,6 +152,8 @@ test("outgoing feedback omits the internal screenshot path while storage and cle
   assert.ok(html.includes(stored.screenshot.url));
   assert.ok(html.includes("public-source-path"));
   assert.ok(html.includes("public-image-metadata"));
+  // Without RECEIVER_TOKEN the inbox has no login, so no logout button (#170).
+  assert.equal(html.includes('action="/logout"'), false);
 
   assert.equal((await postJson(`${receiver.baseUrl}/feedback/${payload.id}/github-issue`, {})).status, 201);
   const body = github.requests[0].body.body;
