@@ -6,10 +6,8 @@ const { createInboxView } = require("../server/inbox-view.js");
 
 test("legacy fallback cards use the public serializer for their raw payload", () => {
   const { renderInbox } = createInboxView({
-    formatScreenshotStatus: (screenshot) => screenshot.status,
-    safeLinkUrl: () => "",
     GITHUB_CONFIGURED: false,
-    RECEIVER_TOKEN: ""
+    authEnabled: false
   });
   const item = {
     id: "legacy", comment: "Legacy feedback", reviewer: "Reviewer",

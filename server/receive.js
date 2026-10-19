@@ -6,9 +6,10 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-const { safeFilePart, truncateText, present, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } = require("../shared/format.js");
+const { safeFilePart, truncateText, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget } = require("../shared/format.js");
 const { createStore, FEEDBACK_STATUSES } = require("./store.js");
 const { createInboxView } = require("./inbox-view.js");
+const { mdLinkUrl, formatScreenshotStatus } = require("./render-values.js");
 const { feedbackForExport } = require("./feedback-export.js");
 const { logValue } = require("./log-value.js");
 const { normalizeUncaptured, summarizeUncaptured } = require("./uncaptured.js");
@@ -1537,10 +1538,10 @@ try {
 }
 const INBOX_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 const { renderInbox, renderLoginPage } = createInboxView({
-  formatScreenshotStatus,
-  safeLinkUrl,
   GITHUB_CONFIGURED,
-  RECEIVER_TOKEN,
+  // Whether the inbox has a login (and so a logout button); the view never
+  // sees the token itself (#170).
+  authEnabled: Boolean(RECEIVER_TOKEN),
   // The inbox splits an import file to fit these (#140).
   MAX_BODY_BYTES,
   MAX_IMPORT_ITEMS
@@ -1808,22 +1809,6 @@ function respondError(res, error, context) {
 function respondJson(res, status, body, headers) {
   res.writeHead(status, { "Content-Type": "application/json", ...headers });
   res.end(JSON.stringify(body));
-}
-
-// escapeHtml cannot stop a javascript: URL inside an href attribute; only
-// plain http(s) targets may become links. Returns "" for everything else.
-function safeLinkUrl(value) {
-  const url = String(value || "").trim();
-  return /^https?:\/\//i.test(url) ? url : "";
-}
-
-// Markdown link destinations are wrapped in <> so spaces and parentheses
-// cannot terminate the link; encode the characters that end the <> form so
-// user-controlled URLs cannot break out into raw markdown.
-function mdLinkUrl(value) {
-  const url = safeLinkUrl(value);
-  if (!url) return "";
-  return `<${url.replaceAll("<", "%3C").replaceAll(">", "%3E").replace(/\s/g, "%20")}>`;
 }
 
 async function deliverToSlack(item) {
@@ -2189,17 +2174,6 @@ function buildSlackMessage(item) {
 function screenshotUrlFor(screenshot) {
   if (!screenshot || screenshot.status !== "saved" || !screenshot.url) return "";
   return screenshot.url;
-}
-
-function formatScreenshotStatus(screenshot) {
-  if (!screenshot) return "none";
-  if (screenshot.status === "omitted" && screenshot.reason === "too-large") {
-    return `omitted: ${present(screenshot.bytes)} bytes exceeds ${present(screenshot.maxBytes)}`;
-  }
-  if (screenshot.status === "saved") {
-    return `saved (${present(screenshot.bytes)} bytes)`;
-  }
-  return screenshot.status || "unknown";
 }
 
 function isLikelyPublicHttpUrl(value) {
