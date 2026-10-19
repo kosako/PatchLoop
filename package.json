@@ -10,7 +10,7 @@
     "start": "node server/receive.js",
     "build": "node scripts/build.js",
     "lint": "eslint .",
-    "test": "node --test",
+    "test": "node --test --test-timeout=30000",
     "check": "npm run lint && node scripts/build.js --check && npm test"
   },
   "devDependencies": {
