@@ -11,6 +11,8 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # A hung test stops the job here, not at the 6-hour default (#170).
+    timeout-minutes: 10
     strategy:
       matrix:
         # Verify both the minimum supported runtime and the development runtime.
