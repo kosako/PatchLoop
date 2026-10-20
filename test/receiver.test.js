@@ -48,6 +48,93 @@ test("POST /feedback stores valid feedback and saves screenshot data URLs", asyn
   assert.equal(screenshotResponse.headers.get("content-security-policy"), "default-src 'none'; style-src 'unsafe-inline'; sandbox");
 });
 
+test("static assets and screenshots are read only from their own directory (#170)", async (t) => {
+  const receiver = await startReceiver(t);
+  const css = await fetch(`${receiver.baseUrl}/static/inbox.css`);
+  assert.equal(css.status, 200);
+  assert.equal(css.headers.get("content-type"), "text/css; charset=utf-8");
+  assert.equal(css.headers.get("cache-control"), "no-store");
+  // Only the last segment of the decoded path names the file, and it has to
+  // resolve to a file inside the directory: the directory itself, its parent
+  // and files next to it (the database) are not served.
+  // The paths go out as written: fetch would resolve the dot segments first.
+  const packageJson = await fs.readFile(path.resolve(__dirname, "../package.json"), "utf8");
+  for (const prefix of ["static", "screenshots"]) {
+    for (const name of ["..%2f..%2fpackage.json", "..%2ffeedback.db", "..%2f", "%2e%2e%2f", "%2e", ".", "", "missing.css", "inbox.css%00", "a%00b"]) {
+      const response = await rawGet(receiver.baseUrl, `/${prefix}/${name}`);
+      assert.equal(response.status, 404, `${prefix}/${name}`);
+      assert.equal(response.body, "Not Found", `${prefix}/${name}`);
+    }
+    // The router resolves dot segments before matching ("/static/.." is "/"),
+    // so these never reach the file handlers; none serves a file from outside.
+    for (const name of ["..", "%2e%2e", "../feedback.db", "../../package.json", "%2e%2e/%2e%2e/package.json"]) {
+      const response = await rawGet(receiver.baseUrl, `/${prefix}/${name}`);
+      assert.equal(response.body.includes(packageJson), false, `${prefix}/${name}`);
+      assert.equal(response.body.startsWith("SQLite format 3"), false, `${prefix}/${name}`);
+    }
+    const invalid = await rawGet(receiver.baseUrl, `/${prefix}/%E0%A4%A`);
+    assert.equal(invalid.status, 400, `${prefix} with a broken percent-encoding`);
+  }
+});
+
+// A GET whose path is sent byte for byte, without the URL normalization fetch
+// applies.
+function rawGet(baseUrl, requestPath) {
+  const { hostname, port } = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    const request = http.get({ hostname, port, path: requestPath }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { body += chunk; });
+      response.on("end", () => resolve({ status: response.statusCode, body }));
+    });
+    request.on("error", reject);
+  });
+}
+
+test("deleting a feedback removes only a screenshot file inside the screenshot directory (#170)", async (t) => {
+  const receiver = await startReceiver(t);
+  const outside = path.join(receiver.tempDir, "outside.svg");
+  await fs.writeFile(outside, testSvg());
+  const tamper = (id, screenshotPath) => {
+    const db = new DatabaseSync(receiver.dbPath);
+    try {
+      const row = db.prepare("SELECT data FROM feedback WHERE id = ?").get(id);
+      const data = JSON.parse(row.data);
+      data.screenshot.path = screenshotPath;
+      db.prepare("UPDATE feedback SET data = ? WHERE id = ?").run(JSON.stringify(data), id);
+    } finally {
+      db.close();
+    }
+  };
+  // A stored path pointing outside the directory, or at the directory itself,
+  // is left alone; the feedback is still deleted.
+  const tampered = [
+    ["pl_tampered_outside", outside],
+    ["pl_tampered_root", receiver.screenshotDir],
+    // Kept as written: path.join would resolve the "..".
+    ["pl_tampered_parent", [receiver.screenshotDir, "..", "outside.svg"].join(path.sep)],
+    ["pl_tampered_nul", path.join(receiver.screenshotDir, "a\0b.svg")]
+  ];
+  for (const [id, screenshotPath] of tampered) {
+    assert.equal((await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload(id))).status, 201);
+    tamper(id, screenshotPath);
+    const removed = await fetch(`${receiver.baseUrl}/feedback/${id}`, { method: "DELETE" });
+    assert.equal(removed.status, 200, id);
+    assert.equal(await fs.readFile(outside, "utf8"), testSvg(), id);
+    assert.equal((await fs.stat(receiver.screenshotDir)).isDirectory(), true, id);
+  }
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.equal(stored.length, 0);
+  // Four screenshots were written; the tampered rows leave theirs behind.
+  assert.equal((await fs.readdir(receiver.screenshotDir)).length, 4);
+  // A path inside the directory is removed as before.
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload("pl_untampered"))).status, 201);
+  assert.equal((await fs.readdir(receiver.screenshotDir)).length, 5);
+  assert.equal((await fetch(`${receiver.baseUrl}/feedback/pl_untampered`, { method: "DELETE" })).status, 200);
+  assert.equal((await fs.readdir(receiver.screenshotDir)).length, 4);
+});
+
 test("POST /feedback and POST /import keep a feedback whose screenshot.uncaptured is malformed (#148)", async (t) => {
   const receiver = await startReceiver(t);
   const region = { kind: "shadow-host", tag: "nextjs-portal", relation: "covers-target", rects: [{ x: 20, y: 869, width: 40, height: 40 }] };
