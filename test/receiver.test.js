@@ -12,6 +12,8 @@ const path = require("node:path");
 const test = require("node:test");
 const { DatabaseSync } = require("node:sqlite");
 const { PAYLOAD_SCHEMA_VERSION, EXPORT_BUNDLE_VERSION } = require("../shared/versions.js");
+const { EXPORT_BUNDLE_KIND, SOURCE_CONTEXT_KEYS, TARGET_KINDS } = require("../shared/contract.js");
+const { widgetHarness } = require("../test-support/widget-dom.js");
 
 const RECEIVER_PATH = path.resolve(__dirname, "../server/receive.js");
 
@@ -543,6 +545,47 @@ test("POST /feedback validates the sourceContext shape", async (t) => {
   assert.match(fieldResponse.body.error, /feedback\.sourceContext\.commit must be a string/);
 
   assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+});
+
+test("POST /feedback checks each sourceContext field and target kind the widget writes (#170)", async (t) => {
+  const receiver = await startReceiver(t);
+  for (const key of SOURCE_CONTEXT_KEYS) {
+    const payload = feedbackPayload(`pl_source_context_${key}`);
+    payload.sourceContext = { [key]: 1 };
+    const response = await postJson(`${receiver.baseUrl}/feedback`, payload);
+    assert.equal(response.status, 400);
+    assert.equal(response.body.error, `feedback.sourceContext.${key} must be a string`);
+  }
+  for (const kind of TARGET_KINDS) {
+    const payload = feedbackPayload(`pl_target_${kind}`);
+    payload.target.kind = kind;
+    assert.equal((await postJson(`${receiver.baseUrl}/feedback`, payload)).status, 201);
+  }
+  const line = feedbackPayload("pl_target_line");
+  line.target.kind = "line";
+  const rejected = await postJson(`${receiver.baseUrl}/feedback`, line);
+  assert.equal(rejected.status, 400);
+  assert.equal(rejected.body.error, "feedback.target.kind must be point or area");
+  assert.equal((await readStoredFeedback(receiver.dbPath)).map((item) => item.target.kind).sort().join(","), [...TARGET_KINDS].sort().join(","));
+});
+
+test("a file the widget exports is imported by the receiver as it is (#170)", async (t) => {
+  const sourceContext = Object.fromEntries(SOURCE_CONTEXT_KEYS.map((key) => [key, `https://source.example/${key}`]));
+  const w = widgetHarness();
+  w.init({ deliveryMode: "download", projectId: "patchloop", demoId: "export", sourceContext });
+  await w.submit("A point");
+  await w.submit("An area", { area: true });
+  w.document.querySelector("[data-pl-download-all]").click();
+  const bundle = JSON.parse(await w.downloads[0].blob.text());
+  assert.equal(`${bundle.kind} v${bundle.version}`, `${EXPORT_BUNDLE_KIND} v${EXPORT_BUNDLE_VERSION}`);
+
+  const receiver = await startReceiver(t);
+  const response = await postJson(`${receiver.baseUrl}/import`, bundle);
+  assert.equal(response.status, 201);
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.equal(stored.map((item) => `${item.comment}:${item.target.kind}`).sort().join(","), "A point:point,An area:area");
+  // Every sourceContext field the widget fills reaches the receiver.
+  stored.forEach((item) => assert.equal(Object.keys(item.sourceContext).sort().join(","), [...SOURCE_CONTEXT_KEYS].sort().join(",")));
 });
 
 test("POST /feedback stores a revision as its own comment, keeping the one it replaces, and checks replaces (#121)", async (t) => {

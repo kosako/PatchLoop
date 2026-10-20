@@ -6,6 +6,7 @@ const { feedbackForExport } = require("./feedback-export.js");
 const { summarizeUncaptured } = require("./uncaptured.js");
 const { safeLinkUrl, formatScreenshotStatus } = require("./render-values.js");
 const { PAYLOAD_SCHEMA_VERSION } = require("../shared/versions.js");
+const { TARGET_KINDS } = require("../shared/contract.js");
 
 const KIND_LABELS = { point: "ポイント", area: "範囲" };
 const UNCAPTURED_RELATION_LABELS = { "covers-target": "指摘箇所の最前面", "overlaps-target": "指摘箇所に重なる" };
@@ -217,7 +218,7 @@ function createInboxView(deps) {
     </div>
     <div class="filter-footer">
     <details class="advanced-filters"><summary>詳細な絞り込み</summary><div class="advanced-fields">
-      <label>種類<select data-filter-key="kind" aria-label="指摘の種類で絞り込み">${optionList(["point", "area"], "すべて", KIND_LABELS)}</select></label>
+      <label>種類<select data-filter-key="kind" aria-label="指摘の種類で絞り込み">${optionList(TARGET_KINDS, "すべて", KIND_LABELS)}</select></label>
       <label>デモ<select data-filter-key="demo" aria-label="デモで絞り込み">${optionList(demos, "すべて")}</select></label>
       <label>投稿者<select data-filter-key="reviewer" aria-label="投稿者で絞り込み">${optionList(reviewers, "すべて")}</select></label>
       <label>受信元<select data-filter-key="source" aria-label="受信元で絞り込み">${optionList(sources, "すべて")}</select></label>

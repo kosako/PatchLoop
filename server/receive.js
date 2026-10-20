@@ -15,6 +15,7 @@ const { feedbackForExport } = require("./feedback-export.js");
 const { logValue } = require("./log-value.js");
 const { normalizeUncaptured, summarizeUncaptured } = require("./uncaptured.js");
 const { toWireFeedback } = require("../shared/local-only.js");
+const { EXPORT_BUNDLE_KIND, SOURCE_CONTEXT_KEYS, TARGET_KINDS } = require("../shared/contract.js");
 
 const CONFIG_PATH = process.env.PATCHLOOP_RECEIVER_CONFIG || path.join(__dirname, "receiver.config.json");
 const config = loadConfig(CONFIG_PATH);
@@ -122,7 +123,6 @@ const INGEST_KEY_HEADER = "x-patchloop-ingest-key";
 const SESSION_COOKIE_NAME = "patchloop_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const SESSION_COOKIE_SECURE = PUBLIC_BASE_URL.startsWith("https://");
-const IMPORT_BUNDLE_KIND = "patchloop-feedback-bundle";
 // v1 wrapped a single feedback object; v2 carries an array (batch export).
 // Both are accepted so files exported before the batch-download switch still
 // import.
@@ -1244,7 +1244,7 @@ function normalizeImportedBundle(body) {
   requirePlainObject(body, "Import body");
 
   let feedback;
-  if (body.kind === IMPORT_BUNDLE_KIND) {
+  if (body.kind === EXPORT_BUNDLE_KIND) {
     if (!SUPPORTED_IMPORT_BUNDLE_VERSIONS.has(body.version)) {
       // A later version is a file from a newer widget: say what to do (#126).
       const newest = Math.max(...SUPPORTED_IMPORT_BUNDLE_VERSIONS);
@@ -1394,15 +1394,15 @@ function validateFeedbackPayload(payload) {
   // on the shape without re-validating.
   if (payload.sourceContext != null) {
     requirePlainObject(payload.sourceContext, "feedback.sourceContext");
-    for (const field of ["repo", "branch", "commit", "root", "buildUrl", "previewUrl"]) {
+    for (const field of SOURCE_CONTEXT_KEYS) {
       if (payload.sourceContext[field] != null) {
         requireString(payload.sourceContext[field], `feedback.sourceContext.${field}`);
       }
     }
   }
 
-  if (!["point", "area"].includes(payload.target.kind)) {
-    throw httpError("feedback.target.kind must be point or area", 400);
+  if (!TARGET_KINDS.includes(payload.target.kind)) {
+    throw httpError(`feedback.target.kind must be ${TARGET_KINDS.join(" or ")}`, 400);
   }
   if (payload.target.selector != null) requireString(payload.target.selector, "feedback.target.selector");
   if (payload.target.text != null) requireString(payload.target.text, "feedback.target.text");
