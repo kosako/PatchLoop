@@ -930,13 +930,15 @@ async function computeScreenshotDirBytes() {
 // Removes a feedback's stored screenshot file. Deletion removes the file
 // before the row so a failed cleanup can be retried, and a failed insert uses
 // it to drop the file it just wrote. Confined to SCREENSHOT_DIR so a tampered
-// stored path cannot delete arbitrary files; a missing file is ignored.
+// stored path cannot delete arbitrary files (nor the directory itself); a
+// missing file is ignored. The stored path was written from SCREENSHOT_DIR,
+// which may be relative, so it is resolved from the working directory as it
+// was written, not from SCREENSHOT_DIR.
 async function deleteScreenshotFile(screenshot) {
   const storedPath = screenshot && screenshot.path;
   if (!storedPath) return;
-  const resolved = path.resolve(storedPath);
-  const root = path.resolve(SCREENSHOT_DIR);
-  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return;
+  const resolved = resolveInside(SCREENSHOT_DIR, path.resolve(storedPath));
+  if (!resolved) return;
   try {
     const stat = await fs.promises.stat(resolved);
     await fs.promises.unlink(resolved);
@@ -1617,80 +1619,85 @@ function handleGetWidgetScript(req, res) {
 }
 
 function handleGetStaticAsset(req, res) {
-  let filename;
-  try {
-    const url = new URL(req.url, "http://localhost");
-    filename = path.basename(decodeURIComponent(url.pathname));
-  } catch (_) {
+  const filename = requestFileName(req);
+  if (filename === null) {
     res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Invalid asset path");
     return;
   }
-
-  const assetPath = path.resolve(STATIC_DIR, filename);
-  const staticRoot = path.resolve(STATIC_DIR);
-  if (!assetPath.startsWith(`${staticRoot}${path.sep}`)) {
-    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-    res.end("Not Found");
-    return;
-  }
-
-  fs.readFile(assetPath, (error, buffer) => {
-    if (error) {
-      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("Not Found");
-      return;
-    }
-    res.writeHead(200, {
-      "Content-Type": contentTypeForPath(assetPath),
-      "Cache-Control": "no-store"
-    });
-    res.end(buffer);
-  });
+  serveFile(res, STATIC_DIR, filename);
 }
 
 function handleGetScreenshot(req, res) {
-  let filename;
-  try {
-    const url = new URL(req.url, "http://localhost");
-    filename = path.basename(decodeURIComponent(url.pathname));
-  } catch (_) {
+  const filename = requestFileName(req);
+  if (filename === null) {
     res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Invalid screenshot path");
     return;
   }
+  serveFile(res, SCREENSHOT_DIR, filename, {
+    // Screenshots are attacker-controlled: an SVG can carry <script> or
+    // onload. These headers neutralize the stored-XSS vector when the file is
+    // opened as a top-level document (e.g. the inbox's target=_blank link or
+    // a direct URL). nosniff stops MIME confusion; the CSP sandbox blocks
+    // script execution and default-src 'none' blocks all resource loads.
+    // Inline styles are allowed: the snapshot carries the page's CSS in a
+    // <style> element and style attributes, and without them a top-level
+    // open drew the page unstyled while the marks stayed put (#180). CSS
+    // runs no script, and with every load still blocked it cannot fetch
+    // (no url(), @import or web font).
+    // Inline <img> rendering in the inbox is unaffected — CSP on an image
+    // subresource is not applied to its rendering.
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+  });
+}
 
-  const screenshotPath = path.resolve(SCREENSHOT_DIR, filename);
-  const screenshotRoot = path.resolve(SCREENSHOT_DIR);
-  if (!screenshotPath.startsWith(`${screenshotRoot}${path.sep}`)) {
+// The file a GET under /static/ or /screenshots/ names: the last segment of
+// its decoded path, or null when the path is not valid percent-encoding.
+function requestFileName(req) {
+  try {
+    return path.basename(decodeURIComponent(new URL(req.url, "http://localhost").pathname));
+  } catch (_) {
+    return null;
+  }
+}
+
+// The path of `name` inside the directory `root`, or null when it resolves to
+// root itself or outside it, or holds a NUL (fs throws on it rather than
+// failing the call). Serving /static/ and /screenshots/ and deleting a stored
+// screenshot all check with this one function (#170); saveScreenshot builds
+// its file name from safe characters only.
+function resolveInside(root, name) {
+  if (name.includes("\0")) return null;
+  const base = path.resolve(root);
+  const resolved = path.resolve(base, name);
+  const relative = path.relative(base, resolved);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+  return resolved;
+}
+
+// Sends the file `name` from the directory `root` with `headers`, or 404 when
+// it is not inside root or cannot be read.
+function serveFile(res, root, name, headers = {}) {
+  const filePath = resolveInside(root, name);
+  const notFound = () => {
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
     res.end("Not Found");
+  };
+  if (!filePath) {
+    notFound();
     return;
   }
-
-  fs.readFile(screenshotPath, (error, buffer) => {
+  fs.readFile(filePath, (error, buffer) => {
     if (error) {
-      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("Not Found");
+      notFound();
       return;
     }
     res.writeHead(200, {
-      "Content-Type": contentTypeForPath(screenshotPath),
+      "Content-Type": contentTypeForPath(filePath),
       "Cache-Control": "no-store",
-      // Screenshots are attacker-controlled: an SVG can carry <script> or
-      // onload. These headers neutralize the stored-XSS vector when the file is
-      // opened as a top-level document (e.g. the inbox's target=_blank link or
-      // a direct URL). nosniff stops MIME confusion; the CSP sandbox blocks
-      // script execution and default-src 'none' blocks all resource loads.
-      // Inline styles are allowed: the snapshot carries the page's CSS in a
-      // <style> element and style attributes, and without them a top-level
-      // open drew the page unstyled while the marks stayed put (#180). CSS
-      // runs no script, and with every load still blocked it cannot fetch
-      // (no url(), @import or web font).
-      // Inline <img> rendering in the inbox is unaffected — CSP on an image
-      // subresource is not applied to its rendering.
-      "X-Content-Type-Options": "nosniff",
-      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+      ...headers
     });
     res.end(buffer);
   });
