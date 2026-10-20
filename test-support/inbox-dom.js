@@ -64,15 +64,12 @@ function textNode(value) {
 }
 
 // renderInbox() deps as the receiver passes them; only the GitHub connection
-// changes which actions a card renders. The view only checks whether a
-// receiver token is set (to render the logout form), so no token value is
-// needed.
+// changes which actions a card renders. Login is on, as on a receiver with a
+// token, so the page has its logout form.
 function renderInbox(items, { githubConfigured = true, maxBodyBytes = 3_000_000, maxImportItems = 500 } = {}) {
   return createInboxView({
-    formatScreenshotStatus: (screenshot) => screenshot.status,
-    safeLinkUrl: (value) => /^https?:\/\//i.test(String(value || "").trim()) ? String(value).trim() : "",
     GITHUB_CONFIGURED: githubConfigured,
-    RECEIVER_TOKEN: true,
+    authEnabled: true,
     MAX_BODY_BYTES: maxBodyBytes,
     MAX_IMPORT_ITEMS: maxImportItems
   }).renderInbox(items);

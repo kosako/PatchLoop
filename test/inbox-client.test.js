@@ -467,3 +467,8 @@ test("card dates are redrawn in the browser's time zone, without the receiver's 
   assert.equal(dateOf(tokyo, "none").textContent, "日時不明");
   assert.equal(dateOf(tokyo, "odd").textContent, "not a date");
 });
+
+test("the tests run on the inbox of a receiver with a login, logout form and all (#170)", () => {
+  const ui = inboxHarness([feedback("one")]);
+  assert.equal(ui.all('form[action="/logout"]').length, 1);
+});
