@@ -580,6 +580,12 @@ test("a file the widget exports is imported by the receiver as it is (#170)", as
   assert.equal(`${bundle.kind} v${bundle.version}`, `${EXPORT_BUNDLE_KIND} v${EXPORT_BUNDLE_VERSION}`);
 
   const receiver = await startReceiver(t);
+  // The receiver reads it as a bundle of that kind: one of a later version is
+  // refused, where a receiver that did not know the kind would read its
+  // feedback as a bare list.
+  const later = await postJson(`${receiver.baseUrl}/import`, { ...bundle, version: EXPORT_BUNDLE_VERSION + 1 });
+  assert.equal(later.status, 400);
+  assert.equal(later.body.error, `Unsupported PatchLoop bundle version: ${EXPORT_BUNDLE_VERSION + 1}. This receiver reads versions up to ${EXPORT_BUNDLE_VERSION}; update the receiver to import this file`);
   const response = await postJson(`${receiver.baseUrl}/import`, bundle);
   assert.equal(response.status, 201);
   const stored = await readStoredFeedback(receiver.dbPath);
