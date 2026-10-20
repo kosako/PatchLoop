@@ -34,7 +34,7 @@ npm test
 npm run check
 ```
 
-`npm test` は Node.js の test runner でローカル receiver を一時ポートに起動し、`/feedback` と `/import` の保存・検証・screenshot 処理を確認します。テストデータは OS の一時ディレクトリに作られ、終了時に削除されます。1 件の test が 30 秒を超えると、その test は失敗として打ち切られます (`--test-timeout`)。
+`npm test` は Node.js の test runner で `test/` の test をすべて実行します。receiver の test はローカル receiver を一時ポートに起動し、`/feedback` と `/import` の保存・検証・screenshot 処理を確認します。ほかに widget、受信箱、保存 (store)、`shared/` の共通の処理、build script の test があります。widget の test は `widget/src/` からその場で組み立てた bundle を動かすので、widget を変えたあと `npm run build` をしなくても今のソースを確かめます。commit した `dist/` がソースと合っているかは `npm run check` が確かめます (下記)。テストデータは OS の一時ディレクトリに作られ、終了時に削除されます。1 件の test が 30 秒を超えると、その test は失敗として打ち切られます (`--test-timeout`)。
 
 main への push と pull request 時には GitHub Actions（`.github/workflows/check.yml`）が同じ `npm run check` を自動実行します。job は 10 分を超えると止まります。
 

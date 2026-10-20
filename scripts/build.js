@@ -8,6 +8,8 @@
 //
 //   node scripts/build.js          build dist/patchloop-widget.js
 //   node scripts/build.js --check  fail if dist is stale (used by npm run check)
+//   require("./build.js").build()  the bundle, without writing it (the widget
+//                                  tests run it, #170)
 
 const fs = require("fs");
 const path = require("path");
@@ -21,9 +23,15 @@ const EXPORT_DECL_RE = /^export\s+(?:async\s+)?(?:function|class)\s+([A-Za-z_$][
 const EXPORT_VAR_RE = /^export\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)/;
 const EXPORT_LIST_RE = /^export\s*\{([^}]*)\}\s*;?\s*$/;
 
+// What in the source the bundler cannot read, or a stale dist. It is thrown
+// rather than exiting, so the tests that build the widget in memory get it as
+// an error; run from the command line, it is printed as before.
+class BuildError extends Error {
+  name = "BuildError";
+}
+
 function fail(message) {
-  console.error(`[build] ${message}`);
-  process.exit(1);
+  throw new BuildError(message);
 }
 
 function moduleVarName(relativePath) {
@@ -198,4 +206,14 @@ function main() {
   console.log(`[build] wrote ${path.relative(ROOT, DIST_PATH)} (${output.length} bytes)`);
 }
 
-main();
+if (require.main === module) {
+  try {
+    main();
+  } catch (error) {
+    if (!(error instanceof BuildError)) throw error;
+    console.error(`[build] ${error.message}`);
+    process.exit(1);
+  }
+}
+
+module.exports = { build };
