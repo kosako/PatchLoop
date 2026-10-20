@@ -13,9 +13,9 @@ import { canRetry, deliveryBadge, deliveryFailed, deliveryStatusText, hasLeftDev
 import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadLauncher, saveLauncher, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } from "./persistence.js";
 import { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, formatCount, FEEDBACK_STATUS_LABELS } from "../../shared/format.js";
 import { EXPORT_BUNDLE_VERSION } from "../../shared/versions.js";
+import { EXPORT_BUNDLE_KIND } from "../../shared/contract.js";
 import { toWireFeedback } from "../../shared/local-only.js";
 
-const EXPORT_KIND = "patchloop-feedback-bundle";
 // The receiver's answer is awaited this long. A delivery another tab of the
 // page started is taken as cut off only once it and a margin are over (#139).
 const FETCH_TIMEOUT_MS = 15000;
@@ -1073,7 +1073,7 @@ function downloadFeedbackItems(listed, pages = []) {
 
 function buildFeedbackBundle(feedbackList, exportedAt) {
   return {
-    kind: EXPORT_KIND,
+    kind: EXPORT_BUNDLE_KIND,
     version: EXPORT_BUNDLE_VERSION,
     exportedAt,
     projectId: state.options.projectId || "",

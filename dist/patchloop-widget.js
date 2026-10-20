@@ -217,15 +217,18 @@ function textFor(element) {
 
 return { cssEscape, selectorFor, textFor };
 })();
-// --- widget/src/source-context.js ---
-const __pl_widget_src_source_context = (() => {
-// Resolves the payload's sourceContext (#96): which repo/branch/commit the
-// reviewed page was built from, so a coding agent can map feedback selectors
-// back to source. The init option is the source of truth — the embedding side
-// injects real values at build/deploy time. Meta tags are the fallback for
-// hosts that can only stamp static HTML. The receiver's config is deliberately
-// not a source: one receiver serves payloads from many previews, so a
-// per-process value cannot be correct across projects.
+// --- shared/contract.js ---
+const __pl_shared_contract = (() => {
+// The names in what the widget writes, shared with the receiver so that both
+// sides of a release read the same ones (#170). Their versions are in
+// versions.js; the compatibility rules are in the README ("互換性" /
+// "Compatibility").
+
+// The kind of the export bundle (the downloaded JSON file).
+const EXPORT_BUNDLE_KIND = "patchloop-feedback-bundle";
+
+// The sourceContext block (#96): each field, and the meta tag the widget reads
+// it from when the init option does not give it.
 const SOURCE_CONTEXT_FIELDS = [
   { key: "repo", metaName: "patchloop:repo" },
   { key: "branch", metaName: "patchloop:branch" },
@@ -234,6 +237,25 @@ const SOURCE_CONTEXT_FIELDS = [
   { key: "buildUrl", metaName: "patchloop:build-url" },
   { key: "previewUrl", metaName: "patchloop:preview-url" }
 ];
+const SOURCE_CONTEXT_KEYS = SOURCE_CONTEXT_FIELDS.map(({ key }) => key);
+
+// What a comment points at: a point, or an area.
+const TARGET_KINDS = ["point", "area"];
+
+return { EXPORT_BUNDLE_KIND, SOURCE_CONTEXT_FIELDS, SOURCE_CONTEXT_KEYS, TARGET_KINDS };
+})();
+// --- widget/src/source-context.js ---
+const __pl_widget_src_source_context = (() => {
+const { SOURCE_CONTEXT_FIELDS } = __pl_shared_contract;
+
+// Resolves the payload's sourceContext (#96): which repo/branch/commit the
+// reviewed page was built from, so a coding agent can map feedback selectors
+// back to source. The init option is the source of truth — the embedding side
+// injects real values at build/deploy time. Meta tags are the fallback for
+// hosts that can only stamp static HTML. The receiver's config is deliberately
+// not a source: one receiver serves payloads from many previews, so a
+// per-process value cannot be correct across projects. The fields and their
+// meta tags are shared with the receiver (SOURCE_CONTEXT_FIELDS).
 
 function resolveSourceContext(configured, doc) {
   const options = configured && typeof configured === "object" ? configured : {};
@@ -2230,9 +2252,9 @@ const { canRetry, deliveryBadge, deliveryFailed, deliveryStatusText, hasLeftDevi
 const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadLauncher, saveLauncher, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } = __pl_widget_src_persistence;
 const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, formatCount, FEEDBACK_STATUS_LABELS } = __pl_shared_format;
 const { EXPORT_BUNDLE_VERSION } = __pl_shared_versions;
+const { EXPORT_BUNDLE_KIND } = __pl_shared_contract;
 const { toWireFeedback } = __pl_shared_local_only;
 
-const EXPORT_KIND = "patchloop-feedback-bundle";
 // The receiver's answer is awaited this long. A delivery another tab of the
 // page started is taken as cut off only once it and a margin are over (#139).
 const FETCH_TIMEOUT_MS = 15000;
@@ -3290,7 +3312,7 @@ function downloadFeedbackItems(listed, pages = []) {
 
 function buildFeedbackBundle(feedbackList, exportedAt) {
   return {
-    kind: EXPORT_KIND,
+    kind: EXPORT_BUNDLE_KIND,
     version: EXPORT_BUNDLE_VERSION,
     exportedAt,
     projectId: state.options.projectId || "",

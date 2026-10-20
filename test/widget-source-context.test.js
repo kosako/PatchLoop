@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { resolveSourceContext } = require("../widget/src/source-context.js");
+const { SOURCE_CONTEXT_FIELDS, SOURCE_CONTEXT_KEYS } = require("../shared/contract.js");
 
 // Minimal document stand-in: resolveSourceContext only touches
 // querySelector(`meta[name="..."]`) and the matched node's content.
@@ -64,6 +65,17 @@ test("resolveSourceContext fills missing fields from meta tags per field", () =>
     commit: "def5678",
     buildUrl: "https://ci.example/build/2"
   });
+});
+
+test("the sourceContext fields and their meta tags are the ones the README lists (#170)", () => {
+  assert.equal(SOURCE_CONTEXT_FIELDS.map(({ key, metaName }) => `${key}=${metaName}`).join(","),
+    "repo=patchloop:repo,branch=patchloop:branch,commit=patchloop:commit,root=patchloop:root,buildUrl=patchloop:build-url,previewUrl=patchloop:preview-url");
+});
+
+test("resolveSourceContext reads each field the receiver checks from its meta tag (#170)", () => {
+  const doc = docWithMeta(Object.fromEntries(SOURCE_CONTEXT_FIELDS.map(({ key, metaName }) => [metaName, `meta-${key}`])));
+  const context = resolveSourceContext(null, doc);
+  assert.equal(SOURCE_CONTEXT_KEYS.map((key) => context[key]).join(","), SOURCE_CONTEXT_KEYS.map((key) => `meta-${key}`).join(","));
 });
 
 test("resolveSourceContext treats blank strings as absent", () => {

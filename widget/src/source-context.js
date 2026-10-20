@@ -1,18 +1,13 @@
+import { SOURCE_CONTEXT_FIELDS } from "../../shared/contract.js";
+
 // Resolves the payload's sourceContext (#96): which repo/branch/commit the
 // reviewed page was built from, so a coding agent can map feedback selectors
 // back to source. The init option is the source of truth — the embedding side
 // injects real values at build/deploy time. Meta tags are the fallback for
 // hosts that can only stamp static HTML. The receiver's config is deliberately
 // not a source: one receiver serves payloads from many previews, so a
-// per-process value cannot be correct across projects.
-const SOURCE_CONTEXT_FIELDS = [
-  { key: "repo", metaName: "patchloop:repo" },
-  { key: "branch", metaName: "patchloop:branch" },
-  { key: "commit", metaName: "patchloop:commit" },
-  { key: "root", metaName: "patchloop:root" },
-  { key: "buildUrl", metaName: "patchloop:build-url" },
-  { key: "previewUrl", metaName: "patchloop:preview-url" }
-];
+// per-process value cannot be correct across projects. The fields and their
+// meta tags are shared with the receiver (SOURCE_CONTEXT_FIELDS).
 
 export function resolveSourceContext(configured, doc) {
   const options = configured && typeof configured === "object" ? configured : {};

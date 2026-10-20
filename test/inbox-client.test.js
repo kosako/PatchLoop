@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const util = require("node:util");
 const test = require("node:test");
 const { script, renderInbox, parseDocument, inboxHarness, withTimeZone } = require("../test-support/inbox-dom.js");
+const { TARGET_KINDS } = require("../shared/contract.js");
 
 function feedback(id, extra = {}) {
   return { id, status: "new", comment: `Comment ${id}`, reviewer: "Reviewer", target: { kind: "point" }, page: {}, environment: {}, ...extra };
@@ -221,6 +222,12 @@ test("status badges count every card by its rendered status, whatever the filter
   await ui.change(ui.get('[data-filter-key="kind"]'), "area");
   assert.equal(ui.get("[data-filter-count]").textContent, "0 / 5 件");
   assert.deepEqual(badges(ui.document), expected);
+});
+
+test("the kind filter offers each kind the receiver accepts, by its label (#170)", () => {
+  const options = parseDocument(renderInbox([feedback("a")])).querySelector('[data-filter-key="kind"]').querySelectorAll("option");
+  assert.equal(options.map((option) => option.getAttribute("value")).join(","), ["", ...TARGET_KINDS].join(","));
+  assert.equal(options.map((option) => option.textContent).join(","), "すべて,ポイント,範囲");
 });
 
 test("detail filters combine with each other on the rendered card attributes", async () => {
