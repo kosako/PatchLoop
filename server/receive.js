@@ -1435,17 +1435,26 @@ function validateNumericObject(value, label, fields) {
 // Validates the screenshot's data URL / mime / size without writing a file, so
 // a batch import can reject every bad item up front (preserving the all-or-
 // nothing guarantee) instead of failing mid-write after some inserts landed.
-// Mirrors the checks saveScreenshot performs before persisting.
+// saveScreenshot writes the screenshots this accepts, decoded the same way.
 function validateScreenshotContent(screenshot) {
   if (screenshot.status && screenshot.status !== "captured") return;
   if (!screenshot.dataUrl) return;
-  const parsed = parseDataUrl(screenshot.dataUrl);
-  if (!extensionForMimeType(parsed.mimeType)) {
+  decodeScreenshot(screenshot.dataUrl);
+}
+
+// The image in a screenshot's data URL and the file extension for its mime
+// type, once it passes the checks a screenshot has to pass both to be accepted
+// and to be written (#170).
+function decodeScreenshot(dataUrl) {
+  const parsed = parseDataUrl(dataUrl);
+  const extension = extensionForMimeType(parsed.mimeType);
+  if (!extension) {
     throw httpError(`Unsupported screenshot mime type: ${parsed.mimeType}`, 400);
   }
   if (parsed.buffer.length > SCREENSHOT_MAX_BYTES) {
     throw httpError(`Screenshot too large: ${parsed.buffer.length} bytes exceeds ${SCREENSHOT_MAX_BYTES}`, 413);
   }
+  return { ...parsed, extension };
 }
 
 function requirePlainObject(value, label) {
@@ -1706,39 +1715,31 @@ function saveScreenshot(screenshot, id) {
     return { ...metadata, status: "missing" };
   }
 
-  const parsed = parseDataUrl(screenshot.dataUrl);
-  const extension = extensionForMimeType(parsed.mimeType);
-  if (!extension) {
-    throw httpError(`Unsupported screenshot mime type: ${parsed.mimeType}`, 400);
-  }
-
-  if (parsed.buffer.length > SCREENSHOT_MAX_BYTES) {
-    throw httpError(`Screenshot too large: ${parsed.buffer.length} bytes exceeds ${SCREENSHOT_MAX_BYTES}`, 413);
-  }
+  const image = decodeScreenshot(screenshot.dataUrl);
 
   // Stop before writing once the screenshot directory would exceed its cap. The
   // running total is kept in sync below and in deleteScreenshotFile; 507 signals
   // the store, not the request, is out of room. The check and the increment run
   // synchronously around the write, so concurrent requests can't both slip past.
-  if (screenshotBytesUsed + parsed.buffer.length > SCREENSHOT_DISK_MAX_BYTES) {
+  if (screenshotBytesUsed + image.buffer.length > SCREENSHOT_DISK_MAX_BYTES) {
     throw httpError(`Screenshot storage limit reached (${SCREENSHOT_DISK_MAX_BYTES} bytes)`, 507);
   }
 
   fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
   const random = crypto.randomUUID().slice(0, 8);
-  const fileName = `${safeFilePart(id || "feedback")}-${Date.now()}-${random}.${extension}`;
+  const fileName = `${safeFilePart(id || "feedback")}-${Date.now()}-${random}.${image.extension}`;
   const filePath = path.join(SCREENSHOT_DIR, fileName);
-  fs.writeFileSync(filePath, parsed.buffer);
-  screenshotBytesUsed += parsed.buffer.length;
+  fs.writeFileSync(filePath, image.buffer);
+  screenshotBytesUsed += image.buffer.length;
 
   return {
     ...metadata,
     status: "saved",
-    mimeType: parsed.mimeType,
+    mimeType: image.mimeType,
     fileName,
     path: filePath,
     url: `${PUBLIC_BASE_URL}/screenshots/${encodeURIComponent(fileName)}`,
-    bytes: parsed.buffer.length
+    bytes: image.buffer.length
   };
 }
 
