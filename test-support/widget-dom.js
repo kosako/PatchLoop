@@ -1,10 +1,13 @@
 "use strict";
 
-const fs = require("node:fs");
-const path = require("node:path");
 const vm = require("node:vm");
+const { build } = require("../scripts/build.js");
 
-const bundle = fs.readFileSync(path.join(__dirname, "../dist/patchloop-widget.js"), "utf8");
+// The bundle is built from widget/src in memory, so npm test runs the widget as
+// its source is now, without npm run build (#170). npm run check also checks
+// that the committed dist is this same build (build --check), so there the
+// bundle these tests run is the one that ships.
+const bundle = build();
 
 // Markup assigned through innerHTML is parsed into elements, so the hooks the
 // tests reach (data-* attributes, hidden/checked/disabled/selected, value)

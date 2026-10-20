@@ -34,7 +34,7 @@ npm test
 npm run check
 ```
 
-`npm test` uses the Node.js test runner to start the local receiver on a temporary port and verify `/feedback` and `/import` storage, validation, and screenshot handling. Test data is created under the OS temp directory and removed after each test. A test that runs longer than 30 seconds fails and is stopped (`--test-timeout`).
+`npm test` uses the Node.js test runner to run every test under `test/`. The receiver tests start the local receiver on a temporary port and verify `/feedback` and `/import` storage, validation, and screenshot handling; the others cover the widget, the inbox, the store, the shared code under `shared/`, and the build script. The widget tests run a bundle built from `widget/src/` in memory, so they check the source as it is without `npm run build`; `npm run check` checks that the committed `dist/` matches the source (below). Test data is created under the OS temp directory and removed after each test. A test that runs longer than 30 seconds fails and is stopped (`--test-timeout`).
 
 GitHub Actions (`.github/workflows/check.yml`) runs the same `npm run check` on pushes to `main` and on every pull request. The job stops if it runs longer than 10 minutes.
 
