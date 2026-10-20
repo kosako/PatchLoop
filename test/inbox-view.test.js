@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const { createInboxView } = require("../server/inbox-view.js");
+const { withTimeZone } = require("../test-support/inbox-dom.js");
 
 const { renderInbox } = createInboxView({
   GITHUB_CONFIGURED: true,
@@ -146,4 +147,13 @@ test("the logout button shows only when the inbox has a login (#170)", () => {
   assert.equal(renderInbox([feedback()]).includes(logout), true);
   const withoutLogin = createInboxView({ GITHUB_CONFIGURED: true, authEnabled: false }).renderInbox([feedback()]);
   assert.equal(withoutLogin.includes(logout), false);
+});
+
+test("a card's date names the receiver's time zone, which need not be the reader's (#158)", () => {
+  const at = "2026-10-09T20:00:00.000Z";
+  const dateIn = (timeZone) => withTimeZone(timeZone, () => renderInbox([feedback({ receivedAt: at })])).match(/<time\b[^>]*>[^<]*<\/time>/)[0];
+  assert.equal(dateIn("UTC"), `<time datetime="${at}" title="${at}" data-local-date>10月9日 20:00 UTC</time>`);
+  assert.equal(dateIn("Asia/Tokyo"), `<time datetime="${at}" title="${at}" data-local-date>10月10日 05:00 JST</time>`);
+  // Without a date there is no zone to name.
+  assert.equal(withTimeZone("UTC", () => renderInbox([feedback()])).includes(">日時不明</time>"), true);
 });

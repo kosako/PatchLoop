@@ -249,10 +249,25 @@ function parseDocument(html) {
   return document;
 }
 
+// Runs run() with the process in the time zone timeZone (an IANA name), as
+// Date and Intl read it there, and puts the zone back afterwards.
+function withTimeZone(timeZone, run) {
+  const previous = process.env.TZ;
+  process.env.TZ = timeZone;
+  try {
+    return run();
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+}
+
 // Runs inbox.js unchanged on the page renderInbox(items) draws. Requests are
 // answered from `replies` in order ({ ok, status, body }, or a function of the
-// request options returning one or a promise of one).
-function inboxHarness(items, { githubConfigured = true, replies = [], confirm = true, maxBodyBytes, maxImportItems } = {}) {
+// request options returning one or a promise of one). timeZone is the
+// browser's: the page is drawn in the process's zone, as the receiver draws
+// it, and inbox.js starts in timeZone when one is given.
+function inboxHarness(items, { githubConfigured = true, replies = [], confirm = true, maxBodyBytes, maxImportItems, timeZone } = {}) {
   const document = parseDocument(renderInbox(items, { githubConfigured, maxBodyBytes, maxImportItems }));
   const pending = replies.slice();
   const requests = [];
@@ -263,7 +278,7 @@ function inboxHarness(items, { githubConfigured = true, replies = [], confirm = 
     alert: (message) => alerts.push(message),
     location: { reload: () => { reloads += 1; } }
   };
-  vm.runInNewContext(script, {
+  const start = () => vm.runInNewContext(script, {
     document, window, URL, TextEncoder,
     fetch: async (url, options) => {
       requests.push({ url, options });
@@ -272,6 +287,8 @@ function inboxHarness(items, { githubConfigured = true, replies = [], confirm = 
       return { ok: reply.ok, status: reply.status, json: async () => reply.body };
     }
   });
+  if (timeZone === undefined) start();
+  else withTimeZone(timeZone, start);
 
   function get(selector, scope = document) {
     const node = scope.querySelector(selector);
@@ -303,4 +320,4 @@ function inboxHarness(items, { githubConfigured = true, replies = [], confirm = 
   };
 }
 
-module.exports = { script, renderInbox, parseDocument, inboxHarness };
+module.exports = { script, renderInbox, parseDocument, inboxHarness, withTimeZone };

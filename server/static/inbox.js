@@ -138,6 +138,17 @@ function importFailureMessage(failed) {
   return savedMessage + refused.join("");
 }
 
+// The receiver draws each card's date in its own time zone and names the zone
+// (#158). The reader sees the date in the browser's time zone instead, drawn
+// as the receiver draws it but without the name; title keeps the ISO string.
+(() => {
+  const format = new Intl.DateTimeFormat("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  document.querySelectorAll("[data-local-date]").forEach((time) => {
+    const date = new Date(time.getAttribute("datetime") || "");
+    if (!Number.isNaN(date.getTime())) time.textContent = format.format(date);
+  });
+})();
+
 (() => {
   const form = document.querySelector("[data-import-form]");
   if (!form) return;
