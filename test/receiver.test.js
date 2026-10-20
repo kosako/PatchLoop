@@ -910,6 +910,41 @@ test("POST /import rejects the whole batch when a later screenshot is invalid", 
   assert.equal(files.length, 0);
 });
 
+test("a screenshot is refused the same way when it is sent and when it is imported (#170)", async (t) => {
+  const receiver = await startReceiver(t, { SCREENSHOT_MAX_BYTES: "8" });
+  const dataUrl = (mimeType, text) => `data:${mimeType};base64,${Buffer.from(text).toString("base64")}`;
+  const refusals = [
+    ["data:image/svg+xml,<svg/>", "400 Invalid screenshot data URL"],
+    [dataUrl("text/plain", "text"), "400 Unsupported screenshot mime type: text/plain"],
+    [dataUrl("image/png", "123456789"), "413 Screenshot too large: 9 bytes exceeds 8"]
+  ];
+  for (const [url, refusal] of refusals) {
+    const payload = feedbackPayload("pl_refused_screenshot");
+    payload.screenshot = { status: "captured", kind: "viewport-svg", dataUrl: url };
+    const sent = await postJson(`${receiver.baseUrl}/feedback`, payload);
+    assert.equal(`${sent.status} ${sent.body.error}`, refusal);
+    const imported = await postJson(`${receiver.baseUrl}/import`, { kind: EXPORT_BUNDLE_KIND, version: EXPORT_BUNDLE_VERSION, feedback: [payload] });
+    assert.equal(`${imported.status} ${imported.body.error}`, refusal);
+  }
+  assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
+  assert.equal((await fs.readdir(receiver.screenshotDir).catch(() => [])).length, 0);
+});
+
+test("a screenshot is written as a file of its image type (#170)", async (t) => {
+  const receiver = await startReceiver(t);
+  for (const [mimeType, text] of [["image/svg+xml", "<svg/>"], ["image/png", "png"], ["image/jpeg", "jpeg"]]) {
+    const payload = feedbackPayload(`pl_screenshot_${text.length}`);
+    payload.screenshot = { status: "captured", kind: "viewport-svg", dataUrl: `data:${mimeType};base64,${Buffer.from(text).toString("base64")}` };
+    assert.equal((await postJson(`${receiver.baseUrl}/feedback`, payload)).status, 201);
+  }
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.equal(stored.map(({ screenshot }) => `${screenshot.mimeType} ${path.extname(screenshot.fileName)} ${screenshot.bytes}`).sort().join(","),
+    "image/jpeg .jpg 4,image/png .png 3,image/svg+xml .svg 6");
+  for (const { screenshot } of stored) {
+    assert.equal(await fs.readFile(screenshot.path, "utf8"), { svg: "<svg/>", png: "png", jpg: "jpeg" }[path.extname(screenshot.fileName).slice(1)]);
+  }
+});
+
 test("POST /import stores a missing status as new so /feedback.json filters agree (#141)", async (t) => {
   const receiver = await startReceiver(t);
   const response = await postJson(`${receiver.baseUrl}/import`, {
