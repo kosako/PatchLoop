@@ -238,6 +238,29 @@ function importFailureMessage(failed) {
   });
 })();
 
+// The GitHub cell for the state the receiver stored and answered with, as the
+// server renders it (renderGitHubCell in inbox-view.js), so a card reads the
+// same before and after a reload (#170). A failure keeps the create button,
+// with its listener, so the issue can be tried again.
+function gitHubCellNodes(github, button) {
+  if (github.status === "created") {
+    const text = (github.issueNumber != null ? "#" + github.issueNumber : "issue") + " created";
+    // The server's rule for a link (safeLinkUrl in render-values.js).
+    const url = String(github.url || "").trim();
+    if (!/^https?:\/\//i.test(url)) return [text];
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = text;
+    return [link];
+  }
+  const note = document.createElement("span");
+  note.setAttribute("class", "github-error");
+  note.textContent = "failed" + (github.statusCode ? " (" + github.statusCode + ")" : "") + ": " + (github.error || "unknown error");
+  return [note, " ", button];
+}
+
 (() => {
   const panel = document.querySelector("[data-filter-panel]");
   const textInput = panel?.querySelector("[data-filter-text]");
@@ -297,32 +320,29 @@ function importFailureMessage(failed) {
         const { response, result } = await inboxRequest("/feedback/" + encodeURIComponent(button.dataset.feedbackId) + "/github-issue", {
           method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
         });
-        const existing = response.status === 409 && result.github?.issueNumber;
-        if (!response.ok && !existing) throw new Error(result.error || "GitHub Issue を作成できませんでした。");
-        card.dataset.github = "created";
-        let url;
-        try { url = new URL(result.github?.url); } catch { /* Show a recovery message below. */ }
+        // The receiver answers with the state it stored: the issue, also when
+        // it already existed (409), or the failure (502). Anything else, such
+        // as a request it did not take, leaves the card as it is.
+        const github = result.github;
+        const created = github?.status === "created" && (response.ok || response.status === 409);
+        const failed = !response.ok && github?.status === "failed";
+        if (!created && !failed) throw new Error(result.error || "GitHub Issue を作成できませんでした。");
+        card.dataset.github = github.status;
+        const detail = card.querySelector("[data-github-status]");
+        if (detail) detail.textContent = github.status;
+        button.disabled = false;
+        button.textContent = "GitHub Issue を作成";
         // Once the issue exists, a failure the server rendered for an earlier
         // attempt is stale, so the cell keeps only the created issue.
-        if (!url || (url.protocol !== "https:" && url.protocol !== "http:")) {
-          button.textContent = "Issue 作成済み";
-          cell.replaceChildren(button);
-          applyFilters();
-          showInboxMessage("Issue は作成されています。ページを更新して確認してください。", { card: card.hidden ? null : card });
-          textInput?.focus();
-          return;
-        }
-        const link = document.createElement("a");
-        link.href = url.href;
-        link.target = "_blank";
-        link.rel = "noopener";
-        // Matches the link the server renders for a created issue.
-        link.textContent = (result.github.issueNumber != null ? "#" + result.github.issueNumber : "issue") + " created";
-        cell.replaceChildren(link);
+        cell.replaceChildren(...gitHubCellNodes(github, button));
         applyFilters();
-        showInboxMessage(existing ? "作成済みの GitHub Issue を表示しました。" : "GitHub Issue を作成しました。", { card: card.hidden ? null : card });
-        if (card.hidden) textInput?.focus();
-        else link.focus();
+        const shown = card.hidden ? null : card;
+        const link = cell.querySelector("a");
+        if (failed) showInboxMessage(result.error || "GitHub Issue を作成できませんでした。", { error: true, card: shown });
+        else if (link) showInboxMessage(response.ok ? "GitHub Issue を作成しました。" : "作成済みの GitHub Issue を表示しました。", { card: shown });
+        else showInboxMessage((response.ok ? "GitHub Issue を作成しました。" : "GitHub Issue は作成済みです。") + "リンクを表示できないので、GitHub で確認してください。", { card: shown });
+        if (!shown || (created && !link)) textInput?.focus();
+        else (link || button).focus();
       } catch (error) {
         button.disabled = false;
         button.textContent = "GitHub Issue を作成";

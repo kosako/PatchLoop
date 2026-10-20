@@ -295,7 +295,7 @@ test("expired sessions and throttling preserve the user's filter and selection",
 test("GitHub creation and existing-issue recovery replace the action with a safe link", async () => {
   for (const status of [201, 409]) {
     const ui = inboxHarness([feedback("one")], { replies: [{ ok: status === 201, status,
-      body: { github: { issueNumber: 42, url: "https://github.com/example/demo/issues/42" } } }] });
+      body: { github: { status: "created", issueNumber: 42, url: "https://github.com/example/demo/issues/42" } } }] });
     const card = ui.card("one");
     await ui.click(ui.get("[data-github-create]", card));
     const link = ui.get("a", ui.get("[data-github-cell]", card));
@@ -347,19 +347,73 @@ test("a failed GitHub issue creation restores the button and reports on the card
 
 test("an invalid created-issue URL never enables duplicate creation or an unsafe link", async () => {
   for (const github of [undefined, { status: "failed", statusCode: 500, error: "Server error" }]) {
-    const ui = inboxHarness([feedback("one", { integrations: { github } })], { replies: [{ ok: true,
-      body: { github: { issueNumber: 42, url: "javascript:alert(1)" } } }] });
+    const ui = inboxHarness([feedback("one", { integrations: { github } })], { replies: [{ ok: true, status: 201,
+      body: { github: { status: "created", issueNumber: 42, url: "javascript:alert(1)" } } }] });
     const card = ui.card("one");
-    const button = ui.get("[data-github-create]", card);
-    await ui.click(button);
+    await ui.click(ui.get("[data-github-create]", card));
     const cell = ui.get("[data-github-cell]", card);
     assertNoNode(cell.querySelector("a"), "issue link");
-    assertSameNode(ui.get("[data-github-create]", card), button, "create button");
-    assert.equal(button.disabled, true);
+    assertNoNode(cell.querySelector("[data-github-create]"), "create button");
     // The issue exists, so an earlier failure is no longer shown beside it.
     assertNoNode(cell.querySelector(".github-error"), "failure note");
-    assert.match(ui.get("[data-action-status]", card).textContent, /ページを更新/);
+    assert.equal(cell.textContent, "#42 created");
+    assert.equal(ui.get("[data-action-status]", card).textContent, "GitHub Issue を作成しました。リンクを表示できないので、GitHub で確認してください。");
+    assertSameNode(ui.document.activeElement, ui.get("[data-filter-text]"), "focus");
   }
+});
+
+test("after a GitHub issue request, the card shows what the receiver stored as the server renders it (#170)", async () => {
+  // The receiver answers with the state it stored, so the card must read as
+  // the server renders that state after a reload: the cell, the filter value
+  // and the status in the details.
+  const created = { status: "created", issueNumber: 42, url: "https://github.com/example/demo/issues/42" };
+  const replies = [
+    [201, created],
+    [409, created],
+    // The issue was created but GitHub's answer could not be read.
+    [201, { status: "created", issueNumber: null, url: "" }],
+    [201, { status: "created", issueNumber: 42, url: " javascript:alert(1)" }],
+    [502, { status: "failed", statusCode: 422, error: "Validation Failed" }],
+    [502, { status: "failed", error: "connect ECONNREFUSED" }]
+  ];
+  for (const before of [undefined, { status: "failed", statusCode: 500, error: "Server error" }]) {
+    for (const [status, github] of replies) {
+      const label = `${before ? "failed" : "none"} then ${status} ${JSON.stringify(github)}`;
+      const server = parseDocument(renderInbox([feedback("one", { integrations: { github } })]));
+      const ui = inboxHarness([feedback("one", { integrations: { github: before } })], { replies: [{ ok: status === 201, status,
+        body: { ok: status === 201, github, ...(status === 201 ? {} : { error: github.error || "GitHub issue already created" }) } }] });
+      const card = ui.card("one");
+      const button = ui.get("[data-github-create]", card);
+      await ui.click(button);
+      const cell = ui.get("[data-github-cell]", card);
+      assert.equal(cell.outerHTML, server.querySelector("[data-github-cell]").outerHTML, label);
+      assert.equal(card.dataset.github, server.querySelector("[data-card]").dataset.github, label);
+      assert.equal(ui.get("[data-github-status]", card).textContent, server.querySelector("[data-github-status]").textContent, label);
+      const failed = github.status === "failed";
+      assert.equal(ui.get("[data-action-status]", card).dataset.state, failed ? "error" : "success", label);
+      if (failed) {
+        assertSameNode(ui.get("[data-github-create]", card), button, `${label}: create button`);
+        assertSameNode(ui.document.activeElement, button, `${label}: focus`);
+      } else {
+        assertSameNode(ui.document.activeElement, cell.querySelector("a") || ui.get("[data-filter-text]"), `${label}: focus`);
+      }
+    }
+  }
+});
+
+test("a card whose issue creation just failed is filtered as failed (#170)", async () => {
+  const github = { status: "failed", statusCode: 422, error: "Validation Failed" };
+  const ui = inboxHarness([feedback("one"), feedback("two", { integrations: { github: { status: "failed", error: "boom" } } })],
+    { replies: [{ ok: false, status: 502, body: { ok: false, error: "Validation Failed", github } }] });
+  await ui.change(ui.get('[data-filter-key="github"]'), "none");
+  await ui.click(ui.get("[data-github-create]", ui.card("one")));
+  assert.equal(ui.card("one").hidden, true);
+  assert.equal(ui.get("[data-filter-count]").textContent, "0 / 2 件");
+  assert.equal(ui.get("[data-inbox-status]").textContent, "Validation Failed");
+  assert.equal(ui.get("[data-inbox-status]").dataset.state, "error");
+  assertSameNode(ui.document.activeElement, ui.get("[data-filter-text]"), "focus");
+  await ui.change(ui.get('[data-filter-key="github"]'), "failed");
+  assert.deepEqual(visibleIds(ui), ["one", "two"]);
 });
 
 test("results for a card the filters now hide are reported in the inbox status", async () => {
