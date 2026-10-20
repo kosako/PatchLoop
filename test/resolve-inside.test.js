@@ -28,3 +28,23 @@ test("a filesystem root as the directory contains nothing", () => {
   assert.equal(resolveInside(filesystemRoot, "a.svg"), null);
   assert.equal(resolveInside(filesystemRoot, path.join(filesystemRoot, "a.svg")), null);
 });
+
+// The same rules on each platform, checked from any one (#170).
+const { insideChecker } = require("../server/resolve-inside.js");
+
+test("on Windows, a path whose directory differs only in case, another drive or the drive root is outside", () => {
+  const resolveWin = insideChecker(path.win32);
+  assert.equal(resolveWin("C:\\data\\Shots", "C:\\data\\Shots\\a.svg"), "C:\\data\\Shots\\a.svg");
+  assert.equal(resolveWin("C:\\data\\Shots\\", "a.svg"), "C:\\data\\Shots\\a.svg");
+  for (const name of ["C:\\data\\shots\\a.svg", "C:\\DATA\\Shots\\a.svg", "D:\\data\\Shots\\a.svg", "..\\a.svg", "C:\\data\\Shots", "C:\\data\\Shots-sibling\\a.svg"]) {
+    assert.equal(resolveWin("C:\\data\\Shots", name), null, name);
+  }
+  assert.equal(resolveWin("C:\\", "a.svg"), null);
+});
+
+test("on POSIX, a path whose directory differs only in case is outside", () => {
+  const resolvePosix = insideChecker(path.posix);
+  assert.equal(resolvePosix("/data/Shots", "/data/Shots/a.svg"), "/data/Shots/a.svg");
+  assert.equal(resolvePosix("/data/Shots", "/data/shots/a.svg"), null);
+  assert.equal(resolvePosix("/", "a.svg"), null);
+});
