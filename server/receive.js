@@ -10,6 +10,7 @@ const { safeFilePart, truncateText, slackEscape, formatSlackCode, formatSlackLin
 const { createStore, FEEDBACK_STATUSES } = require("./store.js");
 const { createInboxView } = require("./inbox-view.js");
 const { mdLinkUrl, formatScreenshotStatus } = require("./render-values.js");
+const { resolveInside } = require("./resolve-inside.js");
 const { feedbackForExport } = require("./feedback-export.js");
 const { logValue } = require("./log-value.js");
 const { normalizeUncaptured, summarizeUncaptured } = require("./uncaptured.js");
@@ -1661,20 +1662,6 @@ function requestFileName(req) {
   } catch (_) {
     return null;
   }
-}
-
-// The path of `name` inside the directory `root`, or null when it resolves to
-// root itself or outside it, or holds a NUL (fs throws on it rather than
-// failing the call). Serving /static/ and /screenshots/ and deleting a stored
-// screenshot all check with this one function (#170); saveScreenshot builds
-// its file name from safe characters only.
-function resolveInside(root, name) {
-  if (name.includes("\0")) return null;
-  const base = path.resolve(root);
-  const resolved = path.resolve(base, name);
-  const relative = path.relative(base, resolved);
-  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
-  return resolved;
 }
 
 // Sends the file `name` from the directory `root` with `headers`, or 404 when

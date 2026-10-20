@@ -112,7 +112,8 @@ test("deleting a feedback removes only a screenshot file inside the screenshot d
   const tampered = [
     ["pl_tampered_outside", outside],
     ["pl_tampered_root", receiver.screenshotDir],
-    ["pl_tampered_parent", path.join(receiver.screenshotDir, "..", "outside.svg")],
+    // Kept as written: path.join would resolve the "..".
+    ["pl_tampered_parent", [receiver.screenshotDir, "..", "outside.svg"].join(path.sep)],
     ["pl_tampered_nul", path.join(receiver.screenshotDir, "a\0b.svg")]
   ];
   for (const [id, screenshotPath] of tampered) {
