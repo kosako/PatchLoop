@@ -1593,6 +1593,39 @@ const EXPORT_BUNDLE_VERSION = 2;
 
 return { PAYLOAD_SCHEMA_VERSION, EXPORT_BUNDLE_VERSION };
 })();
+// --- shared/local-only.js ---
+const __pl_shared_local_only = (() => {
+// The marks the widget keeps with a comment on the device only, shared with
+// the receiver so that both sides drop the same ones (#170): the widget leaves
+// them out of what it sends and exports, and the receiver drops them when a
+// producer sends them anyway (an older widget, or another producer). The
+// README lists them with the fields the receiver does not store.
+//
+// delivery: the delivery state, whose sent text may be an older one, past the
+// limit the comment now fits (#196). exported, exportedAt, exportedFileName:
+// the export marks. previousIds: the ids a revision replaced (#121).
+// localEdited: the edited-after-sending mark of comments saved before #121.
+const LOCAL_ONLY_KEYS = ["delivery", "exported", "exportedAt", "exportedFileName", "previousIds", "localEdited"];
+
+// In screenshot: the mark of a saved copy that left out the image data to fit
+// the storage.
+const LOCAL_ONLY_SCREENSHOT_KEYS = ["persistedWithoutDataUrl"];
+
+// A comment as it leaves the device: a copy without the marks above. The parts
+// it does not change are shared with the comment.
+function toWireFeedback(item) {
+  const copy = { ...item };
+  LOCAL_ONLY_KEYS.forEach((key) => delete copy[key]);
+  const screenshot = copy.screenshot;
+  if (screenshot && LOCAL_ONLY_SCREENSHOT_KEYS.some((key) => Object.hasOwn(screenshot, key))) {
+    copy.screenshot = { ...screenshot };
+    LOCAL_ONLY_SCREENSHOT_KEYS.forEach((key) => delete copy.screenshot[key]);
+  }
+  return copy;
+}
+
+return { LOCAL_ONLY_KEYS, LOCAL_ONLY_SCREENSHOT_KEYS, toWireFeedback };
+})();
 // --- widget/src/payload.js ---
 const __pl_widget_src_payload = (() => {
 const { round } = __pl_widget_src_geometry;
@@ -1601,6 +1634,7 @@ const { state } = __pl_widget_src_state;
 const { captureScreenshot } = __pl_widget_src_screenshot;
 const { pageUrlForSharing } = __pl_widget_src_url;
 const { PAYLOAD_SCHEMA_VERSION } = __pl_shared_versions;
+const { LOCAL_ONLY_KEYS } = __pl_shared_local_only;
 
 function buildPayload(comment, reviewer, target, includeScreenshot = state.options.captureScreenshot) {
   return {
@@ -1647,12 +1681,13 @@ function buildPayload(comment, reviewer, target, includeScreenshot = state.optio
 // The revision of a comment edited after it left this device (#121): a new
 // comment with the same place, page, image and creation time, pointing at the
 // one it replaces, so what the receiver holds is never rewritten and an import
-// does not skip the edit as a duplicate. previousIds, kept on this device only
-// (LOCAL_ONLY_KEYS), lists every earlier version, so an edit another tab began
-// on any of them follows to the latest revision.
+// does not skip the edit as a duplicate. The original's marks kept on this
+// device only (LOCAL_ONLY_KEYS) do not carry over; previousIds lists every
+// earlier version, so an edit another tab began on any of them follows to the
+// latest revision.
 function buildRevision(original, comment, reviewer) {
   const revision = JSON.parse(JSON.stringify(original));
-  ["delivery", "exported", "exportedAt", "exportedFileName", "localEdited"].forEach((key) => delete revision[key]);
+  LOCAL_ONLY_KEYS.forEach((key) => delete revision[key]);
   return {
     ...revision,
     schemaVersion: PAYLOAD_SCHEMA_VERSION,
@@ -1664,16 +1699,6 @@ function buildRevision(original, comment, reviewer) {
   };
 }
 
-// Kept with a comment on this device, never sent or exported.
-const LOCAL_ONLY_KEYS = ["previousIds"];
-
-// The payload as it leaves this device.
-function outgoingPayload(item) {
-  const copy = { ...item };
-  LOCAL_ONLY_KEYS.forEach((key) => delete copy[key]);
-  return copy;
-}
-
 // Date.now() alone collides across tabs/reviewers within the same
 // millisecond, which also collides marker Map keys and orphans nodes.
 function generateFeedbackId() {
@@ -1683,7 +1708,7 @@ function generateFeedbackId() {
   return `pl_${Date.now()}_${random}`;
 }
 
-return { buildPayload, buildRevision, LOCAL_ONLY_KEYS, outgoingPayload };
+return { buildPayload, buildRevision };
 })();
 // --- widget/src/tab-sync.js ---
 const __pl_widget_src_tab_sync = (() => {
@@ -2198,13 +2223,14 @@ const { applyPageUrlRule, applySourceContextUrlRule, normalizeKeepQueryParams } 
 const { exceedsFieldLimit, normalizeMaxFieldLength } = __pl_widget_src_field_limit;
 const { normalizeDeliveryMode } = __pl_widget_src_delivery_mode;
 const { DEFAULTS, state } = __pl_widget_src_state;
-const { buildPayload, buildRevision, outgoingPayload } = __pl_widget_src_payload;
+const { buildPayload, buildRevision } = __pl_widget_src_payload;
 const { uncapturedTouching } = __pl_widget_src_screenshot;
 const { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } = __pl_widget_src_inbox_status;
 const { canRetry, deliveryBadge, deliveryFailed, deliveryStatusText, hasLeftDevice, interruptedDelivery, isDelivering, isLocallyEdited, pendingAge, receiverHasCopy, tooLongToSendText } = __pl_widget_src_delivery_state;
 const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadLauncher, saveLauncher, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } = __pl_widget_src_persistence;
 const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, formatCount, FEEDBACK_STATUS_LABELS } = __pl_shared_format;
 const { EXPORT_BUNDLE_VERSION } = __pl_shared_versions;
+const { toWireFeedback } = __pl_shared_local_only;
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
 // The receiver's answer is awaited this long. A delivery another tab of the
@@ -3047,7 +3073,7 @@ async function postFeedback(payload) {
     const response = await fetchWithTimeout(state.options.endpoint, {
       method: "POST",
       headers,
-      body: JSON.stringify(outgoingPayload(payload))
+      body: JSON.stringify(toWireFeedback(payload))
     });
     return logDelivery(payload, { ok: response.ok, status: response.status });
   } catch (error) {
@@ -3229,17 +3255,7 @@ function downloadFeedbackItems(listed, pages = []) {
   items.forEach((item) => applyPageUrlRule(item, state.options.keepQueryParams));
   const exportedAt = new Date().toISOString();
   try {
-    const bundle = buildFeedbackBundle(items.map((item) => {
-      const copy = outgoingPayload(item);
-      // Its delivery is this device's (the receiver drops it), and its sent
-      // text may be an older one, past the limit the comment now fits (#196).
-      delete copy.delivery;
-      delete copy.exported;
-      delete copy.exportedAt;
-      delete copy.exportedFileName;
-      delete copy.localEdited;
-      return copy;
-    }), exportedAt);
+    const bundle = buildFeedbackBundle(items.map(toWireFeedback), exportedAt);
     const json = JSON.stringify(bundle, null, 2);
     const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
