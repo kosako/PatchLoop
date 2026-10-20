@@ -14,6 +14,7 @@ const { resolveInside } = require("./resolve-inside.js");
 const { feedbackForExport } = require("./feedback-export.js");
 const { logValue } = require("./log-value.js");
 const { normalizeUncaptured, summarizeUncaptured } = require("./uncaptured.js");
+const { toWireFeedback } = require("../shared/local-only.js");
 
 const CONFIG_PATH = process.env.PATCHLOOP_RECEIVER_CONFIG || path.join(__dirname, "receiver.config.json");
 const config = loadConfig(CONFIG_PATH);
@@ -1296,8 +1297,9 @@ function normalizeImportedFeedback(payload) {
 
 function normalizeFeedbackPayload(payload) {
   validateFeedbackPayload(payload);
-  const imported = JSON.parse(JSON.stringify(payload));
-  delete imported.delivery;
+  // The marks a widget keeps on the device only are not stored (#126, #170):
+  // an older widget, or another producer, may still send them.
+  const imported = toWireFeedback(JSON.parse(JSON.stringify(payload)));
   delete imported.integrations;
   delete imported.receivedAt;
   delete imported.importedAt;
@@ -1305,16 +1307,6 @@ function normalizeFeedbackPayload(payload) {
   delete imported.statusUpdatedAt;
   // Server-owned provenance must not be asserted by a producer or bundle.
   delete imported.received;
-  // Local-only export markers (set by the widget after a batch download) must
-  // never reach the stored record.
-  delete imported.exported;
-  delete imported.exportedAt;
-  delete imported.exportedFileName;
-  // Marks the widget keeps on the device only and must not be stored (#126):
-  // the ids a revision replaced (#121), and the edited-after-sending mark of
-  // comments saved before #121, which an older device may still send.
-  delete imported.previousIds;
-  delete imported.localEdited;
   // A null schemaVersion is no version, read as 1 like a missing one (#126).
   if (imported.schemaVersion === null) delete imported.schemaVersion;
   // A malformed screenshot.uncaptured (#148) does not cost the feedback: it is

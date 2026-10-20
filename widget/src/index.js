@@ -6,13 +6,14 @@ import { applyPageUrlRule, applySourceContextUrlRule, normalizeKeepQueryParams }
 import { exceedsFieldLimit, normalizeMaxFieldLength } from "./field-limit.js";
 import { normalizeDeliveryMode } from "./delivery-mode.js";
 import { DEFAULTS, state } from "./state.js";
-import { buildPayload, buildRevision, outgoingPayload } from "./payload.js";
+import { buildPayload, buildRevision } from "./payload.js";
 import { uncapturedTouching } from "./screenshot.js";
 import { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } from "./inbox-status.js";
 import { canRetry, deliveryBadge, deliveryFailed, deliveryStatusText, hasLeftDevice, interruptedDelivery, isDelivering, isLocallyEdited, pendingAge, receiverHasCopy, tooLongToSendText } from "./delivery-state.js";
 import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadLauncher, saveLauncher, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } from "./persistence.js";
 import { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, formatCount, FEEDBACK_STATUS_LABELS } from "../../shared/format.js";
 import { EXPORT_BUNDLE_VERSION } from "../../shared/versions.js";
+import { toWireFeedback } from "../../shared/local-only.js";
 
 const EXPORT_KIND = "patchloop-feedback-bundle";
 // The receiver's answer is awaited this long. A delivery another tab of the
@@ -855,7 +856,7 @@ async function postFeedback(payload) {
     const response = await fetchWithTimeout(state.options.endpoint, {
       method: "POST",
       headers,
-      body: JSON.stringify(outgoingPayload(payload))
+      body: JSON.stringify(toWireFeedback(payload))
     });
     return logDelivery(payload, { ok: response.ok, status: response.status });
   } catch (error) {
@@ -1037,17 +1038,7 @@ function downloadFeedbackItems(listed, pages = []) {
   items.forEach((item) => applyPageUrlRule(item, state.options.keepQueryParams));
   const exportedAt = new Date().toISOString();
   try {
-    const bundle = buildFeedbackBundle(items.map((item) => {
-      const copy = outgoingPayload(item);
-      // Its delivery is this device's (the receiver drops it), and its sent
-      // text may be an older one, past the limit the comment now fits (#196).
-      delete copy.delivery;
-      delete copy.exported;
-      delete copy.exportedAt;
-      delete copy.exportedFileName;
-      delete copy.localEdited;
-      return copy;
-    }), exportedAt);
+    const bundle = buildFeedbackBundle(items.map(toWireFeedback), exportedAt);
     const json = JSON.stringify(bundle, null, 2);
     const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);

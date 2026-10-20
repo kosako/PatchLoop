@@ -2126,6 +2126,23 @@ test("marks kept on the device only (previousIds, localEdited) are not stored wh
     [["pl_previous_imported", "pl_b", false, false], ["pl_previous_sent", "pl_a", false, false]]);
 });
 
+test("the mark of a copy a device saved without its image data is not stored when a producer sends it (#170)", async (t) => {
+  const receiver = await startReceiver(t);
+  // Sent without the image data, as the device holds it, and with it.
+  const { dataUrl: _dataUrl, ...withoutImage } = feedbackPayload("pl_mark_sent").screenshot;
+  const sent = { ...feedbackPayload("pl_mark_sent"), screenshot: { ...withoutImage, persistedWithoutDataUrl: true } };
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, sent)).status, 201);
+  const withImage = feedbackPayload("pl_mark_imported");
+  const imported = await postJson(`${receiver.baseUrl}/import`, {
+    kind: "patchloop-feedback-bundle", version: EXPORT_BUNDLE_VERSION,
+    feedback: [{ ...withImage, screenshot: { ...withImage.screenshot, persistedWithoutDataUrl: true } }]
+  });
+  assert.equal(imported.status, 201);
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.deepEqual(stored.map((item) => [item.id, item.screenshot.status, Object.hasOwn(item.screenshot, "persistedWithoutDataUrl")]).sort(),
+    [["pl_mark_imported", "saved", false], ["pl_mark_sent", "missing", false]]);
+});
+
 test("GET /feedback.json filters by projectId, demoId, and status", async (t) => {
   const receiver = await startReceiver(t);
 
