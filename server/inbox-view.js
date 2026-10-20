@@ -10,10 +10,13 @@ const { PAYLOAD_SCHEMA_VERSION } = require("../shared/versions.js");
 const KIND_LABELS = { point: "ポイント", area: "範囲" };
 const UNCAPTURED_RELATION_LABELS = { "covers-target": "指摘箇所の最前面", "overlaps-target": "指摘箇所に重なる" };
 
+// Drawn in the receiver's time zone, which need not be the reader's (a
+// receiver in a UTC container), so the zone is named. inbox.js redraws the
+// date in the browser's time zone (#158).
 function displayDate(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? String(value || "日時不明") : new Intl.DateTimeFormat("ja-JP", {
-    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short"
   }).format(date);
 }
 
@@ -88,7 +91,7 @@ function createInboxView(deps) {
         <header class="card-header">
           <span class="kind kind-${kind}">${escapeHtml(KIND_LABELS[target.kind] || "その他")}</span>
           <span class="reviewer">${reviewer || "投稿者不明"}</span>
-          <time datetime="${receivedAt}" title="${receivedAt}">${escapeHtml(displayDate(item.receivedAt))}</time>
+          <time datetime="${receivedAt}" title="${receivedAt}" data-local-date>${escapeHtml(displayDate(item.receivedAt))}</time>
         </header>
         <div class="card-content">
           <div class="card-copy">

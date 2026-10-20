@@ -3,7 +3,7 @@
 const assert = require("node:assert/strict");
 const util = require("node:util");
 const test = require("node:test");
-const { script, renderInbox, parseDocument, inboxHarness } = require("../test-support/inbox-dom.js");
+const { script, renderInbox, parseDocument, inboxHarness, withTimeZone } = require("../test-support/inbox-dom.js");
 
 function feedback(id, extra = {}) {
   return { id, status: "new", comment: `Comment ${id}`, reviewer: "Reviewer", target: { kind: "point" }, page: {}, environment: {}, ...extra };
@@ -451,3 +451,19 @@ test("a card shown in place of a malformed record keeps its anchor, so links rea
   assert.equal(noteOf(ui, "rev", "[data-revision-of]").textContent, "元のコメント（bad、この受信箱には無い）の修正版です。");
 });
 
+
+test("card dates are redrawn in the browser's time zone, without the receiver's zone name (#158)", () => {
+  const at = "2026-10-09T20:00:00.000Z";
+  const items = [feedback("one", { receivedAt: at }), feedback("none"), feedback("odd", { receivedAt: "not a date" })];
+  const dateOf = (ui, id) => ui.get("[data-local-date]", ui.card(id));
+  // The receiver runs in UTC and the reader is in Tokyo, then in New York.
+  const tokyo = withTimeZone("UTC", () => inboxHarness(items, { timeZone: "Asia/Tokyo" }));
+  assert.equal(dateOf(tokyo, "one").textContent, "10月10日 05:00");
+  assert.equal(dateOf(tokyo, "one").getAttribute("datetime"), at);
+  assert.equal(dateOf(tokyo, "one").getAttribute("title"), at);
+  const newYork = withTimeZone("UTC", () => inboxHarness(items, { timeZone: "America/New_York" }));
+  assert.equal(dateOf(newYork, "one").textContent, "10月9日 16:00");
+  // What is not a date stays as the receiver drew it.
+  assert.equal(dateOf(tokyo, "none").textContent, "日時不明");
+  assert.equal(dateOf(tokyo, "odd").textContent, "not a date");
+});
