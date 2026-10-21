@@ -367,17 +367,20 @@ test("after a GitHub issue request, the card shows what the receiver stored as t
   // the server renders that state after a reload: the cell, the filter value
   // and the status in the details.
   const created = { status: "created", issueNumber: 42, url: "https://github.com/example/demo/issues/42" };
+  // The issue was created but GitHub's answer could not be read.
+  const unread = { status: "created", issueNumber: null, url: "" };
+  const noLink = "リンクを表示できないので、GitHub で確認してください。";
   const replies = [
-    [201, created],
-    [409, created],
-    // The issue was created but GitHub's answer could not be read.
-    [201, { status: "created", issueNumber: null, url: "" }],
-    [201, { status: "created", issueNumber: 42, url: " javascript:alert(1)" }],
-    [502, { status: "failed", statusCode: 422, error: "Validation Failed" }],
-    [502, { status: "failed", error: "connect ECONNREFUSED" }]
+    [201, created, "GitHub Issue を作成しました。"],
+    [409, created, "作成済みの GitHub Issue を表示しました。"],
+    [201, unread, "GitHub Issue を作成しました。" + noLink],
+    [409, unread, "GitHub Issue は作成済みです。" + noLink],
+    [201, { status: "created", issueNumber: 42, url: " javascript:alert(1)" }, "GitHub Issue を作成しました。" + noLink],
+    [502, { status: "failed", statusCode: 422, error: "Validation Failed" }, "Validation Failed"],
+    [502, { status: "failed", error: "connect ECONNREFUSED" }, "connect ECONNREFUSED"]
   ];
   for (const before of [undefined, { status: "failed", statusCode: 500, error: "Server error" }]) {
-    for (const [status, github] of replies) {
+    for (const [status, github, text] of replies) {
       const label = `${before ? "failed" : "none"} then ${status} ${JSON.stringify(github)}`;
       const server = parseDocument(renderInbox([feedback("one", { integrations: { github } })]));
       const ui = inboxHarness([feedback("one", { integrations: { github: before } })], { replies: [{ ok: status === 201, status,
@@ -390,7 +393,9 @@ test("after a GitHub issue request, the card shows what the receiver stored as t
       assert.equal(card.dataset.github, server.querySelector("[data-card]").dataset.github, label);
       assert.equal(ui.get("[data-github-status]", card).textContent, server.querySelector("[data-github-status]").textContent, label);
       const failed = github.status === "failed";
-      assert.equal(ui.get("[data-action-status]", card).dataset.state, failed ? "error" : "success", label);
+      const message = ui.get("[data-action-status]", card);
+      assert.equal(message.textContent, text, label);
+      assert.equal(message.dataset.state, failed ? "error" : "success", label);
       if (failed) {
         assertSameNode(ui.get("[data-github-create]", card), button, `${label}: create button`);
         assertSameNode(ui.document.activeElement, button, `${label}: focus`);
