@@ -61,7 +61,10 @@ test("widget styles start with the host-page reset and every later rule outranks
   }
 });
 
-// Each rule in source order with the at-rule it sits in (null outside any).
+// Each rule in source order with the at-rules it sits in, outermost first: a
+// rule in @supports in @media screen is not under the same conditions as one
+// in the same @supports in @media print. A rule nested in a rule fails, as
+// its outer selector would be lost.
 function conditionedRules(css) {
   const rules = [];
   const preludes = [];
@@ -73,11 +76,12 @@ function conditionedRules(css) {
     } else if (css[index] === "}") {
       const prelude = preludes.pop();
       if (!prelude.startsWith("@")) {
+        assert.ok(preludes.every((outer) => outer.startsWith("@")), `${prelude}: a rule nested in a rule is not read`);
         const declarations = css.slice(start, index).split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
           const colon = part.indexOf(":");
           return { property: part.slice(0, colon).trim(), important: /!important$/.test(part) };
         });
-        rules.push({ selectors: selectorList(prelude), declarations, condition: preludes.findLast((outer) => outer.startsWith("@")) ?? null });
+        rules.push({ selectors: selectorList(prelude), declarations, conditions: JSON.stringify(preludes) });
       }
       start = index + 1;
     }
@@ -85,25 +89,46 @@ function conditionedRules(css) {
   return rules;
 }
 
-// A declaration that a later rule with the same selector and the same at-rule
-// overrides, for every selector it is written for, never applies and only
-// misleads a reader (#170). A shared rule that one of its selectors overrides
-// later (.pl-capture-note, .pl-edit-note) still applies to the others.
+// A declaration that a later rule with the same selector and the same
+// at-rules overrides, for every selector it is written for, never applies and
+// only misleads a reader (#170). A shared rule that one of its selectors
+// overrides later (.pl-capture-note, .pl-edit-note) still applies to the
+// others, and an !important declaration is not overridden by a later plain one.
 // Not read: a later rule of a different selector or a higher specificity that
 // also overrides it.
-test("no widget declaration is overridden by a later rule for every selector it is written for (#170)", () => {
-  const widget = widgetHarness();
-  widget.init();
-  const rules = conditionedRules(widget.document.querySelector("[data-patchloop-style]").textContent);
-  assert.ok(rules.length > 50);
+function overriddenDeclarations(css) {
+  const rules = conditionedRules(css);
   const overridden = [];
   rules.forEach((rule, index) => {
-    const later = rules.slice(index + 1).filter(({ condition }) => condition === rule.condition);
+    const later = rules.slice(index + 1).filter(({ conditions }) => conditions === rule.conditions);
     for (const { property, important } of rule.declarations) {
       const dead = rule.selectors.every((selector) => later.some((other) => other.selectors.includes(selector)
         && other.declarations.some((declaration) => declaration.property === property && (declaration.important || !important))));
       if (dead) overridden.push(`${rule.selectors.join(", ")} { ${property} }`);
     }
   });
-  assert.deepEqual(overridden, []);
+  return overridden;
+}
+
+test("the check for overridden declarations reads at-rules, selector lists and !important (#170)", () => {
+  assert.deepEqual(overriddenDeclarations(".a { color: red; } .a { color: blue; }"), [".a { color }"]);
+  // The same @supports in a different @media is under other conditions.
+  assert.deepEqual(overriddenDeclarations("@media screen { @supports (display: grid) { .a { font-weight: 900; } } } @media print { @supports (display: grid) { .a { font-weight: 600; } } }"), []);
+  assert.deepEqual(overriddenDeclarations("@media screen { @supports (display: grid) { .a { font-weight: 900; } } } @media screen { @supports (display: grid) { .a { font-weight: 600; } } }"), [".a { font-weight }"]);
+  assert.deepEqual(overriddenDeclarations(".a { color: red; } @media screen { .a { color: blue; } }"), []);
+  // A selector list is overridden only when each of its selectors is.
+  assert.deepEqual(overriddenDeclarations(".a, .b { color: red; } .b { color: blue; }"), []);
+  assert.deepEqual(overriddenDeclarations(".a, .b { color: red; } .a { color: blue; } .b { color: green; }"), [".a, .b { color }"]);
+  assert.deepEqual(overriddenDeclarations(":is(.a, .b) { color: red; } .a { color: blue; }"), []);
+  assert.deepEqual(overriddenDeclarations(".a { color: red !important; } .a { color: blue; }"), []);
+  assert.deepEqual(overriddenDeclarations(".a { color: red; } .a { color: blue !important; }"), [".a { color }"]);
+  assert.throws(() => overriddenDeclarations(".a { .b { color: red; } }"), /nested in a rule/);
+});
+
+test("no widget declaration is overridden by a later rule for every selector it is written for (#170)", () => {
+  const widget = widgetHarness();
+  widget.init();
+  const css = widget.document.querySelector("[data-patchloop-style]").textContent;
+  assert.ok(conditionedRules(css).length > 50);
+  assert.deepEqual(overriddenDeclarations(css), []);
 });
