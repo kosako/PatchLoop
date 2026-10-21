@@ -12,7 +12,9 @@ const {
   documentPercentToPxX,
   documentPercentToPxY,
   pointFromStoredTarget,
-  rectFromStoredArea
+  rectFromStoredArea,
+  storedPointAt,
+  storedAreaFields
 } = require("../widget/src/geometry.js");
 
 const METRICS = {
@@ -114,3 +116,30 @@ test("rectFromStoredArea restores pixels, falls back, and enforces minimum size"
 
   assert.equal(rectFromStoredArea({ pageX: 10, pageY: 20 }, METRICS), null);
 });
+
+// A fractional scroll, and a document width that keeps the percentages off a
+// rounding tie.
+const FRACTIONAL = { ...METRICS, scrollX: 10.4, scrollY: 100.4, documentWidth: 1600 };
+
+test("storedPointAt takes the viewport position from the rounded page position (#170)", () => {
+  // From the unrounded page position, clientX would be 340 (350.7 - 10.4).
+  assert.deepEqual(storedPointAt(350.7, 420.2, FRACTIONAL), {
+    x: 34.1, y: 63.9, clientX: 341, clientY: 320, pageX: 351, pageY: 420, documentX: 21.9, documentY: 10.5
+  });
+});
+
+test("storedAreaFields stores the corner as the target's point and repeats it with the size in target.area (#170)", () => {
+  const corner = { x: 34.1, y: 63.9, clientX: 341, clientY: 320, pageX: 351, pageY: 420, documentX: 21.9, documentY: 10.5 };
+  assert.deepEqual(storedAreaFields({ pageLeftPx: 350.7, pageTopPx: 420.2, widthPx: 250.3, heightPx: 120.6 }, FRACTIONAL), {
+    point: corner,
+    area: { ...corner, width: 25, height: 24.1, clientWidth: 250, clientHeight: 121, documentWidth: 15.6, documentHeight: 3 }
+  });
+});
+
+test("storedAreaFields sizes against at least one pixel of viewport and document (#170)", () => {
+  const empty = { ...METRICS, scrollX: 0, scrollY: 0, viewportWidth: 0, viewportHeight: 0, documentWidth: 0, documentHeight: 0 };
+  const { area } = storedAreaFields({ pageLeftPx: 3, pageTopPx: 4, widthPx: 2, heightPx: 2 }, empty);
+  assert.deepEqual([area.x, area.y, area.width, area.height], [300, 400, 200, 200]);
+  assert.deepEqual([area.documentX, area.documentY, area.documentWidth, area.documentHeight], [300, 400, 200, 200]);
+});
+
