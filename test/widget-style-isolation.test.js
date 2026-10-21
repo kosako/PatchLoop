@@ -97,13 +97,17 @@ function conditionedRules(css) {
   return rules;
 }
 
-// A declaration that a later rule with the same selector and the same
-// at-rules overrides, for every selector it is written for, never applies and
-// only misleads a reader (#170). A shared rule that one of its selectors
-// overrides later (.pl-capture-note, .pl-edit-note) still applies to the
-// others, and an !important declaration is not overridden by a later plain one.
+// The widget's CSS sets a property for a selector once (#170): a later rule
+// under the same at-rules that sets it again, for every selector the earlier
+// rule is written for, leaves the earlier one to apply only where a browser
+// does not read the later value, and a reader takes it for one that applies.
+// A fallback for such a browser goes in the same rule as the value it stands
+// in for (width: 320px; width: -moz-available;), which this does not compare.
+// A shared rule that one of its selectors sets again later (.pl-capture-note,
+// .pl-edit-note) still applies to the others, and an !important declaration is
+// not overridden by a later plain one.
 // Not read: a later rule of a different selector or a higher specificity, or
-// a shorthand (font over font-weight), that also overrides it.
+// a shorthand (font over font-weight), that also sets it.
 function overriddenDeclarations(css) {
   const rules = conditionedRules(css);
   const overridden = [];
@@ -120,6 +124,10 @@ function overriddenDeclarations(css) {
 
 test("the check for overridden declarations reads at-rules, selector lists and !important (#170)", () => {
   assert.deepEqual(overriddenDeclarations(".a { color: red; } .a { color: blue; }"), [".a { color }"]);
+  // A fallback is written in the rule of the value it stands in for, not in an
+  // earlier rule, where it reads as one that applies.
+  assert.deepEqual(overriddenDeclarations(".a { width: 320px; width: -moz-available; }"), []);
+  assert.deepEqual(overriddenDeclarations(".a { width: 320px; } .a { width: -moz-available; }"), [".a { width }"]);
   // The same @supports in a different @media is under other conditions.
   assert.deepEqual(overriddenDeclarations("@media screen { @supports (display: grid) { .a { font-weight: 900; } } } @media print { @supports (display: grid) { .a { font-weight: 600; } } }"), []);
   assert.deepEqual(overriddenDeclarations("@media screen { @supports (display: grid) { .a { font-weight: 900; } } } @media screen { @supports (display: grid) { .a { font-weight: 600; } } }"), [".a { font-weight }"]);
@@ -140,7 +148,7 @@ test("the check for overridden declarations reads at-rules, selector lists and !
   assert.throws(() => overriddenDeclarations('.a::before { content: ";}"; }'), /comment, an escape or a string/);
 });
 
-test("no widget declaration is overridden by a later rule for every selector it is written for (#170)", () => {
+test("no widget rule sets a property again that an earlier rule sets for each of its selectors (#170)", () => {
   const widget = widgetHarness();
   widget.init();
   const css = widget.document.querySelector("[data-patchloop-style]").textContent;
