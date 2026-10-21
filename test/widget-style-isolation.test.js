@@ -203,3 +203,31 @@ test("no widget rule sets a property again that an earlier rule sets for each of
   assert.ok(conditionedRules(css).length > 50);
   assert.deepEqual(overriddenDeclarations(css), []);
 });
+
+// The widget's colors are custom properties set on its top-level nodes (#170),
+// which every other widget node descends from. The two classes the widget puts
+// on page elements (the target's highlight, and capture mode on the root
+// element) are outside those nodes, where a var() would find no value.
+test("every var() in the widget styles names a color set on the widget's top-level nodes, and only widget nodes use one (#170)", () => {
+  const widget = widgetHarness();
+  widget.init();
+  const css = widget.document.querySelector("[data-patchloop-style]").textContent;
+  const tokenRules = styleRules(css).filter(({ body }) => /(^|;)\s*--/.test(body));
+  assert.equal(tokenRules.length, 1);
+  const [tokenRule] = tokenRules;
+  assert.deepEqual(selectorList(tokenRule.selector), [".pl-root", "[data-patchloop-pin]", "[data-patchloop-area]", "[data-patchloop-selection]"]);
+  const tokens = new Map(tokenRule.body.split(";").map((part) => part.trim()).filter(Boolean).map((part) => part.split(":").map((value) => value.trim())));
+  assert.deepEqual([...tokens.keys()], ["--pl-ink", "--pl-muted", "--pl-line", "--pl-accent", "--pl-danger"]);
+
+  for (const { selector, body } of styleRules(css)) {
+    if (selector === tokenRule.selector && body === tokenRule.body) continue;
+    for (const [, name] of body.matchAll(/var\(([^)]*)\)/g)) assert.ok(tokens.has(name), `${selector}: var(${name}) names no widget color`);
+    // A color the tokens hold is written as its var(), so a change of it is made in one place.
+    for (const value of tokens.values()) assert.ok(!new RegExp(`${value}(?![\\da-f])`, "i").test(body), `${selector}: ${value} written out instead of its var()`);
+    if (body.includes("var(")) {
+      for (const subject of selectorList(selector)) {
+        assert.ok(!/^\.pl-target-highlight\b/.test(subject) && !/^\.pl-feedback-active(\s+\*)?$/.test(subject), `${subject}: a page element, where the widget's colors are not set`);
+      }
+    }
+  }
+});

@@ -215,6 +215,35 @@ function styleRules(widget) {
   return rules;
 }
 
+// The widget's custom properties (#170) put in for the var() that names one,
+// so the checks below read the colors the browser computes. They are read only
+// as the widget sets them: as hex values, once, on its top-level nodes outside
+// at-rules, without !important, and named by a var() of nothing else. Any
+// other use fails here instead of being read differently from the browser.
+const TOKEN_ROOTS = ".pl-root, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-selection]";
+function resolveTokens(rules) {
+  const tokens = new Map();
+  for (const { selector, declarations, important, condition } of rules) {
+    for (const [name, value] of Object.entries(declarations).filter(([property]) => property.startsWith("--"))) {
+      const where = `${selector} { ${name} }`;
+      assert.ok(selector === TOKEN_ROOTS && !condition && !important.has(name), `${where}: custom property not read by the contrast check`);
+      assert.match(value, /^#[\da-f]{3}(?:[\da-f]{3})?$/i, `${where}: custom property as a hex value`);
+      assert.ok(!tokens.has(name), `${where}: custom property set twice`);
+      tokens.set(name, value);
+    }
+  }
+  return rules.map((rule) => {
+    const declarations = { ...rule.declarations };
+    for (const [property, value] of Object.entries(declarations)) {
+      if (!value.includes("var(") || !["color", "background"].includes(property)) continue;
+      const name = value.match(/^var\((--[a-z][a-z0-9-]*)\)$/)?.[1];
+      assert.ok(name && tokens.has(name), `${rule.selector} { ${property}: ${value} }: not read by the contrast check`);
+      declarations[property] = tokens.get(name);
+    }
+    return { ...rule, declarations };
+  });
+}
+
 // A selector list split at its top-level commas (not those inside :is() and
 // the like).
 function selectorList(prelude) {
@@ -250,7 +279,7 @@ function cascadedRules(rules) {
 test("every text color of the widget meets 4.5:1 on the backgrounds it is shown on (#125)", () => {
   const widget = widgetHarness();
   widget.init();
-  const allRules = styleRules(widget);
+  const allRules = resolveTokens(styleRules(widget));
   // What sets the color of text or what is behind it. The checks below read
   // plain color, background and opacity outside at-rules; anything else that
   // could change the contrast fails here instead of passing unread.
