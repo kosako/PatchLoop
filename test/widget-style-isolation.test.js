@@ -60,3 +60,50 @@ test("widget styles start with the host-page reset and every later rule outranks
     }
   }
 });
+
+// Each rule in source order with the at-rule it sits in (null outside any).
+function conditionedRules(css) {
+  const rules = [];
+  const preludes = [];
+  let start = 0;
+  for (let index = 0; index < css.length; index += 1) {
+    if (css[index] === "{") {
+      preludes.push(css.slice(start, index).trim());
+      start = index + 1;
+    } else if (css[index] === "}") {
+      const prelude = preludes.pop();
+      if (!prelude.startsWith("@")) {
+        const declarations = css.slice(start, index).split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
+          const colon = part.indexOf(":");
+          return { property: part.slice(0, colon).trim(), important: /!important$/.test(part) };
+        });
+        rules.push({ selectors: selectorList(prelude), declarations, condition: preludes.findLast((outer) => outer.startsWith("@")) ?? null });
+      }
+      start = index + 1;
+    }
+  }
+  return rules;
+}
+
+// A declaration that a later rule with the same selector and the same at-rule
+// overrides, for every selector it is written for, never applies and only
+// misleads a reader (#170). A shared rule that one of its selectors overrides
+// later (.pl-capture-note, .pl-edit-note) still applies to the others.
+// Not read: a later rule of a different selector or a higher specificity that
+// also overrides it.
+test("no widget declaration is overridden by a later rule for every selector it is written for (#170)", () => {
+  const widget = widgetHarness();
+  widget.init();
+  const rules = conditionedRules(widget.document.querySelector("[data-patchloop-style]").textContent);
+  assert.ok(rules.length > 50);
+  const overridden = [];
+  rules.forEach((rule, index) => {
+    const later = rules.slice(index + 1).filter(({ condition }) => condition === rule.condition);
+    for (const { property, important } of rule.declarations) {
+      const dead = rule.selectors.every((selector) => later.some((other) => other.selectors.includes(selector)
+        && other.declarations.some((declaration) => declaration.property === property && (declaration.important || !important))));
+      if (dead) overridden.push(`${rule.selectors.join(", ")} { ${property} }`);
+    }
+  });
+  assert.deepEqual(overridden, []);
+});
