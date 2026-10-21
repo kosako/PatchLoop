@@ -65,6 +65,54 @@ function rectFromPoints(start, end, metrics) {
   };
 }
 
+// The coordinates a target stores for a spot at these page pixels: the pixels
+// whole, the percentages to one decimal. The viewport values are derived from
+// the page pixels as rounded for storage, the way the screenshot places its
+// mark, so both agree under a fractional scroll.
+function storedPointAt(pageX, pageY, metrics) {
+  const point = pointFromClient(Math.round(pageX) - metrics.scrollX, Math.round(pageY) - metrics.scrollY, metrics);
+  return {
+    x: round(point.x),
+    y: round(point.y),
+    clientX: Math.round(point.clientX),
+    clientY: Math.round(point.clientY),
+    pageX: Math.round(point.pageX),
+    pageY: Math.round(point.pageY),
+    documentX: round(point.documentX),
+    documentY: round(point.documentY)
+  };
+}
+
+// What an area target stores (#170): its top-left corner as the target's
+// point, and target.area, which repeats the corner with the size.
+// rect: { pageLeftPx, pageTopPx, widthPx, heightPx }, as from rectFromPoints.
+function storedAreaFields(rect, metrics) {
+  const point = storedPointAt(rect.pageLeftPx, rect.pageTopPx, metrics);
+  const viewportWidth = Math.max(metrics.viewportWidth, 1);
+  const viewportHeight = Math.max(metrics.viewportHeight, 1);
+  const documentWidth = Math.max(metrics.documentWidth, 1);
+  const documentHeight = Math.max(metrics.documentHeight, 1);
+  return {
+    point,
+    area: {
+      x: point.x,
+      y: point.y,
+      width: round((rect.widthPx / viewportWidth) * 100),
+      height: round((rect.heightPx / viewportHeight) * 100),
+      clientX: point.clientX,
+      clientY: point.clientY,
+      clientWidth: Math.round(rect.widthPx),
+      clientHeight: Math.round(rect.heightPx),
+      pageX: point.pageX,
+      pageY: point.pageY,
+      documentX: point.documentX,
+      documentY: point.documentY,
+      documentWidth: round((rect.widthPx / documentWidth) * 100),
+      documentHeight: round((rect.heightPx / documentHeight) * 100)
+    }
+  };
+}
+
 function rectContainsArea(elementRect, rect) {
   return elementRect.left <= rect.leftPx + 1
     && elementRect.top <= rect.topPx + 1
@@ -110,7 +158,7 @@ function rectFromStoredArea(area, metrics) {
   };
 }
 
-return { round, numberOrNull, pointFromClient, rectFromPoints, rectContainsArea, documentPercentToPxX, documentPercentToPxY, pointFromStoredTarget, rectFromStoredArea };
+return { round, numberOrNull, pointFromClient, rectFromPoints, storedPointAt, storedAreaFields, rectContainsArea, documentPercentToPxX, documentPercentToPxY, pointFromStoredTarget, rectFromStoredArea };
 })();
 // --- widget/src/anchoring.js ---
 const __pl_widget_src_anchoring = (() => {
@@ -2237,7 +2285,7 @@ function saveOtherPageFeedback(page) {
 
 return { FEEDBACK_STORAGE_VERSION, loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadLauncher, saveLauncher, loadPersistedFeedback, persistFeedbackList, syncPersistedFeedback, isOwnFeedbackKey, clearPersistedFeedback, bindFeedbackScope, serializeFeedbackForStorage, normalizePersistedFeedback, isMatchingFeedbackEnvelope, loadOtherPagesFeedback, isDemoFeedbackKey, saveOtherPageFeedback };
 })();
-const { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarget, rectFromStoredArea, round, numberOrNull } = __pl_widget_src_geometry;
+const { pointFromClient, rectFromPoints, rectContainsArea, pointFromStoredTarget, rectFromStoredArea, storedPointAt, storedAreaFields, numberOrNull } = __pl_widget_src_geometry;
 const { pointAnchorOffsets, areaAnchorOffsets, geometryFromAnchor, viewportDiffersFromCreation } = __pl_widget_src_anchoring;
 const { selectorFor, textFor } = __pl_widget_src_selector;
 const { resolveSourceContext } = __pl_widget_src_source_context;
@@ -2633,7 +2681,8 @@ function handleDocumentMouseUp(event) {
 
   const start = state.drag.startedAt;
   const end = pointFromEvent(event);
-  const rect = rectFromPoints(start, end, viewportMetrics());
+  const metrics = viewportMetrics();
+  const rect = rectFromPoints(start, end, metrics);
   const target = state.drag.keyboard ? state.drag.target : document.elementFromPoint(start.clientX, start.clientY) || state.drag.target;
 
   discardPendingMarker();
@@ -2645,25 +2694,11 @@ function handleDocumentMouseUp(event) {
   if (state.drag.isDragging) {
     marker = addArea(rect);
     const areaAnchor = buildAreaAnchor(target, rect, end);
+    const { point, area } = storedAreaFields(rect, metrics);
     state.pendingTarget = {
       kind: "area",
-      ...pointFromClient(rect.leftPx, rect.topPx, viewportMetrics()),
-      area: {
-        x: round(rect.x),
-        y: round(rect.y),
-        width: round(rect.width),
-        height: round(rect.height),
-        clientX: Math.round(rect.leftPx),
-        clientY: Math.round(rect.topPx),
-        clientWidth: Math.round(rect.widthPx),
-        clientHeight: Math.round(rect.heightPx),
-        pageX: Math.round(rect.pageLeftPx),
-        pageY: Math.round(rect.pageTopPx),
-        documentX: round(rect.documentX),
-        documentY: round(rect.documentY),
-        documentWidth: round(rect.documentWidth),
-        documentHeight: round(rect.documentHeight)
-      },
+      ...point,
+      area,
       selector: selectorFor(target, document.body),
       elementText: textFor(target),
       anchor: areaAnchor.anchor,
@@ -3672,38 +3707,17 @@ function reanchorGeometry(target, element) {
   return geometryFromAnchor(target.kind, anchor, rect, window.scrollX, window.scrollY);
 }
 
-// The viewport values are derived from the page pixels as rounded for storage,
-// the way the screenshot places its mark, so both agree under a fractional scroll.
+// Stores the target's coordinates for where the geometry now puts it, as a
+// capture does (storedPointAt and storedAreaFields in geometry.js).
 function refreshTargetCoordinates(target, geometry) {
+  const metrics = viewportMetrics();
   if (geometry.kind === "area" && target.area) {
-    const topLeft = pointFromClient(Math.round(geometry.pageLeftPx) - window.scrollX, Math.round(geometry.pageTopPx) - window.scrollY, viewportMetrics());
-    const viewportWidth = Math.max(document.documentElement.clientWidth, 1);
-    const viewportHeight = Math.max(document.documentElement.clientHeight, 1);
-    const documentWidth = Math.max(document.documentElement.scrollWidth, 1);
-    const documentHeight = Math.max(document.documentElement.scrollHeight, 1);
-
-    assignPointFields(target, topLeft);
-    Object.assign(target.area, {
-      x: round(topLeft.x),
-      y: round(topLeft.y),
-      width: round((geometry.widthPx / viewportWidth) * 100),
-      height: round((geometry.heightPx / viewportHeight) * 100),
-      clientX: Math.round(topLeft.clientX),
-      clientY: Math.round(topLeft.clientY),
-      clientWidth: Math.round(geometry.widthPx),
-      clientHeight: Math.round(geometry.heightPx),
-      pageX: Math.round(topLeft.pageX),
-      pageY: Math.round(topLeft.pageY),
-      documentX: round(topLeft.documentX),
-      documentY: round(topLeft.documentY),
-      documentWidth: round((geometry.widthPx / documentWidth) * 100),
-      documentHeight: round((geometry.heightPx / documentHeight) * 100)
-    });
+    const { point, area } = storedAreaFields(geometry, metrics);
+    Object.assign(target, point);
+    Object.assign(target.area, area);
     return;
   }
-
-  const point = pointFromClient(Math.round(geometry.pageX) - window.scrollX, Math.round(geometry.pageY) - window.scrollY, viewportMetrics());
-  assignPointFields(target, point);
+  Object.assign(target, storedPointAt(geometry.pageX, geometry.pageY, metrics));
 }
 
 // #155: a comment's target stays the record of when it was confirmed, so a
@@ -3726,17 +3740,6 @@ function storedPlacement(target) {
   }
   const point = pointFromStoredTarget(target, viewportMetrics());
   return point && { kind: "point", ...point };
-}
-
-function assignPointFields(target, point) {
-  target.x = round(point.x);
-  target.y = round(point.y);
-  target.clientX = Math.round(point.clientX);
-  target.clientY = Math.round(point.clientY);
-  target.pageX = Math.round(point.pageX);
-  target.pageY = Math.round(point.pageY);
-  target.documentX = round(point.documentX);
-  target.documentY = round(point.documentY);
 }
 
 // Returns whether the marker moved. origin: markerOrigin(), measured once by a

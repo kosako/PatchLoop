@@ -60,6 +60,54 @@ export function rectFromPoints(start, end, metrics) {
   };
 }
 
+// The coordinates a target stores for a spot at these page pixels: the pixels
+// whole, the percentages to one decimal. The viewport values are derived from
+// the page pixels as rounded for storage, the way the screenshot places its
+// mark, so both agree under a fractional scroll.
+export function storedPointAt(pageX, pageY, metrics) {
+  const point = pointFromClient(Math.round(pageX) - metrics.scrollX, Math.round(pageY) - metrics.scrollY, metrics);
+  return {
+    x: round(point.x),
+    y: round(point.y),
+    clientX: Math.round(point.clientX),
+    clientY: Math.round(point.clientY),
+    pageX: Math.round(point.pageX),
+    pageY: Math.round(point.pageY),
+    documentX: round(point.documentX),
+    documentY: round(point.documentY)
+  };
+}
+
+// What an area target stores (#170): its top-left corner as the target's
+// point, and target.area, which repeats the corner with the size.
+// rect: { pageLeftPx, pageTopPx, widthPx, heightPx }, as from rectFromPoints.
+export function storedAreaFields(rect, metrics) {
+  const point = storedPointAt(rect.pageLeftPx, rect.pageTopPx, metrics);
+  const viewportWidth = Math.max(metrics.viewportWidth, 1);
+  const viewportHeight = Math.max(metrics.viewportHeight, 1);
+  const documentWidth = Math.max(metrics.documentWidth, 1);
+  const documentHeight = Math.max(metrics.documentHeight, 1);
+  return {
+    point,
+    area: {
+      x: point.x,
+      y: point.y,
+      width: round((rect.widthPx / viewportWidth) * 100),
+      height: round((rect.heightPx / viewportHeight) * 100),
+      clientX: point.clientX,
+      clientY: point.clientY,
+      clientWidth: Math.round(rect.widthPx),
+      clientHeight: Math.round(rect.heightPx),
+      pageX: point.pageX,
+      pageY: point.pageY,
+      documentX: point.documentX,
+      documentY: point.documentY,
+      documentWidth: round((rect.widthPx / documentWidth) * 100),
+      documentHeight: round((rect.heightPx / documentHeight) * 100)
+    }
+  };
+}
+
 export function rectContainsArea(elementRect, rect) {
   return elementRect.left <= rect.leftPx + 1
     && elementRect.top <= rect.topPx + 1
