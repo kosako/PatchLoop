@@ -67,9 +67,12 @@ test("widget styles start with the host-page reset and every later rule outranks
 // which apply their rules or not and leave the order of the rules as it is.
 // Any other at-rule fails: @layer, for one, orders its rules by the layer
 // (each @layer without a name is a layer of its own), and !important the
-// other way round. A rule nested in a rule fails too, as its outer selector
-// would be lost, and so does a comment, an escape or a string of anything but
-// words, any of which could hide a brace or a ";" from this reading.
+// other way round. Anything nested in a style rule (a rule, @media or
+// @supports) fails too, as its outer selector would be lost, and so does a
+// comment, an escape or a string of anything but words, any of which could
+// hide a brace or a ";" from this reading. A declaration without a colon,
+// text before a rule that is not its selector, a declaration put in an
+// at-rule outside a rule, an unmatched } and a rule left open fail as well.
 function conditionedRules(css) {
   assert.ok(!css.includes("/*") && !css.includes("\\") && !/["']/.test(css.replace(/"[A-Za-z0-9 -]*"/g, "")), "a comment, an escape or a string is not read");
   const rules = [];
@@ -78,15 +81,21 @@ function conditionedRules(css) {
   for (let index = 0; index < css.length; index += 1) {
     if (css[index] === "{") {
       const prelude = css.slice(start, index).trim();
+      assert.ok(prelude && !prelude.includes(";"), `${prelude}: not a selector or an at-rule alone, not read`);
       assert.ok(!prelude.startsWith("@") || /^@(media|supports)\b/.test(prelude), `${prelude}: an at-rule other than @media and @supports is not read`);
+      assert.ok(preludes.every((outer) => outer.startsWith("@")), `${prelude}: nested in a rule, not read`);
       preludes.push(prelude);
       start = index + 1;
     } else if (css[index] === "}") {
+      assert.ok(preludes.length > 0, "an unmatched } is not read");
       const prelude = preludes.pop();
-      if (!prelude.startsWith("@")) {
-        assert.ok(preludes.every((outer) => outer.startsWith("@")), `${prelude}: a rule nested in a rule is not read`);
-        const declarations = css.slice(start, index).split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
+      const body = css.slice(start, index);
+      if (prelude.startsWith("@")) {
+        assert.ok(!body.trim(), `${prelude} { ${body.trim()} }: a declaration outside a rule is not read`);
+      } else {
+        const declarations = body.split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
           const colon = part.indexOf(":");
+          assert.ok(colon > 0, `${prelude} { ${part} }: a declaration without a colon is not read`);
           return { property: part.slice(0, colon).trim().toLowerCase(), important: /!\s*important$/i.test(part) };
         });
         rules.push({ selectors: selectorList(prelude), declarations, conditions: JSON.stringify(preludes) });
@@ -94,6 +103,7 @@ function conditionedRules(css) {
       start = index + 1;
     }
   }
+  assert.ok(preludes.length === 0 && !css.slice(start).trim(), "a rule left open is not read");
   return rules;
 }
 
@@ -140,6 +150,13 @@ test("the check for overridden declarations reads at-rules, selector lists and !
   assert.deepEqual(overriddenDeclarations(".a { color: red ! important; } .a { color: blue; }"), []);
   assert.deepEqual(overriddenDeclarations(".a { color: red; } .a { color: blue !important; }"), [".a { color }"]);
   assert.throws(() => overriddenDeclarations(".a { .b { color: red; } }"), /nested in a rule/);
+  assert.throws(() => overriddenDeclarations(".a { @media screen { width: 320px; } } @media screen { .a { width: 400px; } }"), /nested in a rule/);
+  assert.throws(() => overriddenDeclarations(".a { @supports (display: grid) { width: 320px; } }"), /nested in a rule/);
+  assert.throws(() => overriddenDeclarations("@media screen { width: 320px; .a { width: 400px; } }"), /not a selector or an at-rule alone/);
+  assert.throws(() => overriddenDeclarations("@media screen { width: 320px; }"), /declaration outside a rule/);
+  assert.throws(() => overriddenDeclarations(".a { color red; }"), /without a colon/);
+  assert.throws(() => overriddenDeclarations(".a { color: red; } }"), /unmatched }/);
+  assert.throws(() => overriddenDeclarations(".a { color: red; } .a { color: blue;"), /left open/);
   // Two @layer blocks without a name are two layers, where the first one's
   // !important declaration wins: not read.
   assert.throws(() => overriddenDeclarations("@layer { .a { font-weight: 900 !important; } } @layer { .a { font-weight: 600 !important; } }"), /other than @media and @supports/);
