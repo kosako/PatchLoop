@@ -72,7 +72,12 @@ test("widget styles start with the host-page reset and every later rule outranks
 // comment, an escape or a string of anything but words, any of which could
 // hide a brace or a ";" from this reading. A declaration without a colon,
 // text before a rule that is not its selector, a declaration put in an
-// at-rule outside a rule, an unmatched } and a rule left open fail as well.
+// at-rule outside a rule, an unmatched } or ) and a rule left open fail as
+// well. Declarations are split at the ";" outside parentheses, so one inside
+// url() or another function stays in its declaration.
+// Known limit: the CSS is not cut into tokens as a browser cuts it (a space
+// CSS does not count as one, such as U+00A0, is read as one). The check
+// guards the CSS this widget is written in, not CSS made to slip past it.
 function conditionedRules(css) {
   assert.ok(!css.includes("/*") && !css.includes("\\") && !/["']/.test(css.replace(/"[A-Za-z0-9 -]*"/g, "")), "a comment, an escape or a string is not read");
   const rules = [];
@@ -93,7 +98,7 @@ function conditionedRules(css) {
       if (prelude.startsWith("@")) {
         assert.ok(!body.trim(), `${prelude} { ${body.trim()} }: a declaration outside a rule is not read`);
       } else {
-        const declarations = body.split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
+        const declarations = declarationsOf(prelude, body).map((part) => {
           const colon = part.indexOf(":");
           assert.ok(colon > 0, `${prelude} { ${part} }: a declaration without a colon is not read`);
           return { property: part.slice(0, colon).trim().toLowerCase(), important: /!\s*important$/i.test(part) };
@@ -105,6 +110,27 @@ function conditionedRules(css) {
   }
   assert.ok(preludes.length === 0 && !css.slice(start).trim(), "a rule left open is not read");
   return rules;
+}
+
+// The declarations of a rule's body, split at each ";" outside parentheses.
+function declarationsOf(prelude, body) {
+  const parts = [];
+  let depth = 0;
+  let current = "";
+  for (const char of body) {
+    if (char === "(") depth += 1;
+    if (char === ")") depth -= 1;
+    assert.ok(depth >= 0, `${prelude} { ${body.trim()} }: an unmatched ) is not read`);
+    if (char === ";" && depth === 0) {
+      parts.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  assert.ok(depth === 0, `${prelude} { ${body.trim()} }: an unmatched ( is not read`);
+  parts.push(current);
+  return parts.map((part) => part.trim()).filter(Boolean);
 }
 
 // The widget's CSS sets a property for a selector once (#170): a later rule
@@ -157,6 +183,11 @@ test("the check for overridden declarations reads at-rules, selector lists and !
   assert.throws(() => overriddenDeclarations(".a { color red; }"), /without a colon/);
   assert.throws(() => overriddenDeclarations(".a { color: red; } }"), /unmatched }/);
   assert.throws(() => overriddenDeclarations(".a { color: red; } .a { color: blue;"), /left open/);
+  // A ";" or an !important inside url() belongs to its declaration.
+  assert.deepEqual(overriddenDeclarations(".a { background-image: url(./icon.svg;width:320px); } .a { width: 400px; }"), []);
+  assert.deepEqual(overriddenDeclarations(".a { background-image: url(./icon.svg!important;x:y); } .a { background-image: none; }"), [".a { background-image }"]);
+  assert.throws(() => overriddenDeclarations(".a { width: calc(1px + 2px; }"), /unmatched \(/);
+  assert.throws(() => overriddenDeclarations(".a { width: 1px); }"), /unmatched \)/);
   // Two @layer blocks without a name are two layers, where the first one's
   // !important declaration wins: not read.
   assert.throws(() => overriddenDeclarations("@layer { .a { font-weight: 900 !important; } } @layer { .a { font-weight: 600 !important; } }"), /other than @media and @supports/);
