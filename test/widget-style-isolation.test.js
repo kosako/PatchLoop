@@ -63,15 +63,23 @@ test("widget styles start with the host-page reset and every later rule outranks
 
 // Each rule in source order with the at-rules it sits in, outermost first: a
 // rule in @supports in @media screen is not under the same conditions as one
-// in the same @supports in @media print. A rule nested in a rule fails, as
-// its outer selector would be lost.
+// in the same @supports in @media print. Only @media and @supports are read,
+// which apply their rules or not and leave the order of the rules as it is.
+// Any other at-rule fails: @layer, for one, orders its rules by the layer
+// (each @layer without a name is a layer of its own), and !important the
+// other way round. A rule nested in a rule fails too, as its outer selector
+// would be lost, and so does a comment, an escape or a string of anything but
+// words, any of which could hide a brace or a ";" from this reading.
 function conditionedRules(css) {
+  assert.ok(!css.includes("/*") && !css.includes("\\") && !/["']/.test(css.replace(/"[A-Za-z0-9 -]*"/g, "")), "a comment, an escape or a string is not read");
   const rules = [];
   const preludes = [];
   let start = 0;
   for (let index = 0; index < css.length; index += 1) {
     if (css[index] === "{") {
-      preludes.push(css.slice(start, index).trim());
+      const prelude = css.slice(start, index).trim();
+      assert.ok(!prelude.startsWith("@") || /^@(media|supports)\b/.test(prelude), `${prelude}: an at-rule other than @media and @supports is not read`);
+      preludes.push(prelude);
       start = index + 1;
     } else if (css[index] === "}") {
       const prelude = preludes.pop();
@@ -79,7 +87,7 @@ function conditionedRules(css) {
         assert.ok(preludes.every((outer) => outer.startsWith("@")), `${prelude}: a rule nested in a rule is not read`);
         const declarations = css.slice(start, index).split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
           const colon = part.indexOf(":");
-          return { property: part.slice(0, colon).trim(), important: /!important$/.test(part) };
+          return { property: part.slice(0, colon).trim().toLowerCase(), important: /!\s*important$/i.test(part) };
         });
         rules.push({ selectors: selectorList(prelude), declarations, conditions: JSON.stringify(preludes) });
       }
@@ -94,8 +102,8 @@ function conditionedRules(css) {
 // only misleads a reader (#170). A shared rule that one of its selectors
 // overrides later (.pl-capture-note, .pl-edit-note) still applies to the
 // others, and an !important declaration is not overridden by a later plain one.
-// Not read: a later rule of a different selector or a higher specificity that
-// also overrides it.
+// Not read: a later rule of a different selector or a higher specificity, or
+// a shorthand (font over font-weight), that also overrides it.
 function overriddenDeclarations(css) {
   const rules = conditionedRules(css);
   const overridden = [];
@@ -121,8 +129,15 @@ test("the check for overridden declarations reads at-rules, selector lists and !
   assert.deepEqual(overriddenDeclarations(".a, .b { color: red; } .a { color: blue; } .b { color: green; }"), [".a, .b { color }"]);
   assert.deepEqual(overriddenDeclarations(":is(.a, .b) { color: red; } .a { color: blue; }"), []);
   assert.deepEqual(overriddenDeclarations(".a { color: red !important; } .a { color: blue; }"), []);
+  assert.deepEqual(overriddenDeclarations(".a { color: red ! important; } .a { color: blue; }"), []);
   assert.deepEqual(overriddenDeclarations(".a { color: red; } .a { color: blue !important; }"), [".a { color }"]);
   assert.throws(() => overriddenDeclarations(".a { .b { color: red; } }"), /nested in a rule/);
+  // Two @layer blocks without a name are two layers, where the first one's
+  // !important declaration wins: not read.
+  assert.throws(() => overriddenDeclarations("@layer { .a { font-weight: 900 !important; } } @layer { .a { font-weight: 600 !important; } }"), /other than @media and @supports/);
+  assert.throws(() => overriddenDeclarations("@media screen { @layer base { .a { color: red; } } }"), /other than @media and @supports/);
+  assert.throws(() => overriddenDeclarations(".a { color: red; } /* } .a { */ .a { color: blue; }"), /comment, an escape or a string/);
+  assert.throws(() => overriddenDeclarations('.a::before { content: ";}"; }'), /comment, an escape or a string/);
 });
 
 test("no widget declaration is overridden by a later rule for every selector it is written for (#170)", () => {
