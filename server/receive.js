@@ -993,7 +993,8 @@ function handlePostGitHubIssue(req, res, id) {
 
       const existing = item.integrations && item.integrations.github;
       if (existing && existing.status === "created") {
-        respondJson(res, 409, { ok: false, error: `GitHub issue already created: ${existing.url || `#${existing.issueNumber}`}`, github: existing });
+        const where = existing.url || (existing.issueNumber != null ? `#${existing.issueNumber}` : "");
+        respondJson(res, 409, { ok: false, error: `GitHub issue already created${where ? `: ${where}` : ""}`, github: existing });
         return;
       }
 

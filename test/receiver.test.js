@@ -1183,6 +1183,39 @@ test("POST /feedback/:id/github-issue persists failures and requires configurati
   assert.equal(stored[0].integrations.github.statusCode, 422);
 });
 
+test("POST /feedback/:id/github-issue answers with the state it stored, which the inbox shows (#170)", async (t) => {
+  const answers = [
+    [201, { number: 7, html_url: "https://github.com/acme/demo/issues/7" }],
+    [201, "not json"],
+    [422, { message: "Validation Failed" }]
+  ];
+  const github = await startMockGitHub(t, (res) => {
+    const [status, body] = answers.shift();
+    res.writeHead(status, { "Content-Type": "application/json" });
+    res.end(typeof body === "string" ? body : JSON.stringify(body));
+  });
+  const receiver = await startReceiver(t, { GITHUB_TOKEN: "test-token", GITHUB_REPO: "acme/demo", GITHUB_API_BASE: github.baseUrl });
+  const ids = ["pl_github_state_1", "pl_github_state_2", "pl_github_state_3"];
+  for (const id of ids) await postJson(`${receiver.baseUrl}/feedback`, feedbackPayload(id));
+
+  const responses = [];
+  for (const id of ids) responses.push(await postJson(`${receiver.baseUrl}/feedback/${id}/github-issue`, {}));
+  assert.deepEqual(responses.map(({ status, body }) => `${status} ${body.github.status}`), ["201 created", "201 created", "502 failed"]);
+  const stored = new Map((await readStoredFeedback(receiver.dbPath)).map((item) => [item.id, item.integrations.github]));
+  ids.forEach((id, index) => assert.equal(JSON.stringify(responses[index].body.github), JSON.stringify(stored.get(id)), id));
+  assert.equal(`${stored.get(ids[1]).issueNumber} ${JSON.stringify(stored.get(ids[1]).url)}`, 'null ""');
+
+  // Asked again, an issue it created is named by its URL, or not at all when
+  // GitHub's answer could not be read.
+  const again = [];
+  for (const id of ids.slice(0, 2)) again.push(await postJson(`${receiver.baseUrl}/feedback/${id}/github-issue`, {}));
+  assert.deepEqual(again.map(({ status, body }) => `${status} ${body.error} ${body.github.status}`), [
+    "409 GitHub issue already created: https://github.com/acme/demo/issues/7 created",
+    "409 GitHub issue already created created"
+  ]);
+  assert.equal(github.requests.length, 3);
+});
+
 function startMockGitHub(t, respond) {
   return new Promise((resolve) => {
     const requests = [];

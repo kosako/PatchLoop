@@ -123,7 +123,7 @@ function createInboxView(deps) {
           ${uncaptured ? `<div><dt>写らない要素</dt><dd>${escapeHtml(uncapturedSummaryText(uncaptured))}</dd></div>` : ""}
           <div><dt>Source</dt><dd>${source}</dd></div>
           <div><dt>Slack</dt><dd>${escapeHtml(formatSlackStatus(slack))}</dd></div>
-          <div><dt>GitHub</dt><dd>${githubStatus}</dd></div>
+          <div><dt>GitHub</dt><dd data-github-status>${githubStatus}</dd></div>
           <div><dt>Created</dt><dd>${createdAt}</dd></div>
           ${replaces ? `<div><dt>Replaces</dt><dd><code>${escapeHtml(replaces)}</code></dd></div>` : ""}
           ${importedAt ? `<div><dt>Imported</dt><dd>${importedAt}</dd></div>` : ""}
