@@ -133,7 +133,7 @@ widget が対応するのは、デスクトップの Chrome と Edge（どちら
 - `slackWebhookUrl` (string, optional) — `deliveryMode: "slack-webhook"` 時にブラウザから直接送る Slack Incoming Webhook URL
 - `showDeliverySettings` (boolean, optional) — パネル内に送信先切替 UI（「送信先・設定」）を表示するか。デフォルトは `false`
 - `captureScreenshot` (boolean, optional) — viewport snapshot を payload に含めるか。デフォルトは `true`
-- `screenshotMaxBytes` (number, optional) — widget 側で snapshot を省略する最大バイト数。デフォルトは `1200000`
+- `screenshotMaxBytes` (number, optional) — widget 側で snapshot を省略する最大バイト数。デフォルトは `1200000`。receiver の `SCREENSHOT_MAX_BYTES` の方が小さいと、それを超えた画像は receiver が省き、コメントだけを受け取ります
 - `onSubmit(payload)` (function, optional) — submit のたびに呼ばれる callback。同期例外・返したPromiseのrejectionはconsoleに警告し、receiver / Slackへの配送はcallbackの成功・完了に依存せず継続します
 
 ### window.PatchLoop API
@@ -290,8 +290,8 @@ feedback は組み込みの `node:sqlite`（`server/feedback.db`）に保存し�
 - `FEEDBACK_DB_PATH` env で sqlite DB の保存先を変更できます（`FEEDBACK_STORE_PATH` は保存先ではなく、旧 `feedback.json` の移行元です）
 - `SCREENSHOT_DIR` env で screenshot 保存先を変更できます
 - `PUBLIC_BASE_URL` env で Slack に載せる receiver の URL を指定できます
-- `MAX_BODY_BYTES` / `SCREENSHOT_MAX_BYTES` env で payload / screenshot の上限を変更できます
-- `MAX_IMPORT_ITEMS` / `MAX_FIELD_LENGTH` / `MAX_ARRAY_LENGTH` / `MAX_OBJECT_DEPTH` env（または config の `maxImportItems` / `maxFieldLength` / `maxArrayLength` / `maxObjectDepth`）で、受信 payload の形（`POST /import` 1 回の件数・文字列長・配列長・ネスト深さ）の上限を変更できます。未設定でもローカルで困らない緩いデフォルト（`500` / `20000` / `1000` / `32`）が常に有効です（超過は `413`。`screenshot.dataUrl` は `SCREENSHOT_MAX_BYTES` 側で別途上限）。`MAX_FIELD_LENGTH` を変えたときは、widget の `maxFieldLength` も同じ値にしてください
+- `MAX_BODY_BYTES` / `SCREENSHOT_MAX_BYTES` env で payload / screenshot の上限を変更できます。画面画像が `SCREENSHOT_MAX_BYTES` を超えたときは、コメントごと拒否せず、画像を保存せずに `status: "omitted", reason: "too-large"`（`bytes` と `maxBytes` 付き）として受け取ります（受信箱には `omitted: <bytes> bytes exceeds <maxBytes>` と出ます）。画像は送り直しても小さくならないためです。`POST /feedback` と `POST /import` で同じです
+- `MAX_IMPORT_ITEMS` / `MAX_FIELD_LENGTH` / `MAX_ARRAY_LENGTH` / `MAX_OBJECT_DEPTH` env（または config の `maxImportItems` / `maxFieldLength` / `maxArrayLength` / `maxObjectDepth`）で、受信 payload の形（`POST /import` 1 回の件数・文字列長・配列長・ネスト深さ）の上限を変更できます。未設定でもローカルで困らない緩いデフォルト（`500` / `20000` / `1000` / `32`）が常に有効です（超過は `413`。`screenshot.dataUrl` は文字列長の上限から外し、`SCREENSHOT_MAX_BYTES` を超える画像は省きます）。`MAX_FIELD_LENGTH` を変えたときは、widget の `maxFieldLength` も同じ値にしてください
 - `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS` / `RATE_LIMIT_MAX_CLIENTS` env（または config の `rateLimitMax` / `rateLimitWindowMs` / `rateLimitMaxClients`）で、IP ごとの固定窓レート制限を変更できます（デフォルト `120` req / `60000` ms、超過は `429` + `Retry-After`）。クライアント識別は既定で socket の remoteAddress。reverse proxy 配下では `RECEIVER_TRUST_PROXY` を `1` にしたときだけ `X-Forwarded-For` 先頭を使います（既定では直アクセスがヘッダーで識別を偽装できないようにするため）
 - `MAX_FEEDBACK_COUNT` env（または config の `maxFeedbackCount`、デフォルト `100000`）を超えると新規保存を `507` で拒否します。import の追加件数には、保存済みIDとbundle内の重複IDを含めません。`SCREENSHOT_DISK_MAX_BYTES` env（または config の `screenshotDiskMaxBytes`、デフォルト `500000000`）を超える screenshot 書き込みも `507` で拒否します（起動時にディスク使用量を実測し、保存・削除で追跡）
 - `RECEIVER_TOKEN` env（または config の `receiverToken`）を設定すると、操作系 endpoint（`POST /import` / `POST /feedback/:id/status` / `DELETE /feedback/:id` / `POST /feedback/:id/github-issue`）と閲覧系 endpoint（`GET /`（inbox）/ `GET /feedback.json` / `GET /screenshots/:file`）に認証を必須にします。API からは `Authorization: Bearer <token>`、ブラウザからは inbox のログインフォーム（`GET /login`）に同じ token を入力します。ログイン後は HMAC 派生値の HttpOnly cookie（有効期限 7 日、`SameSite=Lax`、`publicBaseUrl` が `https://` のとき `Secure` 付き）でセッションが維持され、生 token はブラウザに保存されません。token を変更すると全端末のセッションが即失効します。ログインしたブラウザから inbox の「ログアウト」（`POST /logout`）をしても、そのブラウザだけでなく全端末のセッションが失効します（receiver が保存するセッションの世代を進め、それより前に発行した cookie を通さない。世代は store に保存するので再起動しても戻りません。ログインしていない `POST /logout` は自分の cookie を消すだけです）。Bearer token は失効しません。この形より前に発行した cookie は通らないので、更新後に一度ログインし直してください。未設定ならローカルは認証なしで動作します（widget の `POST /feedback` と `GET /widget.js` は設定時も常に公開。widget の status 照会 `POST /feedback-status` は既定では設定時に無くなる）

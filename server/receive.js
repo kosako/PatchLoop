@@ -1329,8 +1329,8 @@ function normalizeFeedbackPayload(payload) {
 // beyond storage size: the store's JSON.stringify would overflow the stack and
 // surface as a 500, so the depth cap (well below that limit) must apply
 // everywhere. The only exemption is the real top-level feedback.screenshot's
-// base64 dataUrl string: it is legitimately large and bounded separately by
-// SCREENSHOT_MAX_BYTES. The exemption is scoped to that exact field (not any
+// base64 dataUrl string: it is legitimately large, bounded by MAX_BODY_BYTES,
+// and an image over SCREENSHOT_MAX_BYTES is left out (#152). The exemption is scoped to that exact field (not any
 // "dataUrl"/"screenshot" key at any depth), so data can't be smuggled past the
 // caps — and from there into stored records or a GitHub issue body — by naming
 // a field dataUrl or burying it under a screenshot key.
@@ -1433,10 +1433,12 @@ function validateNumericObject(value, label, fields) {
   }
 }
 
-// Validates the screenshot's data URL / mime / size without writing a file, so
-// a batch import can reject every bad item up front (preserving the all-or-
+// Validates the screenshot's data URL / mime without writing a file, so a
+// batch import can reject every bad item up front (preserving the all-or-
 // nothing guarantee) instead of failing mid-write after some inserts landed.
 // saveScreenshot writes the screenshots this accepts, decoded the same way.
+// One over SCREENSHOT_MAX_BYTES is accepted: saveScreenshot stores it as
+// omitted (#152).
 function validateScreenshotContent(screenshot) {
   if (screenshot.status && screenshot.status !== "captured") return;
   if (!screenshot.dataUrl) return;
@@ -1451,9 +1453,6 @@ function decodeScreenshot(dataUrl) {
   const extension = extensionForMimeType(parsed.mimeType);
   if (!extension) {
     throw httpError(`Unsupported screenshot mime type: ${parsed.mimeType}`, 400);
-  }
-  if (parsed.buffer.length > SCREENSHOT_MAX_BYTES) {
-    throw httpError(`Screenshot too large: ${parsed.buffer.length} bytes exceeds ${SCREENSHOT_MAX_BYTES}`, 413);
   }
   return { ...parsed, extension };
 }
@@ -1717,6 +1716,13 @@ function saveScreenshot(screenshot, id) {
   }
 
   const image = decodeScreenshot(screenshot.dataUrl);
+
+  // Over the limit, the comment is kept and the image left out, in the shape
+  // the widget gives one over its own limit (#152): sending it again would not
+  // make it smaller, so refusing would keep the comment out for good.
+  if (image.buffer.length > SCREENSHOT_MAX_BYTES) {
+    return { ...metadata, status: "omitted", reason: "too-large", mimeType: image.mimeType, bytes: image.buffer.length, maxBytes: SCREENSHOT_MAX_BYTES };
+  }
 
   // Stop before writing once the screenshot directory would exceed its cap. The
   // running total is kept in sync below and in deleteScreenshotFile; 507 signals
