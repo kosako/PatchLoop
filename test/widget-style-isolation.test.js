@@ -40,14 +40,16 @@ test("widget styles start with the host-page reset and every later rule outranks
   assert.deepEqual(selectorList(initial.selector), [".pl-root", "[data-patchloop-pin]", "[data-patchloop-area]", "[data-patchloop-selection]"]);
   assert.equal(initial.body, "all: initial; -webkit-locale: inherit;");
   // Their descendants and pseudo-elements: browser defaults, so page rules on
-  // header / section / button / p / * fill nothing in.
+  // header / section / button / p / * fill nothing in. Both also take the
+  // widget's colors from their parent (#170, checked below).
+  const withoutColors = (body) => body.replace(/\s*--pl-[a-z]+: inherit;/g, "");
   assert.deepEqual(selectorList(revertDescendants.selector), [".pl-root *", "[data-patchloop-area] *"]);
-  assert.equal(revertDescendants.body, "all: revert;");
+  assert.equal(withoutColors(revertDescendants.body), "all: revert;");
   // Pseudo-elements in their own rule: a browser without :is() drops only
   // this rule, not the descendant reset above.
   const pseudo = selectorList(revertPseudo.selector);
   assert.ok(pseudo.some((selector) => selector.endsWith("::before")) && pseudo.some((selector) => selector.endsWith("::after")));
-  assert.equal(revertPseudo.body, "all: revert;");
+  assert.equal(withoutColors(revertPseudo.body), "all: revert;");
 
   // The reset is (0,1,0) and comes first. A widget rule wins over it only if
   // its selector carries at least a class or an attribute, so a bare element
@@ -202,4 +204,46 @@ test("no widget rule sets a property again that an earlier rule sets for each of
   const css = widget.document.querySelector("[data-patchloop-style]").textContent;
   assert.ok(conditionedRules(css).length > 50);
   assert.deepEqual(overriddenDeclarations(css), []);
+});
+
+// The widget's colors are custom properties set on its top-level nodes (#170),
+// which every other widget node descends from. all: does not reset custom
+// properties, so a page rule on a bare element name (button { --pl-accent:
+// #fff }) would set a color on a widget node itself, ahead of the value the
+// node inherits. The descendant and pseudo-element resets, which outrank such
+// a rule, set every color to inherit. The two classes the widget puts on page
+// elements (the target's highlight, and capture mode on the root element) are
+// outside those nodes, where a var() would find no value.
+test("the widget's colors are set on its top-level nodes, every node the reset reaches takes them from its parent, and only widget nodes use one (#170)", () => {
+  const widget = widgetHarness();
+  widget.init();
+  const css = widget.document.querySelector("[data-patchloop-style]").textContent;
+  const rules = styleRules(css);
+  const parts = (body) => body.split(";").map((part) => part.trim()).filter(Boolean);
+  const customProperties = (body) => parts(body).filter((part) => part.startsWith("--")).map((part) => part.split(":").map((value) => value.trim()));
+  const tokenRules = rules.filter(({ body }) => customProperties(body).some(([, value]) => value !== "inherit"));
+  assert.equal(tokenRules.length, 1);
+  const [tokenRule] = tokenRules;
+  assert.deepEqual(selectorList(tokenRule.selector), [".pl-root", "[data-patchloop-pin]", "[data-patchloop-area]", "[data-patchloop-selection]"]);
+  assert.equal(customProperties(tokenRule.body).length, parts(tokenRule.body).length);
+  const tokens = new Map(customProperties(tokenRule.body));
+  assert.deepEqual([...tokens.keys()], ["--pl-ink", "--pl-muted", "--pl-line", "--pl-accent", "--pl-danger"]);
+
+  const [, revertDescendants, revertPseudo] = rules;
+  for (const reset of [revertDescendants, revertPseudo]) {
+    assert.deepEqual(customProperties(reset.body), [...tokens.keys()].map((name) => [name, "inherit"]), `${reset.selector}: every color taken from the parent`);
+  }
+  for (const rule of rules) {
+    const { selector, body } = rule;
+    if (![tokenRule, revertDescendants, revertPseudo].includes(rule)) assert.deepEqual(customProperties(body), [], `${selector}: sets a custom property`);
+    if (rule === tokenRule) continue;
+    for (const [, name] of body.matchAll(/var\(([^)]*)\)/g)) assert.ok(tokens.has(name), `${selector}: var(${name}) names no widget color`);
+    // A color the tokens hold is written as its var(), so a change of it is made in one place.
+    for (const value of tokens.values()) assert.ok(!new RegExp(`${value}(?![\\da-f])`, "i").test(body), `${selector}: ${value} written out instead of its var()`);
+    if (body.includes("var(")) {
+      for (const subject of selectorList(selector)) {
+        assert.ok(!/^\.pl-target-highlight\b/.test(subject) && !/^\.pl-feedback-active(\s+\*)?$/.test(subject), `${subject}: a page element, where the widget's colors are not set`);
+      }
+    }
+  }
 });
