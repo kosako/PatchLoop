@@ -10,7 +10,7 @@ import { buildPayload, buildRevision } from "./payload.js";
 import { uncapturedTouching } from "./screenshot.js";
 import { WIDGET_CSS } from "./styles.js";
 import { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } from "./inbox-status.js";
-import { canRetry, deliveryBadge, deliveryFailed, deliveryStatusText, hasLeftDevice, interruptedDelivery, isDelivering, isLocallyEdited, pendingAge, receiverHasCopy, tooLongToSendText } from "./delivery-state.js";
+import { answeredDelivery, canRetry, deliveryBadge, deliveryFailed, deliveryStatusText, hasLeftDevice, interruptedDelivery, isDelivering, isLocallyEdited, pendingAge, receiverHasCopy, refusedAsIs, tooLongToSendText, unansweredDelivery } from "./delivery-state.js";
 import { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadLauncher, saveLauncher, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } from "./persistence.js";
 import { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, formatCount, FEEDBACK_STATUS_LABELS } from "../../shared/format.js";
 import { EXPORT_BUNDLE_VERSION } from "../../shared/versions.js";
@@ -841,15 +841,28 @@ async function postFeedback(payload) {
     if (state.options.ingestKey) {
       headers["X-PatchLoop-Ingest-Key"] = state.options.ingestKey;
     }
-    const response = await fetchWithTimeout(state.options.endpoint, {
+    return logDelivery(payload, await fetchWithTimeout(state.options.endpoint, {
       method: "POST",
       headers,
       body: JSON.stringify(toWireFeedback(payload))
-    });
-    return logDelivery(payload, { ok: response.ok, status: response.status });
+    }, readAnswer));
   } catch (error) {
-    return logDelivery(payload, { ok: false, error: error.message });
+    return logDelivery(payload, unansweredDelivery(error));
   }
+}
+
+// The receiver's answer, with why it refused (#152). Its body is read within
+// the timeout too; one that cannot be read leaves the status alone.
+async function readAnswer(response) {
+  let body = null;
+  if (!response.ok) {
+    try {
+      body = await response.json();
+    } catch (_) {
+      // No reason to show: the status says what it can.
+    }
+  }
+  return answeredDelivery(response.ok, response.status, body);
 }
 
 function logDelivery(payload, delivery) {
@@ -982,7 +995,9 @@ async function deliverFeedback(payload) {
   if (deliveringIds !== state.deliveringIds) return false;
   // The text that went out stays with the result: an edit another tab saved
   // meanwhile then shows as a local change, whichever text the merge keeps.
-  payload.delivery = receiverHasCopy(delivery) ? { ...delivery, sent } : delivery;
+  // With a refusal of the comment as it is, it tells whether the text has
+  // changed since, so it may go again (#152).
+  payload.delivery = receiverHasCopy(delivery) || refusedAsIs(delivery) ? { ...delivery, sent } : delivery;
   return true;
 }
 

@@ -219,7 +219,9 @@ test("an export leaves out the comments past the limit and says how many, and no
 
 test("a saved comment past the limit is not resent until it is shortened (#196)", async () => {
   const storage = new Map();
-  const before = widgetHarness({ storage, replies: [new Error("network")] });
+  // The receiver answered it did not take it: a post with no answer may have
+  // reached it (#152).
+  const before = widgetHarness({ storage, replies: [{ ok: false, status: 500 }] });
   before.init({ persistFeedback: true });
   await before.submit("a".repeat(20));
   assert.equal(before.api.getFeedback()[0].delivery.ok, false);
@@ -265,7 +267,7 @@ test("a resend held back by the limit keeps a cut-off delivery, so the shortened
 
 test("a saved comment whose name alone is past the limit is neither resent nor exported (#196)", async () => {
   const storage = new Map();
-  const failed = widgetHarness({ storage, replies: [new Error("network")] });
+  const failed = widgetHarness({ storage, replies: [{ ok: false, status: 500 }] });
   failed.init({ persistFeedback: true });
   await submitAs(failed, "Short", "n".repeat(20));
   assert.equal(failed.api.getFeedback()[0].delivery.ok, false);

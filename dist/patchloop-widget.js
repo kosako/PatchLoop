@@ -596,15 +596,55 @@ function interruptedDelivery(delivery) {
   return { ok: null, interrupted: true, target: delivery.target };
 }
 
-// Whether the delivery failed: its notice tells so as an error.
+// The longest reason kept from the receiver's answer: enough for the notice
+// and the badge's title.
+const MAX_REFUSAL_LENGTH = 200;
+
+// What the receiver answered (#152): its status, and when it refused, why, as
+// its error says. body: the answer's JSON, or null when it could not be read.
+function answeredDelivery(ok, status, body) {
+  const error = body?.error;
+  return !ok && typeof error === "string" && error.trim()
+    ? { ok, status, error: error.trim().slice(0, MAX_REFUSAL_LENGTH) }
+    : { ok, status };
+}
+
+// A post to the receiver that got no answer to read (#152): it timed out or
+// failed on the network, maybe after the receiver took the comment. Like one
+// cut off, its result is unknown.
+function unansweredDelivery(error) {
+  return { ok: null, interrupted: true, unanswered: true, target: "receiver", error: String(error?.message ?? error) };
+}
+
+// Whether the receiver refused the comment as it is (400 / 413, #152): it would
+// refuse the same again.
+function refusedAsIs(delivery) {
+  return delivery?.ok === false && (delivery.status === 400 || delivery.status === 413);
+}
+
+// Whether the receiver refused the comment for how it is set up (401 / 403:
+// the ingest key, the allowed origins, #152): it takes the same once that is
+// fixed.
+function refusedBySettings(delivery) {
+  return delivery?.ok === false && (delivery.status === 401 || delivery.status === 403);
+}
+
+// Whether the delivery failed: its notice tells so as an error. A 409 is not:
+// the receiver holds the comment.
 function deliveryFailed(delivery) {
-  return delivery?.ok === false;
+  return delivery?.ok === false && delivery.status !== 409;
 }
 
 // A failed delivery, or an interrupted one to the receiver (Slack may have it
-// already), of a comment the receiver does not hold in another text.
+// already), of a comment the receiver does not hold in another text. One the
+// receiver refused as it was is offered again only once its text has changed
+// here since (#152), or when the text it refused was not kept (before #152).
 function canRetry(item) {
-  return Boolean((item.delivery?.ok === false || (item.delivery?.interrupted && item.delivery.target !== "slack-webhook")) && !isLocallyEdited(item) && item.delivery.status !== 409);
+  const delivery = item.delivery;
+  if (!(delivery?.ok === false || (delivery?.interrupted && delivery.target !== "slack-webhook"))) return false;
+  if (isLocallyEdited(item) || delivery.status === 409) return false;
+  const sent = delivery.sent;
+  return !refusedAsIs(delivery) || !sent || sent.comment !== item.comment || sent.reviewer !== item.reviewer;
 }
 
 // The list's badge: its tone (the class it takes), its label, and whether its
@@ -615,6 +655,8 @@ function deliveryBadge(item) {
   if (!item.delivery) return null;
   if (item.delivery.ok === null) return { tone: "unknown", label: "結果未確認", explained: true };
   if (item.delivery.ok) return { tone: "ok", label: "送信済み", explained: true };
+  // The receiver holds the id: in which text, it did not say (#152).
+  if (item.delivery.status === 409) return { tone: "ok", label: "受信済み", explained: true };
   return { tone: "fail", label: "送信失敗", explained: true };
 }
 
@@ -627,9 +669,12 @@ function tooLongToSendText(maxFieldLength) {
 function deliveryStatusText(delivery, maxFieldLength) {
   if (!delivery) return "";
   if (delivery.pending) return "送信しています…";
-  if (delivery.interrupted) return delivery.target === "slack-webhook"
-    ? "送信が中断されました。Slack 側で内容を確認してください。再送すると重複する可能性があります。"
-    : "送信が中断されたため、結果は未確認です。受信箱の内容を確認してから再送してください。";
+  if (delivery.interrupted) {
+    if (delivery.target === "slack-webhook") return "送信が中断されました。Slack 側で内容を確認してください。再送すると重複する可能性があります。";
+    return delivery.unanswered
+      ? "送信先から応答を受け取れなかったため、結果は未確認です。受信箱の内容を確認してから再送してください。"
+      : "送信が中断されたため、結果は未確認です。受信箱の内容を確認してから再送してください。";
+  }
   if (delivery.tooLong) return tooLongToSendText(maxFieldLength);
   if (delivery.target === "download") {
     if (delivery.ok) return `downloaded ${delivery.fileName || ""}`.trim();
@@ -641,8 +686,17 @@ function deliveryStatusText(delivery, maxFieldLength) {
     return "Slack に送信できませんでした。送信先・設定を確認してください。";
   }
   if (delivery.ok) return "受信箱に送信しました。";
-  if (delivery.status === 409) return "同じ ID が受信済みです。受信箱の内容を確認してください。";
-  return "送信できませんでした。コメントはこの端末に残っています。送信先・接続を確認してください。";
+  if (delivery.status === 409) return "同じ ID のコメントが受信済みです（内容は未確認）。受信箱の内容を確認してください。";
+  const reason = refusalReason(delivery);
+  if (refusedAsIs(delivery)) return `送信先が受け取りを拒否しました${reason}。同じ内容では再送できません。コメントはこの端末に残っています。編集すると再送できるようになります。`;
+  if (refusedBySettings(delivery)) return `送信先の設定の問題で受け取られませんでした${reason}。設定が直ってから再送してください。コメントはこの端末に残っています。`;
+  return `送信できませんでした${reason}。コメントはこの端末に残っています。送信先・接続を確認してください。`;
+}
+
+// Why the receiver refused, as it said, else its status (#152), in brackets.
+function refusalReason(delivery) {
+  if (typeof delivery.error === "string" && delivery.error) return `（${delivery.error}）`;
+  return typeof delivery.status === "number" ? `（HTTP ${delivery.status}）` : "";
 }
 
 // How long ago another tab's delivery started, as far as this tab can tell
@@ -654,7 +708,7 @@ function pendingAge(startedAt, now, seen, monotonicNow) {
   return startedAt <= now ? now - startedAt : monotonicNow - seen;
 }
 
-return { receiverAnswered, receiverHasCopy, isLocallyEdited, hasLeftDevice, isDelivering, interruptedDelivery, deliveryFailed, canRetry, deliveryBadge, tooLongToSendText, deliveryStatusText, pendingAge };
+return { receiverAnswered, receiverHasCopy, isLocallyEdited, hasLeftDevice, isDelivering, interruptedDelivery, answeredDelivery, unansweredDelivery, refusedAsIs, deliveryFailed, canRetry, deliveryBadge, tooLongToSendText, deliveryStatusText, pendingAge };
 })();
 // --- widget/src/inbox-status.js ---
 const __pl_widget_src_inbox_status = (() => {
@@ -2460,7 +2514,7 @@ const { buildPayload, buildRevision } = __pl_widget_src_payload;
 const { uncapturedTouching } = __pl_widget_src_screenshot;
 const { WIDGET_CSS } = __pl_widget_src_styles;
 const { statusLookupUrl, statusLookupIds, statusesFromAnswer, isFinished, initialLookupState, lookupOutcome, lookupAfter } = __pl_widget_src_inbox_status;
-const { canRetry, deliveryBadge, deliveryFailed, deliveryStatusText, hasLeftDevice, interruptedDelivery, isDelivering, isLocallyEdited, pendingAge, receiverHasCopy, tooLongToSendText } = __pl_widget_src_delivery_state;
+const { answeredDelivery, canRetry, deliveryBadge, deliveryFailed, deliveryStatusText, hasLeftDevice, interruptedDelivery, isDelivering, isLocallyEdited, pendingAge, receiverHasCopy, refusedAsIs, tooLongToSendText, unansweredDelivery } = __pl_widget_src_delivery_state;
 const { loadStoredReviewer, saveReviewer, loadDisplayMode, saveDisplayMode, loadLauncher, saveLauncher, persistFeedbackList, loadPersistedFeedback, clearPersistedFeedback, loadOtherPagesFeedback, saveOtherPageFeedback, bindFeedbackScope, isDemoFeedbackKey, isOwnFeedbackKey, syncPersistedFeedback } = __pl_widget_src_persistence;
 const { safeFilePart, truncateText, present, escapeHtml, slackEscape, formatSlackCode, formatSlackLink, formatViewport, formatTarget, formatCount, FEEDBACK_STATUS_LABELS } = __pl_shared_format;
 const { EXPORT_BUNDLE_VERSION } = __pl_shared_versions;
@@ -3291,15 +3345,28 @@ async function postFeedback(payload) {
     if (state.options.ingestKey) {
       headers["X-PatchLoop-Ingest-Key"] = state.options.ingestKey;
     }
-    const response = await fetchWithTimeout(state.options.endpoint, {
+    return logDelivery(payload, await fetchWithTimeout(state.options.endpoint, {
       method: "POST",
       headers,
       body: JSON.stringify(toWireFeedback(payload))
-    });
-    return logDelivery(payload, { ok: response.ok, status: response.status });
+    }, readAnswer));
   } catch (error) {
-    return logDelivery(payload, { ok: false, error: error.message });
+    return logDelivery(payload, unansweredDelivery(error));
   }
+}
+
+// The receiver's answer, with why it refused (#152). Its body is read within
+// the timeout too; one that cannot be read leaves the status alone.
+async function readAnswer(response) {
+  let body = null;
+  if (!response.ok) {
+    try {
+      body = await response.json();
+    } catch (_) {
+      // No reason to show: the status says what it can.
+    }
+  }
+  return answeredDelivery(response.ok, response.status, body);
 }
 
 function logDelivery(payload, delivery) {
@@ -3432,7 +3499,9 @@ async function deliverFeedback(payload) {
   if (deliveringIds !== state.deliveringIds) return false;
   // The text that went out stays with the result: an edit another tab saved
   // meanwhile then shows as a local change, whichever text the merge keeps.
-  payload.delivery = receiverHasCopy(delivery) ? { ...delivery, sent } : delivery;
+  // With a refusal of the comment as it is, it tells whether the text has
+  // changed since, so it may go again (#152).
+  payload.delivery = receiverHasCopy(delivery) || refusedAsIs(delivery) ? { ...delivery, sent } : delivery;
   return true;
 }
 
