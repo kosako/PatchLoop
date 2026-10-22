@@ -73,8 +73,9 @@ export function refusedAsIs(delivery) {
 }
 
 // Whether the receiver refused the comment for how it is set up (401 / 403:
-// the ingest key, the allowed origins, #152): it takes the same once that is
-// fixed.
+// the ingest key, or the project the key is bound to, #152): it takes the same
+// once that is fixed. An origin it does not allow never gets this far: the
+// browser stops the post before sending it, as for a network error.
 function refusedBySettings(delivery) {
   return delivery?.ok === false && (delivery.status === 401 || delivery.status === 403);
 }

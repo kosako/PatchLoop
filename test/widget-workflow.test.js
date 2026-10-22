@@ -2,8 +2,11 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const { ReadableStream } = require("node:stream/web");
 const { widgetHarness } = require("../test-support/widget-dom.js");
 
+// A receiver's answer with a JSON body, as fetch gives it.
+const answer = (status, body) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 const UNANSWERED = "送信先から応答を受け取れなかったため、結果は未確認です。受信箱の内容を確認してから再送してください。";
 
 test("editing a delivered comment sends a revision that takes its place in the list (#121)", async () => {
@@ -282,7 +285,7 @@ test("a stalled request times out, preserves the comment, and offers retry", asy
 });
 
 test("a network error leaves the result unknown and offers retry; a 409 on the retry shows it received (#152)", async () => {
-  const w = widgetHarness({ replies: [new TypeError("Failed to fetch"), { ok: false, status: 409, json: async () => ({ ok: false, error: "Feedback already exists" }) }] });
+  const w = widgetHarness({ replies: [new TypeError("Failed to fetch"), answer(409, { ok: false, error: "Feedback already exists" })] });
   w.init();
   await w.submit("Did it arrive?");
   assert.equal(w.document.querySelector(".pl-feedback-status-unknown").textContent, "結果未確認");
@@ -298,7 +301,7 @@ test("a network error leaves the result unknown and offers retry; a 409 on the r
 
 test("a refusal of the comment as it is shows why and is resent only once the comment is edited (#152)", async () => {
   const reason = "feedback.comment exceeds the maximum length of 10 characters";
-  const w = widgetHarness({ replies: [{ ok: false, status: 413, json: async () => ({ ok: false, error: reason }) }, { ok: true, status: 201 }] });
+  const w = widgetHarness({ replies: [answer(413, { ok: false, error: reason }), { ok: true, status: 201 }] });
   w.init();
   await w.submit("Far too long for it");
   const refused = `送信先が受け取りを拒否しました（${reason}）。同じ内容では再送できません。コメントはこの端末に残っています。編集すると再送できるようになります。`;
@@ -319,31 +322,48 @@ test("a refusal of the comment as it is shows why and is resent only once the co
 });
 
 test("a refusal for the receiver's settings keeps the retry (#152)", async () => {
-  const w = widgetHarness({ replies: [{ ok: false, status: 403, json: async () => ({ ok: false, error: "Origin not allowed" }) }] });
+  const w = widgetHarness({ replies: [answer(403, { ok: false, error: "Origin not allowed" })] });
   w.init();
   await w.submit();
   assert.equal(w.document.querySelector("[data-pl-notice]").textContent, "送信先の設定の問題で受け取られませんでした（Origin not allowed）。設定が直ってから再送してください。コメントはこの端末に残っています。");
   assert.ok(w.document.querySelector("[data-pl-retry]"));
 });
 
-test("an answer whose body cannot be read keeps its status (#152)", async () => {
-  const unreadable = widgetHarness({ replies: [{ ok: false, status: 400, json: async () => { throw new SyntaxError("Unexpected token"); } }] });
+test("an answer whose body cannot be read, or is too long, keeps its status (#152)", async () => {
+  const unreadable = widgetHarness({ replies: [new Response("Bad Request", { status: 400 }), { ok: false, status: 400 }] });
   unreadable.init();
-  await unreadable.submit();
-  assert.equal(JSON.stringify(unreadable.api.getFeedback()[0].delivery), '{"ok":false,"status":400,"sent":{"comment":"Please fix this","reviewer":"Reviewer"}}');
-  assert.equal(unreadable.document.querySelector("[data-pl-retry]"), null);
+  await unreadable.submit("Not JSON");
+  await unreadable.submit("No body");
+  assert.equal(unreadable.api.getFeedback().map((item) => JSON.stringify(item.delivery)).join("\n"), [
+    '{"ok":false,"status":400,"sent":{"comment":"No body","reviewer":"Reviewer"}}',
+    '{"ok":false,"status":400,"sent":{"comment":"Not JSON","reviewer":"Reviewer"}}'
+  ].join("\n"));
+
+  // A long body is not read on past its first 8 KiB.
+  let pulled = 0;
+  let cancelled = false;
+  const long = new ReadableStream({
+    pull(controller) {
+      pulled += 1;
+      if (pulled > 1000) controller.close();
+      else controller.enqueue(new TextEncoder().encode(pulled === 1 ? `{"ok":false,"error":"${"x".repeat(1000)}` : "x".repeat(1000)));
+    },
+    cancel() { cancelled = true; }
+  }, { highWaterMark: 0 });
+  const tooLong = widgetHarness({ replies: [new Response(long, { status: 413 })] });
+  tooLong.init();
+  await tooLong.submit();
+  assert.equal(`${JSON.stringify(tooLong.api.getFeedback()[0].delivery.error)} ${tooLong.api.getFeedback()[0].delivery.status} ${cancelled} ${pulled < 20}`, "undefined 413 true true");
 
   // A body still on its way at the timeout is given up, and the status stays.
   let reading;
   const bodyRead = new Promise((resolve) => { reading = resolve; });
-  const stalled = widgetHarness({ replies: [(options) => ({
-    ok: false,
-    status: 413,
-    json: () => {
+  const stalled = widgetHarness({ replies: [(options) => new Response(new ReadableStream({
+    pull(controller) {
       reading();
-      return new Promise((resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+      return new Promise((resolve) => options.signal.addEventListener("abort", () => { controller.error(new Error("aborted")); resolve(); }, { once: true }));
     }
-  })] });
+  }, { highWaterMark: 0 }), { status: 413 })] });
   stalled.init();
   let timeout;
   const originalTimer = stalled.window.setTimeout;
@@ -356,6 +376,21 @@ test("an answer whose body cannot be read keeps its status (#152)", async () => 
   timeout();
   await submission;
   assert.equal(`${stalled.api.getFeedback()[0].delivery.ok} ${stalled.api.getFeedback()[0].delivery.status}`, "false 413");
+});
+
+test("what fetch would refuse before sending fails the delivery for sure, and an edit stays in place (#152)", async () => {
+  for (const endpoint of ["https://user:secret@receiver.example/feedback", "https://receiver.example:99999/feedback"]) {
+    const w = widgetHarness();
+    w.init({ endpoint });
+    await w.submit("Never sent");
+    const delivery = w.api.getFeedback()[0].delivery;
+    assert.equal(`${w.requests.length} ${delivery.ok} ${delivery.interrupted} ${typeof delivery.error}`, "0 false undefined string", endpoint);
+    assert.equal(w.document.querySelector(".pl-feedback-status-fail").textContent, "送信失敗");
+    const id = w.api.getFeedback()[0].id;
+    w.document.querySelector("[data-pl-edit]").click();
+    await w.submit("Fixed", { captureTarget: false });
+    assert.equal(`${w.requests.length} ${w.api.getFeedback().length} ${w.api.getFeedback()[0].id === id} ${w.api.getFeedback()[0].comment}`, "0 1 true Fixed", endpoint);
+  }
 });
 
 test("a comment that is still sending cannot be edited or deleted", async () => {

@@ -21,6 +21,9 @@ import { toWireFeedback } from "../../shared/local-only.js";
 // page started is taken as cut off only once it and a margin are over (#139).
 const FETCH_TIMEOUT_MS = 15000;
 const STALE_PENDING_MS = FETCH_TIMEOUT_MS + 5000;
+// The most of a refusal's body read for why: the receiver's error is short,
+// and a longer body is not read on (#152).
+const MAX_ANSWER_BYTES = 8192;
 let pendingInit = null;
 // The launcher chosen on this page (#211), kept over a re-init even where
 // storage cannot keep it; null until the viewer chooses.
@@ -836,33 +839,57 @@ function reportSubmitCallbackError(error) {
 }
 
 async function postFeedback(payload) {
+  let request;
   try {
     const headers = { "Content-Type": "application/json" };
     if (state.options.ingestKey) {
       headers["X-PatchLoop-Ingest-Key"] = state.options.ingestKey;
     }
-    return logDelivery(payload, await fetchWithTimeout(state.options.endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(toWireFeedback(payload))
-    }, readAnswer));
+    request = { method: "POST", headers, body: JSON.stringify(toWireFeedback(payload)) };
+    // What fetch refuses before anything is sent (the endpoint, a header, the
+    // body) is refused here first: the comment surely has not left (#152).
+    new Request(new URL(state.options.endpoint, document.baseURI), request);
+  } catch (error) {
+    return logDelivery(payload, { ok: false, error: error.message });
+  }
+  try {
+    return logDelivery(payload, await fetchWithTimeout(state.options.endpoint, request, readAnswer));
   } catch (error) {
     return logDelivery(payload, unansweredDelivery(error));
   }
 }
 
 // The receiver's answer, with why it refused (#152). Its body is read within
-// the timeout too; one that cannot be read leaves the status alone.
+// the timeout too; one that cannot be read, or is too long, leaves the status
+// alone.
 async function readAnswer(response) {
   let body = null;
   if (!response.ok) {
     try {
-      body = await response.json();
+      body = JSON.parse(await readAnswerText(response));
     } catch (_) {
       // No reason to show: the status says what it can.
     }
   }
   return answeredDelivery(response.ok, response.status, body);
+}
+
+// The body as text, given up past MAX_ANSWER_BYTES.
+async function readAnswerText(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return text + decoder.decode();
+    bytes += value.byteLength;
+    if (bytes > MAX_ANSWER_BYTES) {
+      reader.cancel().catch(() => {});
+      throw new Error("answer too long");
+    }
+    text += decoder.decode(value, { stream: true });
+  }
 }
 
 function logDelivery(payload, delivery) {
