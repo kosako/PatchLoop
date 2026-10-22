@@ -215,18 +215,31 @@ function styleRules(widget) {
   return rules;
 }
 
+// The reset at the top of the widget styles (#174), with the value of all: in
+// each rule.
+const RESETS = [
+  [".pl-root, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-selection]", "initial"],
+  [".pl-root *, [data-patchloop-area] *", "revert"],
+  [":is(.pl-root, .pl-root *, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-area] *, [data-patchloop-selection])::before, :is(.pl-root, .pl-root *, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-area] *, [data-patchloop-selection])::after", "revert"]
+];
+
 // The widget's custom properties (#170) put in for the var() that names one,
 // so the checks below read the colors the browser computes. They are read only
 // as the widget sets them: as hex values, once, on its top-level nodes outside
-// at-rules, without !important, and named by a var() of nothing else. Any
-// other use fails here instead of being read differently from the browser.
-const TOKEN_ROOTS = ".pl-root, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-selection]";
+// at-rules, without !important, and named by a var() of nothing else. The
+// descendant and pseudo-element resets may set them to inherit, which takes
+// the value of a top-level node: what those resets reach is inside one or is
+// a pseudo-element of one. Any other use fails here instead of being read
+// differently from the browser.
+const TOKEN_ROOTS = RESETS[0][0];
 function resolveTokens(rules) {
   const tokens = new Map();
   for (const { selector, declarations, important, condition } of rules) {
     for (const [name, value] of Object.entries(declarations).filter(([property]) => property.startsWith("--"))) {
       const where = `${selector} { ${name} }`;
-      assert.ok(selector === TOKEN_ROOTS && !condition && !important.has(name), `${where}: custom property not read by the contrast check`);
+      const inherited = value === "inherit" && RESETS.some(([reset, all]) => selector === reset && all === "revert");
+      assert.ok((selector === TOKEN_ROOTS || inherited) && !condition && !important.has(name), `${where}: custom property not read by the contrast check`);
+      if (inherited) continue;
       assert.match(value, /^#[\da-f]{3}(?:[\da-f]{3})?$/i, `${where}: custom property as a hex value`);
       assert.ok(!tokens.has(name), `${where}: custom property set twice`);
       tokens.set(name, value);
@@ -284,11 +297,6 @@ test("every text color of the widget meets 4.5:1 on the backgrounds it is shown 
   // plain color, background and opacity outside at-rules; anything else that
   // could change the contrast fails here instead of passing unread.
   const contrastProperties = ["color", "background", "background-image", "opacity", "filter", "backdrop-filter", "mix-blend-mode", "-webkit-text-fill-color", "all"];
-  const resets = [
-    [".pl-root, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-selection]", "initial"],
-    [".pl-root *, [data-patchloop-area] *", "revert"],
-    [":is(.pl-root, .pl-root *, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-area] *, [data-patchloop-selection])::before, :is(.pl-root, .pl-root *, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-area] *, [data-patchloop-selection])::after", "revert"]
-  ];
   const firstColored = allRules.findIndex(({ declarations }) => ["color", "background", "opacity"].some((property) => property in declarations));
   allRules.forEach(({ selector, declarations, important, condition }, index) => {
     for (const property of contrastProperties.filter((name) => name in declarations)) {
@@ -297,7 +305,7 @@ test("every text color of the widget meets 4.5:1 on the backgrounds it is shown 
       assert.ok(!important.has(property), `${where} with !important: not checked for contrast`);
       if (property === "all") {
         // Only the reset at the top, which every color below overrides.
-        assert.ok(resets.some(([reset, value]) => selector === reset && declarations.all === value) && index < firstColored, `${where}: resets colors the checks do not follow`);
+        assert.ok(RESETS.some(([reset, value]) => selector === reset && declarations.all === value) && index < firstColored, `${where}: resets colors the checks do not follow`);
       } else if (property === "opacity") {
         // Disabled buttons are left out (WCAG), exported cards are composited below.
         assert.ok([".pl-root button:disabled", ".pl-feedback-item-exported"].includes(selector), `${where}: not checked for contrast`);

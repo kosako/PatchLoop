@@ -1802,19 +1802,21 @@ const __pl_widget_src_styles = (() => {
 // after init, other pseudo-elements (::placeholder, ::marker, ::selection),
 // and direction / unicode-bidi, which all does not reset. Full isolation
 // would need a shadow root.
-// The colors used across the widget are custom properties on its top-level
-// nodes (#170), named as the inbox's CSS names them (ink, muted, line,
-// accent, danger) but with the widget's own values. --pl-danger also marks
-// the capture mode and areas. Being set on the widget's own nodes, they are
-// not taken from the page; a page rule that sets them on those nodes is not
-// covered, as above.
+// The colors used across the widget are custom properties (#170), named as
+// the inbox's CSS names them (ink, muted, line, accent, danger) but with the
+// widget's own values, set on its top-level nodes. --pl-danger also marks
+// the capture mode and areas. all: does not reset custom properties, so the
+// descendant and pseudo-element resets set each of them to inherit: a page
+// rule on a bare element name (button { --pl-accent: ... }) would otherwise
+// set it on a widget node itself, ahead of the value the node inherits.
+// What the reset does not cover (above) is not covered for them either.
 // A dot-only marker (#147) draws its dot as a bordered ::before box rather
 // than a background gradient: forced colors mode drops gradients but keeps
 // borders, in the user's colors, so the dot stays visible there.
 const WIDGET_CSS = `
     .pl-root, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-selection] { all: initial; -webkit-locale: inherit; }
-    .pl-root *, [data-patchloop-area] * { all: revert; }
-    :is(.pl-root, .pl-root *, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-area] *, [data-patchloop-selection])::before, :is(.pl-root, .pl-root *, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-area] *, [data-patchloop-selection])::after { all: revert; }
+    .pl-root *, [data-patchloop-area] * { all: revert; --pl-ink: inherit; --pl-muted: inherit; --pl-line: inherit; --pl-accent: inherit; --pl-danger: inherit; }
+    :is(.pl-root, .pl-root *, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-area] *, [data-patchloop-selection])::before, :is(.pl-root, .pl-root *, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-area] *, [data-patchloop-selection])::after { all: revert; --pl-ink: inherit; --pl-muted: inherit; --pl-line: inherit; --pl-accent: inherit; --pl-danger: inherit; }
     .pl-root, [data-patchloop-pin], [data-patchloop-area], [data-patchloop-selection] { --pl-ink: #14211d; --pl-muted: #65716d; --pl-line: #d9e1dd; --pl-accent: #0f7b63; --pl-danger: #b83d4d; }
     .pl-root, .pl-root * { box-sizing: border-box; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: normal; }
     .pl-root [hidden], .pl-comment[hidden], .pl-tooltip[hidden], [data-patchloop-pin][hidden], [data-patchloop-area][hidden] { display: none !important; }
