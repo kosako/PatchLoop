@@ -262,7 +262,7 @@ function widgetHarness({ ready = true, pointerEvents = false, replies = [], stat
     }
   };
   vm.runInNewContext(bundle, {
-    window, document, Blob, AbortController, URLSearchParams,
+    window, document, Blob, AbortController, URLSearchParams, Request, TextDecoder,
     URL: class extends URL {
       static createObjectURL(blob) { const url = `blob:test-${blobs.size}`; blobs.set(url, blob); return url; }
       static revokeObjectURL() {}
