@@ -916,7 +916,8 @@ test("a screenshot is refused the same way when it is sent and when it is import
   const refusals = [
     ["data:image/svg+xml,<svg/>", "400 Invalid screenshot data URL"],
     [dataUrl("text/plain", "text"), "400 Unsupported screenshot mime type: text/plain"],
-    [dataUrl("image/png", "123456789"), "413 Screenshot too large: 9 bytes exceeds 8"]
+    // Past the size limit too, but no image to leave out (#152).
+    [dataUrl("text/plain", "123456789"), "400 Unsupported screenshot mime type: text/plain"]
   ];
   for (const [url, refusal] of refusals) {
     const payload = feedbackPayload("pl_refused_screenshot");
@@ -928,6 +929,32 @@ test("a screenshot is refused the same way when it is sent and when it is import
   }
   assert.deepEqual(await readStoredFeedback(receiver.dbPath), []);
   assert.equal((await fs.readdir(receiver.screenshotDir).catch(() => [])).length, 0);
+});
+
+test("a screenshot over SCREENSHOT_MAX_BYTES is left out and its comment kept, sent or imported (#152)", async (t) => {
+  // The storage holds one image at the limit: one left out takes no room.
+  const receiver = await startReceiver(t, { SCREENSHOT_MAX_BYTES: "8", SCREENSHOT_DISK_MAX_BYTES: "8" });
+  const dataUrl = (text) => `data:image/png;base64,${Buffer.from(text).toString("base64")}`;
+  // At the limit, the image is still written.
+  const atLimit = feedbackPayload("pl_at_limit");
+  atLimit.screenshot = { status: "captured", kind: "viewport-svg", dataUrl: dataUrl("12345678") };
+  assert.equal((await postJson(`${receiver.baseUrl}/feedback`, atLimit)).status, 201);
+  const sent = feedbackPayload("pl_large_sent");
+  sent.screenshot = { status: "captured", kind: "viewport-svg", width: 10, path: "/elsewhere", dataUrl: dataUrl("123456789") };
+  assert.equal(JSON.stringify((await postJson(`${receiver.baseUrl}/feedback`, sent)).body), JSON.stringify({ ok: true, id: "pl_large_sent" }));
+  const imported = feedbackPayload("pl_large_imported");
+  imported.screenshot = { status: "captured", kind: "viewport-svg", width: 10, dataUrl: dataUrl("123456789") };
+  assert.equal((await postJson(`${receiver.baseUrl}/import`, { kind: EXPORT_BUNDLE_KIND, version: EXPORT_BUNDLE_VERSION, feedback: [imported] })).status, 201);
+
+  const stored = await readStoredFeedback(receiver.dbPath);
+  assert.equal(stored.map(({ id, comment, screenshot }) => `${id} ${comment === feedbackPayload(id).comment} ${JSON.stringify(screenshot.status === "saved" ? { status: "saved", bytes: screenshot.bytes } : screenshot)}`).sort().join("\n"), [
+    'pl_at_limit true {"status":"saved","bytes":8}',
+    'pl_large_imported true {"status":"omitted","kind":"viewport-svg","width":10,"reason":"too-large","mimeType":"image/png","bytes":9,"maxBytes":8}',
+    'pl_large_sent true {"status":"omitted","kind":"viewport-svg","width":10,"reason":"too-large","mimeType":"image/png","bytes":9,"maxBytes":8}'
+  ].join("\n"));
+  assert.equal((await fs.readdir(receiver.screenshotDir)).length, 1);
+  const inbox = await fetch(receiver.baseUrl).then((response) => response.text());
+  assert.equal(inbox.split("Screenshot: omitted: 9 bytes exceeds 8").length - 1, 2);
 });
 
 test("a screenshot is written as a file of its image type (#170)", async (t) => {
